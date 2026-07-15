@@ -51,6 +51,7 @@ type TriageEvent struct {
 	// the source recorded this same event). The sidecar's own dedup
 	// counter is separate — see dedup.go.
 	Count int
+	Type  string
 }
 
 // InjectPayload is the JSON body POSTed to
@@ -71,6 +72,7 @@ type InjectPayload struct {
 	LastSeen     time.Time      `json:"last_seen"`
 	Cluster      string         `json:"cluster"`
 	Context      PayloadContext `json:"context"`
+	Type         string         `json:"type"`
 }
 
 // PayloadContext is the nested "context" object on InjectPayload.

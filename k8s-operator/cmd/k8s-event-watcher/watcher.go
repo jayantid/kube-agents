@@ -181,6 +181,7 @@ func toTriageEvent(ev *corev1.Event) TriageEvent {
 		Node:          nodeFromSource(ev),
 		Labels:        labelsFromMeta(ev.ObjectMeta),
 		Count:         int(ev.Count),
+		Type:          ev.Type,
 	}
 }
 

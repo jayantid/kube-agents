@@ -255,6 +255,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, ev TriageEvent) {
 		FirstSeen:    ev.FirstSeen,
 		LastSeen:     ev.LastSeen,
 		Cluster:      d.cluster,
+		Type:         ev.Type,
 		Context: PayloadContext{
 			ControllerRef: ev.ControllerRef,
 			Node:          ev.Node,

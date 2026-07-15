@@ -55,6 +55,15 @@ def create_session() -> Dict[str, str]:
         )
     return {"sessionID": session_id}
 
+def get_severity_emoji(event_type: str, reason: str) -> str:
+    if event_type.lower() == "warning":
+        critical_reasons = {"oomkilled", "crashloopbackoff", "errimagepull", "imagepullbackoff", "failedmount"}
+        if reason.lower() in critical_reasons:
+            return "🔴" # Critical
+        return "🟡" # Warning
+    return "🔵" # Normal/Info
+
+
 
 def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[str, Any]) -> None:
     """Post the warning alert to GChat, then call local gateway API to execute agent loop."""
@@ -182,10 +191,13 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
     object_name = payload.get("name", "")
     message = payload.get("message", "")
     count = payload.get("count", 1)
-    
+    event_type = payload.get("type", "Warning")
+
+    severity_emoji = get_severity_emoji(event_type, event_reason)
+
     # Construct a pretty notification alert
     alert_msg = (
-        f"⚠️ *K8s Alert: {event_reason}* ({count}x)\n"
+        f"{severity_emoji} *K8s Alert: {event_reason}* ({count}x)\n"
         f"• *Resource:* `{namespace}/{object_kind}/{object_name}`\n"
         f"• *Detail:* {message}\n\n"
         f"🤖 _Autonomous diagnostic run started..._"
