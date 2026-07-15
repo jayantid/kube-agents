@@ -198,8 +198,8 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
     # Construct a pretty notification alert
     alert_msg = (
         f"{severity_emoji} *K8s Alert: {event_reason}* ({count}x)\n"
-        f"• *Resource:* `{namespace}/{object_kind}/{object_name}`\n"
-        f"• *Detail:* {message}\n\n"
+        f"`{namespace}/{object_kind}/{object_name}`\n"
+        f"{message}\n\n"
         f"🤖 _Autonomous diagnostic run started..._"
     )
     
