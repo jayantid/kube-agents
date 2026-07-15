@@ -55,7 +55,8 @@ if [ -f "$TARGET_DIR/scripts/k8s-event-watcher" ]; then
         --cluster-name="${GKE_CLUSTER_NAME:-platform-agent-host}" \
         --dedup-window=5m \
         --dedup-persist="$TARGET_DIR/watcher-dedup-cache.json" \
-        --unhealthy-min-count=3 >"$TARGET_DIR/logs/k8s-event-watcher.log" 2>&1 &
+        --unhealthy-min-count=3 \
+        --reason=CrashLoopBackOff,ImagePullBackOff,ErrImagePull,OOMKilled,FailedMount,FailedScheduling,BackOff,Unhealthy,NetworkNotReady,NodeNotReady,Evicted,FailedToDrainNode >"$TARGET_DIR/logs/k8s-event-watcher.log" 2>&1 &
 fi
 
 # 6. Execute primary process
