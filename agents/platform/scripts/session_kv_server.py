@@ -67,8 +67,8 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
             capture_output=True,
             text=True
         )
-        payload = json.loads(res.stdout)
-        msg_id = payload.get("message_id", "")
+        gchat_resp = json.loads(res.stdout)
+        msg_id = gchat_resp.get("message_id", "")
         if msg_id:
             if "/messages/" in msg_id:
                 space_part, msg_part = msg_id.split("/messages/", 1)
@@ -125,7 +125,7 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
 
     event_reason = payload.get("reason", "Unknown")
     namespace = payload.get("namespace", "default")
-    object_kind = payload.get("kindOfObject", "Pod")
+    object_kind = payload.get("kind_of_object") or payload.get("kindOfObject") or "Pod"
     object_name = payload.get("name", "")
     message = payload.get("message", "")
 
@@ -179,7 +179,7 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
         
     event_reason = payload.get("reason", "Unknown")
     namespace = payload.get("namespace", "default")
-    object_kind = payload.get("kindOfObject", "Pod")
+    object_kind = payload.get("kind_of_object") or payload.get("kindOfObject") or "Pod"
     object_name = payload.get("name", "")
     message = payload.get("message", "")
     count = payload.get("count", 1)
