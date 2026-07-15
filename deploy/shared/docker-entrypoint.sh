@@ -45,6 +45,8 @@ if [ -f "$TARGET_DIR/scripts/session_kv_server.py" ]; then
 fi
 
 if [ -f "$TARGET_DIR/scripts/k8s-event-watcher" ]; then
+    echo "Waiting for Session KV server to warm up..."
+    sleep 5
     echo "Starting k8s event watcher background service..."
     chmod +x "$TARGET_DIR/scripts/k8s-event-watcher"
     "$TARGET_DIR/scripts/k8s-event-watcher" \
