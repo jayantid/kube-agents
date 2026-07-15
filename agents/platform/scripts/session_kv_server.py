@@ -139,16 +139,15 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
         f"• *Warning Message:* {message}\n\n"
         f"When calling your send_notification tool to report findings, you MUST pass this exact session ID: '{session_id}' as the session_id argument so it routes as a threaded reply to the warning alert.\n\n"
         f"When done, post your final diagnostic report to Google Chat (using your notification tool) formatted exactly like this:\n\n"
-        f"🛠️ *Incident Triage Report* 🛠️\n\n"
-        f"*1. Summary of Issue:*\n"
-        f"<Brief description of what went wrong>\n\n"
-        f"*2. Root-Cause Analysis:*\n"
-        f"<Detailed findings, highlighting specific configuration values, log lines, or error codes>\n\n"
-        f"*3. Actionable Remediation:*\n"
-        f"<Clear, step-by-step commands or actions to fix the issue>\n\n"
-        f"🔗 *Observability & Debugging Links:*\n"
-        f"• [GKE Workload Console](https://console.cloud.google.com/kubernetes/workload/overview?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')})\n"
-        f"• [Cloud Logging Console](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')})\n\n"
+        f"📋 *Incident Triage Report* • `{session_id}`\n\n"
+        f"*Issue:*\n"
+        f"<Concise description of the problem>\n\n"
+        f"*Root Cause:*\n"
+        f"<Key findings, logs, configuration values, or code paths>\n\n"
+        f"*Remediation:*\n"
+        f"<Step-by-step fix commands>\n\n"
+        f"🔗 [GKE Workloads](https://console.cloud.google.com/kubernetes/workload/overview?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')}) | "
+        f"[Cloud Logs](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')})\n\n"
         f"---"
     )
     try:
@@ -186,12 +185,10 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
     
     # Construct a pretty notification alert
     alert_msg = (
-        f"🚨 *Kubernetes Event Alert* 🚨\n\n"
+        f"⚠️ *K8s Alert: {event_reason}* ({count}x)\n"
         f"• *Resource:* `{namespace}/{object_kind}/{object_name}`\n"
-        f"• *Event Reason:* `{event_reason}`\n"
-        f"• *Warning Message:* {message}\n"
-        f"• *Occurrence Count:* {count}\n\n"
-        f"🔍 _Starting autonomous troubleshooting run inside GKE cluster..._"
+        f"• *Detail:* {message}\n\n"
+        f"🤖 _Autonomous diagnostic run started..._"
     )
     
     # Delegate the heavy REST API call to FastAPI BackgroundTasks to keep response times sub-millisecond
