@@ -61,17 +61,6 @@ RUN /usr/local/bin/uv pip install --python /opt/hermes/.venv/bin/python \
     opentelemetry-sdk \
     opentelemetry-exporter-otlp-proto-http
 
-# Apply upstream PR #51567 patch to google_chat adapter to fix nested inline formatting leaks (GC0, GC1, etc.)
-RUN sed -i 's/for key, value in placeholders.items():/for key, value in reversed(list(placeholders.items())):/' /opt/hermes/plugins/platforms/google_chat/adapter.py && \
-    grep -q "reversed(list(placeholders.items()))" /opt/hermes/plugins/platforms/google_chat/adapter.py && \
-    python3 -c 'p = "/opt/hermes/plugins/platforms/google_chat/adapter.py"; c = open(p).read(); c = c.replace("^spaces/[A-Za-z0-9_-]+/threads/[A-Za-z0-9_-]+$", "^spaces/[A-Za-z0-9_.-]+/threads/[A-Za-z0-9_.-]+$"); open(p, "w").write(c)' && \
-    grep -q "spaces/\[A-Za-z0-9_.-]" /opt/hermes/plugins/platforms/google_chat/adapter.py && \
-    python3 -c 'p = "/opt/hermes/plugins/platforms/google_chat/adapter.py"; c = open(p).read(); c = c.replace("url = f\"https://chat.googleapis.com/v1/{chat_id}/messages\"", "url = f\"https://chat.googleapis.com/v1/{chat_id}/messages\"\n    if thread_id:\n        url += \"?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD\""); open(p, "w").write(c)' && \
-    grep -q "messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD" /opt/hermes/plugins/platforms/google_chat/adapter.py
-
-# Patch send_message_tool.py to support google_chat target refs
-RUN python3 -c 'p = "/opt/hermes/tools/send_message_tool.py"; c = open(p).read(); c = c.replace("    if platform_name == \"yuanbao\":\n        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)\n        if match:\n            return match.group(1), None, True\n        if target_ref.strip().isdigit():\n            return f\"group:{target_ref.strip()}\", None, True\n        return None, None, False", "    if platform_name == \"yuanbao\":\n        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)\n        if match:\n            return match.group(1), None, True\n        if target_ref.strip().isdigit():\n            return f\"group:{target_ref.strip()}\", None, True\n        return None, None, False\n    if platform_name == \"google_chat\":\n        parts = target_ref.split(\":\")\n        if len(parts) == 2:\n            return parts[0].strip(), parts[1].strip(), True\n        elif len(parts) == 1:\n            val = parts[0].strip()\n            if \"/messages/\" in val:\n                space_name, msg_part = val.split(\"/messages/\", 1)\n                thread_key = msg_part.split(\".\")[0]\n                thread_name = f\"{space_name}/threads/{thread_key}\"\n                return space_name, thread_name, True\n            elif \"/threads/\" in val:\n                space_name = val.split(\"/threads/\")[0]\n                return space_name, val, True\n            return val, None, True"); open(p, "w").write(c)' && \
-    grep -q "platform_name == \"google_chat\"" /opt/hermes/tools/send_message_tool.py
 
 # 4. Clone and build mcp-remote proxy
 RUN git clone https://github.com/bradhoekstra/mcp-remote.git /opt/mcp-remote && \
