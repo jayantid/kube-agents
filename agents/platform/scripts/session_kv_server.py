@@ -56,7 +56,7 @@ def create_session() -> Dict[str, str]:
     return {"sessionID": session_id}
 
 
-def trigger_agent_troubleshooter(session_id: str, alert_msg: str) -> None:
+def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[str, Any]) -> None:
     """Post the warning alert to GChat, then call local gateway API to execute agent loop."""
     # 1. Trigger the red alert warning to Google Chat with --json to parse message_id
     thread_id = None
@@ -123,10 +123,20 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str) -> None:
         print(f"Failed to connect to gateway API server: {exc}")
         return
 
+    event_reason = payload.get("reason", "Unknown")
+    namespace = payload.get("namespace", "default")
+    object_kind = payload.get("kindOfObject", "Pod")
+    object_name = payload.get("name", "")
+    message = payload.get("message", "")
+
     # Trigger agent execution turn in the session
     agent_query = (
         f"Analyze the following Kubernetes event warning on GKE cluster '{os.environ.get('GKE_CLUSTER_NAME', 'platform-agent-host')}' "
         f"for the active session '{session_id}'.\n\n"
+        f"**Event Details:**\n"
+        f"• *Resource:* {namespace}/{object_kind}/{object_name}\n"
+        f"• *Event Reason:* {event_reason}\n"
+        f"• *Warning Message:* {message}\n\n"
         f"When calling your send_notification tool to report findings, you MUST pass this exact session ID: '{session_id}' as the session_id argument so it routes as a threaded reply to the warning alert.\n\n"
         f"When done, post your final diagnostic report to Google Chat (using your notification tool) formatted exactly like this:\n\n"
         f"🛠️ *Incident Triage Report* 🛠️\n\n"
@@ -185,7 +195,7 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
     )
     
     # Delegate the heavy REST API call to FastAPI BackgroundTasks to keep response times sub-millisecond
-    background_tasks.add_task(trigger_agent_troubleshooter, session_id, alert_msg)
+    background_tasks.add_task(trigger_agent_troubleshooter, session_id, alert_msg, payload)
     
     return {"status": "injected"}
 
