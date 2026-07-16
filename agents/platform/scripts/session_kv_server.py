@@ -69,6 +69,22 @@ def clean_workload_name(kind: str, name: str) -> str:
     return name
 
 
+def clean_reason_label(reason: str) -> str:
+    # E.g. FailedToDrainNode -> Failed to drain node
+    s = re.sub(r'(?<!^)(?=[A-Z])', ' ', reason).lower()
+    return s.capitalize()
+
+
+def clean_event_message(message: str) -> str:
+    msg = message.replace("PodDisruptionBudget", "PDB")
+    # Simplify PDB eviction violation message:
+    m = re.search(r"cannot be evicted:\s*(would violate PDB\s+(?:[^/]+/)?([a-zA-Z0-9_-]+))", msg)
+    if m:
+        clean_pdb = m.group(2)
+        return f"Eviction would violate PDB {clean_pdb}"
+    return msg
+
+
 def get_severity_details(event_type: str, reason: str) -> tuple[str, str]:
     event_lower = event_type.lower()
     reason_lower = reason.lower()
@@ -246,11 +262,12 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
 
     severity_emoji, severity_label = get_severity_details(event_type, event_reason)
     clean_name = clean_workload_name(object_kind, object_name)
+    clean_reason = clean_reason_label(event_reason)
+    clean_msg = clean_event_message(message)
 
     # Construct a pretty notification alert
     alert_msg = (
-        f"{severity_emoji} *{severity_label}:* {event_reason}\n"
-        f"`{namespace}/{clean_name}` — {message}\n"
+        f"{severity_emoji} *{severity_label}:* {clean_reason} `{namespace}/{clean_name}` — {clean_msg}\n"
         f"🌱 _Digging down to the root cause..._"
     )
     
