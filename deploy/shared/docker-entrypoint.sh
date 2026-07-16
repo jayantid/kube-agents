@@ -55,7 +55,7 @@ if [ -f "$TARGET_DIR/scripts/k8s-event-watcher" ]; then
         --mode=per-incident \
         --owner=platform-agent \
         --cluster-name="${GKE_CLUSTER_NAME:-platform-agent-host}" \
-        --dedup-window=5m \
+        --dedup-window=24h \
         --dedup-persist="$TARGET_DIR/watcher-dedup-cache.json" \
         --unhealthy-min-count=3 \
         --reason=CrashLoopBackOff,ImagePullBackOff,ErrImagePull,OOMKilled,FailedMount,FailedScheduling,BackOff,Unhealthy,NetworkNotReady,NodeNotReady,Evicted,FailedToDrainNode >"$TARGET_DIR/logs/k8s-event-watcher.log" 2>&1 &

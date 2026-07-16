@@ -19,6 +19,23 @@ _Crucially, you are strictly forbidden from executing direct, manual mutations. 
 
 Follow these steps to make, commit, and submit your GitOps suggestions asynchronously:
 
+### Step 0: Configure Git Credentials & Clone the Repository
+
+Before you can pull, clone, or modify any files, you must configure git credentials using the pre-packaged helper.
+
+1. Run the credentials initialization script:
+   ```bash
+   python3 /opt/defaults/scripts/github_token_refresh.py
+   ```
+2. Clone the GitOps repository:
+   ```bash
+   git clone https://github.com/gke-agentic/kube-agents-staging-infra.git /opt/data/kube-agents-staging-infra
+   ```
+3. Change directory to the cloned workspace:
+   ```bash
+   cd /opt/data/kube-agents-staging-infra
+   ```
+
 ### Step 1: Prepare the Workspace Changes & Git Branch
 
 1.  Ensure you are on the `main` branch and have pulled the latest changes:

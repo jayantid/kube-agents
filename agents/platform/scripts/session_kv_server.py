@@ -38,6 +38,49 @@ def init_db() -> None:
         )
 
 
+def register_gateway_routing(session_id: str, platform: str, chat_id: str, thread_id: str) -> None:
+    gateway_db = "/opt/data/state.db"
+    if not os.path.exists(gateway_db):
+        print(f"[KV-Server] Gateway DB not found at {gateway_db}; skipping routing registration.")
+        return
+    
+    import time
+    now_iso = datetime.utcnow().isoformat()
+    scope = "/opt/data/sessions"
+    session_key = f"agent:main:{platform}:group:{chat_id}:{thread_id}"
+    
+    entry = {
+        "session_key": session_key,
+        "session_id": session_id,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "display_name": chat_id,
+        "platform": platform,
+        "chat_type": "group",
+        "origin": {
+            "platform": platform,
+            "chat_id": chat_id,
+            "chat_name": chat_id,
+            "chat_type": "group",
+            "thread_id": thread_id
+        }
+    }
+    
+    try:
+        with sqlite3.connect(gateway_db, timeout=5.0) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO gateway_routing (scope, session_key, entry_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (scope, session_key, json.dumps(entry), time.time())
+            )
+            print(f"[KV-Server] Registered gateway routing for session {session_id} on {platform} thread {thread_id}")
+    except Exception as exc:
+        print(f"[KV-Server] Failed to insert gateway routing entry: {exc}")
+
+
+
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok"}
@@ -164,6 +207,8 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
                         "UPDATE session_metadata SET metadata = ? WHERE session_id = ?",
                         (json.dumps(meta), session_id)
                     )
+                    # Register gateway routing so the thread replies are forwarded to this session
+                    register_gateway_routing(session_id, active_platform, meta["chat_id"], thread_id)
         except Exception as exc:
             print(f"Failed to update session metadata with thread_id: {exc}")
 
