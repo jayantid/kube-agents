@@ -151,6 +151,9 @@ func renderConfigYAML(agent *agentv1alpha1.PlatformAgent) string {
 				"GOOGLE_CHAT_PROJECT_ID":        "${GOOGLE_CHAT_PROJECT_ID}",
 				"GOOGLE_CHAT_SUBSCRIPTION_NAME": "${GOOGLE_CHAT_SUBSCRIPTION_NAME}",
 				"API_SERVER_KEY":                "${API_SERVER_KEY}",
+				"SLACK_BOT_TOKEN":               "${SLACK_BOT_TOKEN}",
+				"SLACK_APP_TOKEN":               "${SLACK_APP_TOKEN}",
+				"SLACK_HOME_CHANNEL":            "${SLACK_HOME_CHANNEL}",
 			},
 		},
 		"agent_common": map[string]any{
