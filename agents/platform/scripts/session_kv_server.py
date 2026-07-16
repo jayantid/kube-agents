@@ -80,7 +80,7 @@ def get_severity_details(event_type: str, reason: str) -> tuple[str, str]:
     )
     
     if is_blocker:
-        return "🔴", "Blocker"
+        return "🔴", "Critical"
     elif event_lower == "warning":
         return "🟡", "Warning"
     else:
