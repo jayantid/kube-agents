@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import urllib.error
@@ -55,13 +56,35 @@ def create_session() -> Dict[str, str]:
         )
     return {"sessionID": session_id}
 
-def get_severity_emoji(event_type: str, reason: str) -> str:
-    if event_type.lower() == "warning":
-        critical_reasons = {"oomkilled", "crashloopbackoff", "errimagepull", "imagepullbackoff", "failedmount"}
-        if reason.lower() in critical_reasons:
-            return "🔴" # Critical
-        return "🟡" # Warning
-    return "🔵" # Normal/Info
+def clean_workload_name(kind: str, name: str) -> str:
+    if kind.lower() == "pod":
+        # Match pattern of deployment replica (e.g. -6cfdb6b98b-zwv24)
+        m = re.match(r"^(.*?)-[a-f0-9]{8,10}-[a-z0-9]{5}$", name)
+        if m:
+            return m.group(1)
+        # Match pattern of statefulset/job/pod replica (e.g. -0 or -abcde)
+        m = re.match(r"^(.*?)-[a-z0-9]{5}$", name)
+        if m:
+            return m.group(1)
+    return name
+
+
+def get_severity_details(event_type: str, reason: str) -> tuple[str, str]:
+    event_lower = event_type.lower()
+    reason_lower = reason.lower()
+    
+    # Blocker if it blocks drain, eviction, or scheduling
+    is_blocker = (
+        event_lower == "warning" and 
+        any(x in reason_lower for x in ("drain", "evict", "schedule", "capacity", "oomkilled", "crashloopbackoff", "failedmount"))
+    )
+    
+    if is_blocker:
+        return "🔴", "Blocker"
+    elif event_lower == "warning":
+        return "🟡", "Warning"
+    else:
+        return "🔵", "Info"
 
 
 
@@ -221,13 +244,14 @@ def inject_message(session_id: str, request_data: Dict[str, Any], background_tas
     count = payload.get("count", 1)
     event_type = payload.get("type", "Warning")
 
-    severity_emoji = get_severity_emoji(event_type, event_reason)
+    severity_emoji, severity_label = get_severity_details(event_type, event_reason)
+    clean_name = clean_workload_name(object_kind, object_name)
 
     # Construct a pretty notification alert
     alert_msg = (
-        f"{severity_emoji} *{event_reason}* · `{namespace}/{object_kind}/{object_name}` ({count}x)\n"
-        f"```{message}```\n"
-        f"🤖 _Autonomous diagnostic run started..._"
+        f"{severity_emoji} *{severity_label}:* {event_reason}\n"
+        f"`{namespace}/{clean_name}` — {message}\n"
+        f"🌱 _Digging down to the root cause..._"
     )
     
     # Delegate the heavy REST API call to FastAPI BackgroundTasks to keep response times sub-millisecond
