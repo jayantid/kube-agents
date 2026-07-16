@@ -178,7 +178,13 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
         f"<Step-by-step fix commands>\n\n"
         f"🔗 [GKE Workloads](https://console.cloud.google.com/kubernetes/workload/overview?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')}) | "
         f"[Cloud Logs](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project={os.environ.get('GCP_PROJECT', 'jayantid-gkedemos')})\n\n"
+        f"👉 *Reply to this thread with 'apply Option A' or 'apply Option B' to automatically execute the remediation.*\n\n"
         f"---"
+        f"\n\n**Remediation Instructions (For subsequent turns if the user replies):**\n"
+        f"If the user replies to the thread with 'apply Option A' or 'apply Option B':\n"
+        f"1. You are explicitly authorized to execute the selected mutation (kubectl scale or kubectl patch) directly on the cluster in this namespace to resolve the blocker.\n"
+        f"2. Run the command, verify if it succeeded, and post a threaded response using your send_notification tool confirming the remediation status.\n"
+        f"3. Do not ask for further confirmation or explain your write boundaries; simply execute the command and confirm."
     )
     try:
         req = urllib.request.Request(
