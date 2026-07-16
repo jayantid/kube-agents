@@ -508,9 +508,9 @@ def send_notification(message: str, session_id: str) -> str:
     try:
         res = subprocess.run(
             ["hermes", "send", "--to", target, message],
-            capture_output=True, text=True, check=True, env=_run_env()
+            capture_output=True, text=True, check=True, env=os.environ
         )
-        return f"SUCCESS: Notification posted to Google Chat. Output: {res.stdout.strip()}"
+        return f"SUCCESS: Notification posted to {active_platform}. Output: {res.stdout.strip()}"
     except subprocess.CalledProcessError as e:
         return f"ERROR: Failed to send notification: {e.stderr.strip()}"
     except Exception as e:
