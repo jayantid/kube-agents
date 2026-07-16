@@ -59,8 +59,12 @@ else
   if [ -n "${SLACK_BOT_TOKEN:-}" ]; then
     IFS=',' read -r -a existing_bot <<< "$SLACK_BOT_TOKEN"
     print_info "Detected ${#existing_bot[@]} Slack bot token(s) currently configured."
-    echo -ne "  ${C_CYAN}Do you want to (a)dd additional tokens, (r)eplace existing tokens, or (k)eep current configuration? [a/r/K]: ${C_RESET}"
-    read -r action_bot
+    if [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline; then
+      action_bot="k"
+    else
+      echo -ne "  ${C_CYAN}Do you want to (a)dd additional tokens, (r)eplace existing tokens, or (k)eep current configuration? [a/r/K]: ${C_RESET}"
+      read -r action_bot
+    fi
     action_bot=$(echo "${action_bot:-k}" | tr '[:upper:]' '[:lower:]')
 
     if [ "$action_bot" = "a" ] || [ "$action_bot" = "add" ]; then
@@ -70,15 +74,19 @@ else
       loop_add_tokens "SLACK_BOT_TOKEN" "xoxb-..." 1
     fi
   else
-    echo -ne "  ${C_CYAN}Enter your primary SLACK_BOT_TOKEN (xoxb-...): ${C_RESET}"
-    read -s -r input_bot
-    echo ""
-    if [ -n "$input_bot" ]; then
-      export SLACK_BOT_TOKEN="${input_bot}"
-      echo -ne "  ${C_CYAN}Do you want to configure additional Slack bot tokens for other workspaces? (y/N): ${C_RESET}"
-      read -r reply_multi
-      if [[ "$reply_multi" =~ ^[Yy]$ ]]; then
-        loop_add_tokens "SLACK_BOT_TOKEN" "xoxb-..." 2
+    if [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline; then
+      print_warning "No SLACK_BOT_TOKEN provided in non-interactive mode."
+    else
+      echo -ne "  ${C_CYAN}Enter your primary SLACK_BOT_TOKEN (xoxb-...): ${C_RESET}"
+      read -s -r input_bot
+      echo ""
+      if [ -n "$input_bot" ]; then
+        export SLACK_BOT_TOKEN="${input_bot}"
+        echo -ne "  ${C_CYAN}Do you want to configure additional Slack bot tokens for other workspaces? (y/N): ${C_RESET}"
+        read -r reply_multi
+        if [[ "$reply_multi" =~ ^[Yy]$ ]]; then
+          loop_add_tokens "SLACK_BOT_TOKEN" "xoxb-..." 2
+        fi
       fi
     fi
   fi
@@ -96,8 +104,12 @@ else
   if [ -n "${SLACK_APP_TOKEN:-}" ]; then
     IFS=',' read -r -a existing_app <<< "$SLACK_APP_TOKEN"
     print_info "Detected ${#existing_app[@]} Slack app token(s) currently configured."
-    echo -ne "  ${C_CYAN}Do you want to (r)eplace existing app tokens or (k)eep current configuration? [r/K]: ${C_RESET}"
-    read -r action_app
+    if [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline; then
+      action_app="k"
+    else
+      echo -ne "  ${C_CYAN}Do you want to (r)eplace existing app tokens or (k)eep current configuration? [r/K]: ${C_RESET}"
+      read -r action_app
+    fi
     action_app=$(echo "${action_app:-k}" | tr '[:upper:]' '[:lower:]')
 
     if [ "$action_app" = "r" ] || [ "$action_app" = "replace" ]; then
@@ -106,10 +118,14 @@ else
   fi
 
   if [ -z "${SLACK_APP_TOKEN:-}" ]; then
-    echo -ne "  ${C_CYAN}Enter your SLACK_APP_TOKEN (xapp-...): ${C_RESET}"
-    read -s -r INPUT_APP_TOKEN
-    echo ""
-    export SLACK_APP_TOKEN="${INPUT_APP_TOKEN:-}"
+    if [ "${NO_CONFIRM:-0}" -eq 1 ] || is_ci_pipeline; then
+      print_warning "No SLACK_APP_TOKEN provided in non-interactive mode."
+    else
+      echo -ne "  ${C_CYAN}Enter your SLACK_APP_TOKEN (xapp-...): ${C_RESET}"
+      read -s -r INPUT_APP_TOKEN
+      echo ""
+      export SLACK_APP_TOKEN="${INPUT_APP_TOKEN:-}"
+    fi
   fi
 fi
 

@@ -469,7 +469,24 @@ def send_notification(message: str, session_id: str) -> str:
     import json
     import os
     
-    target = "google_chat" # default fallback
+    def get_active_platform() -> str:
+        try:
+            import yaml
+            with open("/opt/data/config.yaml", "r") as f:
+                cfg = yaml.safe_load(f) or {}
+            platforms = cfg.get("platforms", {})
+            if platforms.get("slack", {}).get("enabled"):
+                return "slack"
+            if platforms.get("google_chat", {}).get("enabled"):
+                return "google_chat"
+        except Exception:
+            pass
+        if os.environ.get("SLACK_BOT_TOKEN"):
+            return "slack"
+        return "google_chat"
+
+    active_platform = get_active_platform()
+    target = active_platform # default fallback
     
     if session_id:
         try:
@@ -483,7 +500,7 @@ def send_notification(message: str, session_id: str) -> str:
                     chat_id = meta.get("chat_id")
                     if thread_id and chat_id:
                         # Construct explicit target for send_message_tool
-                        target = f"google_chat:{chat_id}:{thread_id}"
+                        target = f"{active_platform}:{chat_id}:{thread_id}"
         except Exception as exc:
             # Fail-open: log error but fall back to default target
             print(f"Failed to resolve session metadata for threading: {exc}")

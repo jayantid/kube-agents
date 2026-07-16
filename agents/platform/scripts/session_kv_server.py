@@ -65,21 +65,39 @@ def get_severity_emoji(event_type: str, reason: str) -> str:
 
 
 
+def get_active_platform() -> str:
+    try:
+        import yaml
+        with open("/opt/data/config.yaml", "r") as f:
+            cfg = yaml.safe_load(f) or {}
+        platforms = cfg.get("platforms", {})
+        if platforms.get("slack", {}).get("enabled"):
+            return "slack"
+        if platforms.get("google_chat", {}).get("enabled"):
+            return "google_chat"
+    except Exception as exc:
+        print(f"Failed to parse config.yaml for active platform: {exc}")
+    if os.environ.get("SLACK_BOT_TOKEN"):
+        return "slack"
+    return "google_chat"
+
+
 def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[str, Any]) -> None:
-    """Post the warning alert to GChat, then call local gateway API to execute agent loop."""
-    # 1. Trigger the red alert warning to Google Chat with --json to parse message_id
+    """Post the warning alert to the active chat platform, then call local gateway API to execute agent loop."""
+    active_platform = get_active_platform()
+    # 1. Trigger the red alert warning to Chat with --json to parse message_id
     thread_id = None
     try:
         res = subprocess.run(
-            ["hermes", "send", "--json", "--to", "google_chat", alert_msg],
+            ["hermes", "send", "--json", "--to", active_platform, alert_msg],
             check=True,
             capture_output=True,
             text=True
         )
-        gchat_resp = json.loads(res.stdout)
-        msg_id = gchat_resp.get("message_id", "")
+        resp = json.loads(res.stdout)
+        msg_id = resp.get("message_id", "")
         if msg_id:
-            if "/messages/" in msg_id:
+            if active_platform == "google_chat" and "/messages/" in msg_id:
                 space_part, msg_part = msg_id.split("/messages/", 1)
                 thread_key = msg_part.split(".")[0]
                 thread_id = f"{space_part}/threads/{thread_key}"
@@ -99,7 +117,10 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
                 if row:
                     meta = json.loads(row[0])
                     meta["thread_id"] = thread_id
-                    meta["chat_id"] = thread_id.split("/threads/")[0]
+                    if active_platform == "slack":
+                        meta["chat_id"] = os.environ.get("SLACK_HOME_CHANNEL", "")
+                    else:
+                        meta["chat_id"] = thread_id.split("/threads/")[0]
                     conn.execute(
                         "UPDATE session_metadata SET metadata = ? WHERE session_id = ?",
                         (json.dumps(meta), session_id)
@@ -147,7 +168,7 @@ def trigger_agent_troubleshooter(session_id: str, alert_msg: str, payload: Dict[
         f"• *Event Reason:* {event_reason}\n"
         f"• *Warning Message:* {message}\n\n"
         f"When calling your send_notification tool to report findings, you MUST pass this exact session ID: '{session_id}' as the session_id argument so it routes as a threaded reply to the warning alert.\n\n"
-        f"When done, post your final diagnostic report to Google Chat (using your notification tool) formatted exactly like this:\n\n"
+        f"When done, post your final diagnostic report to the chat platform (using your notification tool) formatted exactly like this:\n\n"
         f"📋 *Incident Triage Report*\n\n"
         f"*Issue:*\n"
         f"<Concise description of the problem>\n\n"
