@@ -42,8 +42,8 @@ domains:
     name: Consistency (fleet-consistency-drift)
     journey: Drift sweep compares each cluster against the live-fleet majority
   - slug: remediation
-    name: Remediation (github-issue-resolver)
-    journey: Triages a planted issue and files its report; nothing applied directly
+    name: Remediation (fleet-audit cron remediation, RCA chat prompt via submit-suggestion)
+    journey: A proposed fix lands as a pull request; nothing applied directly
   - slug: cluster-debugging
     name: Cluster debugging
     journey: Debugs a workload; the Cluster Agent stays read-only and inside its own cluster
