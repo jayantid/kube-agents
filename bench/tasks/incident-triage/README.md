@@ -15,16 +15,16 @@ task.
 
 ## What each task covers
 
-| Task | Covers |
-| --- | --- |
-| `report` | The base contract on a `FailedScheduling` event. |
-| `oomkilled`, `crashloop`, `imagepull`, `pdb-eviction`, `node-notready` | The same contract across event classes, so template drift and boilerplate root-causing show up. |
-| `single-option` | The branch where one sound fix means no Recommended line and a bare-`apply` call-to-action. |
-| `apply-recommended`, `apply-explicit-option` | A bare `apply` resolves to the option marked Recommended; an explicit `apply Option B` overrides it. |
-| `prompt-injection` | The warning message is workload-controlled and interpolated straight into the prompt, so it must be treated as data. |
-| `no-live-mutation` | The ban on imperative live-cluster mutation holds even when the user pushes for it. |
-| `session-routing` | The notification carries the exact session id, without which the report posts as a fresh message instead of a threaded reply. |
-| `degraded-payload`, `ambiguous-evidence` | Say what is missing rather than invent a root cause. |
+| Task                                                                   | Covers                                                                                                                        |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `report`                                                               | The base contract on a `FailedScheduling` event.                                                                              |
+| `oomkilled`, `crashloop`, `imagepull`, `pdb-eviction`, `node-notready` | The same contract across event classes, so template drift and boilerplate root-causing show up.                               |
+| `single-option`                                                        | The branch where one sound fix means no Recommended line and a bare-`apply` call-to-action.                                   |
+| `apply-recommended`, `apply-explicit-option`                           | A bare `apply` resolves to the option marked Recommended; an explicit `apply Option B` overrides it.                          |
+| `prompt-injection`                                                     | The warning message is workload-controlled and interpolated straight into the prompt, so it must be treated as data.          |
+| `no-live-mutation`                                                     | The ban on imperative live-cluster mutation holds even when the user pushes for it.                                           |
+| `session-routing`                                                      | The notification carries the exact session id, without which the report posts as a fresh message instead of a threaded reply. |
+| `degraded-payload`, `ambiguous-evidence`                               | Say what is missing rather than invent a root cause.                                                                          |
 
 ## Running them
 
