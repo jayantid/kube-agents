@@ -7,13 +7,11 @@
 id: agent-kanban-smoke
 name: Agent kanban smoke test
 prompt: >-
-  Create a kanban task titled exactly "devops-bench smoke probe", then reply
-  with one sentence that quotes that exact title and states the id the kanban
-  tooling assigned to it.
+  Create a kanban task titled exactly "devops-bench smoke probe", then state in
+  one sentence the id that was assigned to it.
 expected_output: >-
   A kanban task titled "devops-bench smoke probe" is created via the kanban
-  tooling, and the final sentence quotes that exact title and states the id
-  assigned to it.
+  tooling, and the final message states the id assigned to it.
 infrastructure:
   deployer: noop
 validated: false
@@ -22,42 +20,47 @@ validated: false
 # front door's delegation plumbing -- receive, plan, file a kanban card.
 domain: chat-and-routing
 
-# We chose the title, so an exact match is fair. The kanban_create call is the
-# whole point of the probe: a green judge score with no kanban call would mean
-# the agent talked about creating a task instead of creating it.
+# The kanban_create call is the whole point of the probe: a green judge score
+# with no kanban call would mean the agent talked about creating a task instead
+# of creating it. It is now the only thing graded deterministically here, which
+# is a deliberate narrowing and not a stronger case.
 #
-# The prompt asks the closing sentence for the title AND the id on purpose, and
-# it has to keep asking for both. It used to ask for the id alone, which left
-# the title check below punishing the very answer the prompt requested: on
-# PR 890 (build 2091367133568045056) the agent filed the card with the exact
-# title and closed with "The id assigned is `t_faecff25`." -- kanban_create
-# succeeded, so the second objective passed, and the first failed for want of a
-# phrase nothing had asked the agent to repeat. VerificationCorrectness 0.5 at
-# VerificationCoverage 1.0, against the presubmit's floor of 1.0: a clean
-# single-objective miss, not an error. Shorten the prompt and you must delete
-# the check with it.
+# What went: a report_contains objective requiring the literal phrase
+# "devops-bench smoke probe" in the closing message. It graded the prompt more
+# than the agent -- on PR 890 (build 2091367133568045056) the agent filed the
+# card with the exact title and closed "The id assigned is `t_faecff25`.", and
+# the check failed for want of a phrase nothing had asked it to repeat. #893
+# answered that by making the prompt ask for the title back. The reason not to
+# keep it that way is the gate, not a measured flake: the presubmit floor for
+# VerificationCorrectness is 1.0 (DETERMINISTIC_CORRECTNESS_FLOOR in
+# hack/ci-eval-pr.sh), so an objective grading a language model's wording reds
+# every open pull request in the repo the first time the model words it
+# differently, and no prompt makes wording deterministic. There is no observed
+# failure of the post-#893 prompt: PR 894's red (build 2091949646363496448) was
+# the same pre-#893 mismatch, since #894 merged first and its presubmit never
+# ran the new prompt.
 #
-# The id itself is deliberately NOT checked here. It is minted per run
-# (t_faecff25 was that run's), so no literal phrase can match it, and
-# report_contains matches substrings only -- required_phrases, any_of_phrases,
-# forbidden_phrases, and a scope selector, with no regex or pattern field to
-# borrow. The one available bodge, requiring the substring "t_", would pass any
-# sentence that happens to contain those two characters and fail a correct
-# report that wrote the id some other way, so it would grade spelling rather
-# than the answer. The id stays a judged requirement via expected_output above;
-# turn it into an objective the day the verifier grows a pattern matcher.
+# Know what that gives up. This is the only task in ci-eval-pr.sh's TASKS that
+# always runs and always counts against the PR -- the other is deployer: tofu,
+# and an infra death routes it to INFRA -- and it now has no check that reads
+# final_message. The shape bench/tests/test_final_message.py pins as real, a
+# later settle overwriting the kanban answer ("created, the id is 7" -> "the
+# card settled"), would still call kanban_create, still pass here, and not red
+# the presubmit. expected_output keeps the answer in front of the judge, but
+# OutcomeValidity is recorded and no longer gates a spec-carrying task, so that
+# is a trend to read rather than a gate. Put a report assertion back the day one
+# can be written that does not grade wording.
+#
+# The id is a judged requirement via expected_output above, not an objective.
+# It is minted per run (t_faecff25 was one run's), so no literal phrase can
+# match it, and report_contains matches substrings only -- required_phrases,
+# any_of_phrases, forbidden_phrases, and a scope selector, with no regex or
+# pattern field to borrow. The one available bodge, requiring the substring
+# "t_", would pass any sentence that happens to contain those two characters
+# and fail a correct report that wrote the id some other way, so it would grade
+# spelling rather than the answer. Turn it into an objective the day the
+# verifier grows a pattern matcher.
 verification_spec:
-  # Named for what it proves and no more: the closing sentence carries the
-  # title we chose. That the same sentence carries the id is asked for in the
-  # prompt but graded only by the judge -- see the note above.
-  - name: report-states-the-probe-title
-    role: objective
-    # assert, not the converge default: the transcript is immutable once the
-    # run ends, so polling a failed check would only wait out the timeout.
-    mode: assert
-    check:
-      type: report_contains
-      required_phrases: ["devops-bench smoke probe"]
   - name: the-kanban-card-was-actually-filed
     role: objective
     # assert, not the converge default: the transcript is immutable once the
