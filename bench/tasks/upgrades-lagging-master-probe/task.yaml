@@ -92,6 +92,10 @@ verification_spec:
           "out of date",
           "outdated",
           "one minor",
+          "a minor",
+          "upgrade",
+          "older",
+          "update available",
           "newer version",
         ]
   - name: no-invented-cves
