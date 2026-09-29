@@ -737,6 +737,7 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # upstream's body untouched. slack_presenter.py is staged here only so the
 # verifier can import it; the image ships it under /opt/defaults/scripts. Also
 # rides this COPY and RUN. See deploy/docker/patches/slack_ux_reactions.py.
+#
 # Slack agent view, behind KAGE_SLACK_UX (off by default; off leaves both files
 # behaving as upstream). With it on, every manifest but --no-assistant's
 # subscribes agent_session_stopped so Slack can offer Stop, --agent-view
