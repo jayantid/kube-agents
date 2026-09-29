@@ -744,7 +744,7 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # message. Registered after the plugin action handlers by
 # gateway/slack_ux_clicks.py; with the flag off nothing is registered. Also rides
 # this COPY and RUN. See deploy/docker/patches/slack_ux_clicks.py.
-COPYdeploy/docker/patches/apply_slack_code_emphasis.py \
+COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
      deploy/docker/patches/apply_google_chat_attachment_notice.py \
      deploy/docker/patches/verify_google_chat_attachment_notice.py \

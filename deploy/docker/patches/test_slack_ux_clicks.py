@@ -205,11 +205,19 @@ class _Client:
 
 
 class _Adapter:
-    def __init__(self, authorized=True, fail=()):
+    def __init__(self, authorized=True, fail=(), allowed_channels=(), disable_dms=False):
         self.authorized = authorized
         self.log = []
         self.acks = 0
         self.fail = fail
+        self.allowed_channels = set(allowed_channels)
+        self.disable_dms = disable_dms
+
+    def _slack_allowed_channels(self):
+        return self.allowed_channels
+
+    def _slack_disable_dms(self):
+        return self.disable_dms
 
     async def _begin_interaction(self, ack, body, action, kind, *, team_scoped=True):
         await ack()
@@ -251,8 +259,13 @@ def _message(thread=THREAD):
     return message
 
 
-def _choice(index=1, value="Leave it", **message_kwargs):
-    action = {"action_id": f"kage.choice.{index}", "value": value, "action_ts": ACTION_TS}
+def _choice(index=1, value="Leave it", shown=None, **message_kwargs):
+    action = {
+        "action_id": f"kage.choice.{index}",
+        "text": {"type": "plain_text", "text": value if shown is None else shown, "emoji": True},
+        "value": value,
+        "action_ts": ACTION_TS,
+    }
     return {"message": _message(**message_kwargs)}, action
 
 
@@ -333,6 +346,61 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(echo["text"], "↳ <@U1>: &lt;!channel&gt; &amp; go")
         self.assertNotIn("<!channel>", update["blocks"][-1]["elements"][0]["text"])
         self.assertEqual(turn["text"], "<!channel> & go")
+
+    def test_turn_and_echo_carry_the_shown_text_never_the_longer_value(self):
+        label = "Yes, roll back checkout-gateway to the previous revision in namespace prod " * 3
+        button = presenter.blocks_answer("h", choices=[label])[-1]["elements"][0]
+        shown = button["text"]["text"]
+        self.assertLess(len(shown), len(button["value"]))
+        adapter = _Adapter()
+        self._answer(adapter, *_choice(0, button["value"], shown=shown))
+        update, echo, turn = (entry[1] for entry in adapter.log)
+        self.assertEqual(turn["text"], shown)
+        self.assertEqual(echo["text"], f"↳ <@U1>: {shown}")
+        self.assertEqual(update["blocks"][-1]["elements"][0]["text"], f"✓ <@U1>: {shown}")
+
+    def test_a_click_with_no_shown_text_does_nothing(self):
+        adapter = _Adapter()
+        body, action = _choice()
+        del action["text"]
+        self._answer(adapter, body, action)
+        self.assertEqual(adapter.log, [])
+
+    def test_command_shaped_label_is_an_answer_not_a_command(self):
+        for label in ("/stop", "!approve"):
+            with self.subTest(label=label):
+                importlib.reload(runtime)
+                adapter = _Adapter()
+                self._answer(adapter, *_choice(value=label))
+                turn = adapter.log[-1][1]
+                self.assertEqual(turn["text"], runtime.COMMAND_GUARD + label)
+                self.assertFalse(turn["text"].lstrip().startswith(runtime.COMMAND_PREFIXES))
+                self.assertEqual(adapter.log[1][1]["text"], f"↳ <@U1>: {label}")
+
+    def test_click_where_a_typed_message_is_ignored_changes_nothing(self):
+        cases = {
+            "outside allowed_channels": _Adapter(allowed_channels={"C2"}),
+            "dm with dms disabled": _Adapter(disable_dms=True),
+        }
+        for name, adapter in cases.items():
+            with self.subTest(name):
+                importlib.reload(runtime)
+                if name.startswith("dm"):
+                    adapter._begin_interaction = self._dm_begin(adapter)
+                self._answer(adapter, *_choice())
+                self.assertEqual(adapter.log, [])
+        # A channel on the list still answers.
+        listed = _Adapter(allowed_channels={CHANNEL})
+        self._answer(listed, *_choice())
+        self.assertEqual(len(listed.log), 3)
+
+    def _dm_begin(self, adapter):
+        async def begin(ack, body, action, kind, *, team_scoped=True):
+            await ack()
+            message = body.get("message", {})
+            return (TEAM, action["action_id"], action["value"], message, message["ts"], "D1", "someone", USER)
+
+        return begin
 
     def test_top_level_message_threads_under_itself(self):
         adapter = _Adapter()

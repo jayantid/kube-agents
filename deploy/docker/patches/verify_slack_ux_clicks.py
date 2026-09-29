@@ -154,6 +154,12 @@ class _StubAdapter:
         message = body["message"]
         return (TEAM, action["action_id"], action["value"], message, message["ts"], CHANNEL, "someone", USER)
 
+    def _slack_allowed_channels(self):
+        return set()
+
+    def _slack_disable_dms(self):
+        return False
+
     def _get_client(self, chat_id, team_id=None):
         return _Client(self.log)
 
@@ -189,7 +195,10 @@ def _click():
             ],
         }
     }
-    return body, {"action_id": CHOICE_ID, "value": LABEL, "action_ts": ACTION_TS}
+    return body, {
+        "action_id": CHOICE_ID, "text": {"type": "plain_text", "text": LABEL}, "value": LABEL,
+        "action_ts": ACTION_TS,
+    }
 
 
 async def _drive(module) -> None:

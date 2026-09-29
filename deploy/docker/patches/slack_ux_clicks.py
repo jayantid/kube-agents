@@ -14,10 +14,15 @@ click does nothing.
 
 With the flag on, :func:`register` adds three listeners:
 
-* A choice button (``<prefix>.choice.<n>``, whose value is its label) is the
-  clicker answering in the thread. The click goes through the adapter's own
-  interactive authorization; an unlisted user's click is logged and changes
-  nothing. Then the message is rewritten with the choice buttons replaced by
+* A choice button (``<prefix>.choice.<n>``) is the clicker answering in the
+  thread with the button's text as Slack showed it. Never its ``value``: the
+  presenter clips the text to Slack's 75 characters but keeps up to 2000 in
+  the value, and a click must not send words the clicker did not see. A
+  label that starts like a command (``/`` or ``!``) is sent as text, since a
+  choice is an answer. The click goes through the adapter's own interactive
+  authorization; an unlisted user's click is logged and changes nothing, and
+  so does one in a channel or DM the adapter would ignore a typed message in.
+  Then the message is rewritten with the choice buttons replaced by
   a line naming who chose what, a short echo ("↳ @user: label") is posted in
   the thread, since a bot token cannot post as the user, and the label is fed
   to the adapter's message handler as that user's message in that thread, the
@@ -75,6 +80,14 @@ ANSWERED = "✓ <@{user}>: {label}"
 #: Slack mrkdwn control characters in a label, escaped before it is echoed so a
 #: label cannot mention a user or a channel.
 MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
+
+#: A choice label starting with one of these would run as a gateway command;
+#: the guard in front keeps it an answer. Zero-width, so the agent reads the label.
+COMMAND_PREFIXES = ("/", "!")
+COMMAND_GUARD = "\u200b"
+
+#: A DM channel id's first letter, as the adapter's message handler reads it.
+DM_CHANNEL_PREFIX = "D"
 
 #: A synthetic message's ts when the payload carries no ``action_ts``.
 FALLBACK_TS = "kage-click-{ts}-{action}-{user}"
@@ -148,6 +161,26 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
     return out
 
 
+def _shown_text(action: dict) -> str:
+    """The clicked button's text as Slack displayed it."""
+    text = action.get("text") or {}
+    return str(text.get("text") or "").strip() if isinstance(text, dict) else ""
+
+
+def _gated_out(adapter: Any, channel_id: str) -> bool:
+    """Whether the adapter would ignore a typed message in ``channel_id``: outside
+    ``allowed_channels``, or a DM with DMs disabled. Checked before anything is shown."""
+    allowed = adapter._slack_allowed_channels()
+    if allowed and channel_id not in allowed:
+        return True
+    return channel_id.startswith(DM_CHANNEL_PREFIX) and bool(adapter._slack_disable_dms())
+
+
+def _as_answer(label: str) -> str:
+    """``label`` as message text that cannot be parsed as a gateway command."""
+    return COMMAND_GUARD + label if label.startswith(COMMAND_PREFIXES) else label
+
+
 def _thread_ts(body: dict, message: dict, msg_ts: str) -> str:
     container = body.get("container") or {}
     return str(message.get("thread_ts") or container.get("thread_ts") or msg_ts)
@@ -158,9 +191,12 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     started = await adapter._begin_interaction(ack, body, action, kind)
     if started is None:
         return
-    team_id, action_id, value, message, msg_ts, channel_id, _user_name, user_id = started
-    label = STOP_LABEL if kind == STOP_KIND else str(value or "").strip()
+    team_id, action_id, _value, message, msg_ts, channel_id, _user_name, user_id = started
+    label = STOP_LABEL if kind == STOP_KIND else _shown_text(action)
     if not (label and msg_ts and channel_id and user_id):
+        return
+    if _gated_out(adapter, channel_id):
+        logger.info("slack_ux_clicks: ignoring a %s click in %s, which the adapter ignores", kind, channel_id)
         return
     key = (channel_id, msg_ts, kind)
     if key in _answered:
@@ -190,7 +226,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     synthetic = {
         "type": "message",
         "user": user_id,
-        "text": STOP_TEXT if kind == STOP_KIND else label,
+        "text": STOP_TEXT if kind == STOP_KIND else _as_answer(label),
         "channel": channel_id,
         # The click's own ts keeps the deduplicator from conflating this turn
         # with the echo or the clicked message, as a reaction trigger's does.
