@@ -68,5 +68,38 @@ agent asked are unaffected.
 
 ## Seen from a second account
 
-Pending: what the second account saw of the plan block, the edits, Working… and the title in the
-channel, the Stop control, and each button click.
+Jayanti checked the thread from their own account (a screenshot, after all the edits):
+
+| Check                                   | Seen                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session title                           | "probe seeded-a restarts" shows at the top of the thread.                                                                                                                                                                                                                                                                                            |
+| Working… in a channel thread            | "Kubeagents is working…" shows.                                                                                                                                                                                                                                                                                                                      |
+| Plan block                              | Renders collapsed to one row with a chevron: "✓ checking seeded-a ›" for the finished plan, and "◌ looking for seeded-z ›" with a spinner for the plan holding an `error` row and a `pending` row. The collapsed row showed a spinner, not a red step, so mock 6's red row may need the plan expanded or the failed task put in the collapsed title. |
+| Headline, buttons, container            | The bold headline, both buttons and the "why" fold render as mocked.                                                                                                                                                                                                                                                                                 |
+| Username override                       | The "check seeded-b (username override test)" message shows as the bot's.                                                                                                                                                                                                                                                                            |
+| Stop                                    | Not shown, which matches the `missing_agent_session_stopped_event_subscription` warning.                                                                                                                                                                                                                                                             |
+| Clicking "check seeded-b"               | Nothing visible: no message and no error. The gateway logged each click as an unhandled `block_actions`, so the click reached the install and was dropped there.                                                                                                                                                                                     |
+| "Open #2148 ↗" and expanding a plan row | Not reported yet.                                                                                                                                                                                                                                                                                                                                    |
+
+### What a prompt button needs, and whether it fits Phase 1
+
+Slack's side already works. Interactivity is on and Socket Mode delivers `block_actions` to the
+Hermes gateway with the clicker's id and the button's value. What is missing is all in Hermes:
+
+1. A handler for the action id. Without one, bolt logs "Unhandled request" and the click is
+   dropped. This is a `ctx.register_slack_action_handler` plugin that acks at once. It also covers
+   the no-op ack that URL buttons need.
+2. A way into the agent. The handler calls `ctx.inject_message(label, session_key=…)` with
+   `allow_gateway_injection: true` set for that plugin. It has to map the clicked message to its
+   session key, check `SLACK_ALLOWED_USERS`, and guard against double clicks, as the approval and
+   clarify handlers do.
+3. A visible echo, posted by the bot ("jayanti asked: check seeded-b"), because the message cannot
+   come from the user. That would take a user token: a per-user OAuth `chat:write` grant the
+   install does not collect and should not.
+
+A choice that answers the agent's own question (mock 5, the options in mock 9, the timezones in
+mock 15) needs step 1 plus a call that already exists (`kanban_comment` and `kanban_unblock`, or
+the clarify resolver). That fits Phase 1. A prompt button also needs step 2, a session-injection
+path nobody has exercised, and its echo is the bot's message, not the user's as the mocks draw it.
+That fits Phase 1 only if the click-handler task proves injection on one button first. Until then,
+the prompt buttons in mocks 6, 7, 8 and 15 fall back to their text, as `SHIP-PLAN.md` planned.
