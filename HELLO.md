@@ -53,7 +53,7 @@ because leaving it out costs trust.
 3. **Where and when results appear.** Running: "I'll post what I find here when it's done." Done:
    "My first look is done, and the summary is in this chat." "Here" is exactly true: delivery is
    bound to this chat. No minute estimate, since sweep time scales with fleet size and a failed
-   sweep never delivers (open question 2).
+   sweep never delivers (decision 2).
 4. **Changes come as pull requests a person reviews.** "If I think something should change, I'll
    open a pull request for your team to review." This is the enforced write path: the credential
    proxy refuses merge and approve, so the agent cannot complete its own change. It answers the
@@ -190,19 +190,13 @@ the greeting fires once per deployment. The seam is a one-shot marker:
 - **Red run:** `main` plus the seam commit alone, with today's prompts. The seam changes when the
   greeting fires, not what it says, so the red measures `main`'s text.
 
-## Open questions for you
+## Decisions (approved 2026-09-29)
 
-1. **The flag.** The shared brief puts everything behind `KAGE_SLACK_UX` (default off). If the new
-   prompts are gated, presubmit and nightly installs run with the flag off and the eval would
-   measure the old text. Proposal: the seam marker selects the new text for its one turn, so the
-   case measures what flag-on users get. Alternative: ship the hello ungated, since it is a prompt
-   change rather than presentation. Which?
-2. **A time estimate.** No number is proposed, because sweep time scales with fleet size and a
-   failed sweep never delivers. If you want "usually about N minutes", build-hello measures the
-   sweep on the seeded fleet first.
-3. **"Kage" everywhere.** The chat SOUL calls it the Planning Agent. If only the hello says Kage,
-   the next reply can contradict it. Proposal: 5b also changes the SOUL's identity line to Kage.
-4. **Fleet state in the done variant.** DECISIONS §15 wants the greeting to state fleet state. The
-   greeter cannot read the report; saying "3 clusters, one needs a look" needs the plugin to pass
-   the report's headline into the prompt. Proposal: not for Oct 6; the report itself carries the
-   state.
+1. **No flag.** The hello ships ungated: it is a prompt change, not presentation, so
+   `KAGE_SLACK_UX` does not select it. The seam marker only makes the greeting fire in the eval;
+   it does not choose the text.
+2. **No time estimate.** Results are promised "here, when it's done", nothing more.
+3. **Kage everywhere.** 5b changes the chat SOUL's identity line from Planning Agent to Kage, so
+   later replies do not contradict the hello.
+4. **No fleet state in the done variant.** The delivered report carries the state; the plugin does
+   not pass the report's headline into the prompt.
