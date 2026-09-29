@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open the Slack DM on agent view, with suggested prompts, when ``KAGE_SLACK_UX`` is on.
+"""Suggested prompts, Stop, and a named agent view for Slack when ``KAGE_SLACK_UX`` is on.
 
 Run by ``deploy/docker/Dockerfile`` against the Hermes tree, after
 ``apply_slack_reactions_scope.py``, which edits the same manifest builder.
@@ -18,19 +18,24 @@ repository sets that key, so no install shows a prompt.
 
 What this changes, with the flag on
 -----------------------------------
-* ``hermes slack manifest`` with neither ``--agent-view`` nor ``--no-assistant``
-  emits the ``agent`` branch instead of ``assistant``.
-* Every branch subscribes ``agent_session_stopped``. Without it Slack shows no
-  Stop on a working agent session and warns
+* The ``assistant`` and ``agent`` branches subscribe ``agent_session_stopped``.
+  Without it Slack shows no Stop on a working agent session and warns
   ``missing_agent_session_stopped_event_subscription`` on every
   ``agents.sessions.setStatus`` (the Slack probe, 2026-09-29). The event needs
-  only ``chat:write``. Handling the stop request is the status work's; until a
-  listener exists the adapter's catch-all acks it.
+  only ``chat:write``. ``--no-assistant`` is left alone: nothing shows Slack
+  accepts the event on an app with no messaging view. Handling the stop request
+  is the status work's; until a listener exists the adapter's catch-all acks it.
+* The ``agent`` branch describes the app by its ``--name`` instead of upstream's
+  fixed "Chat with Hermes in Slack Messages.".
 * The adapter falls back to :data:`SUGGESTED_PROMPTS` when
   ``suggested_prompts`` is unset. A configured value still wins.
 
 With the flag off each edit is a branch that is not taken: the manifest and the
 prompts are exactly upstream's.
+
+The messaging experience is never chosen here. Upstream calls ``--agent-view``
+irreversible once a manifest carrying it is applied, so the default stays
+``assistant`` and agent view is only ever the explicit flag.
 
 The scopes the Slack UX work spends (``reactions:write``, ``users:read``,
 ``files:write``) are not added here: upstream's list carries the last two and
@@ -80,13 +85,13 @@ def {FLAG_HELPER}() -> bool:
     return _os.environ.get({FLAG_ENV!r}, "").strip().lower() in {FLAG_ON_VALUES!r}
 '''
 
-DEFAULT_EXPERIENCE_ANCHOR = '''\
-    else:
-        messaging_experience = "assistant"
+AGENT_DESCRIPTION_ANCHOR = '''\
+        features["agent_view"] = {"agent_description": "Chat with Hermes in Slack Messages."}
 '''
-DEFAULT_EXPERIENCE = f'''\
-    else:
-        messaging_experience = "agent" if {FLAG_HELPER}() else "assistant"
+AGENT_DESCRIPTION = f'''\
+{AGENT_DESCRIPTION_ANCHOR}\
+        if {FLAG_HELPER}():
+            features["agent_view"]["agent_description"] = f"Chat with {{bot_name[:35]}} in Slack Messages."
 '''
 
 SORT_ANCHOR = '''\
@@ -94,7 +99,7 @@ SORT_ANCHOR = '''\
     bot_events.sort()
 '''
 SORT = f'''\
-    if {FLAG_HELPER}():
+    if {FLAG_HELPER}() and messaging_experience != "none":
         bot_events.append({STOP_EVENT!r})
 {SORT_ANCHOR}'''
 
@@ -120,7 +125,7 @@ def apply(root: Path) -> None:
     manifest.find_def("slack_manifest_command", label="manifest command")
     manifest.find_def("_build_full_manifest", label="manifest builder")
     manifest.substitute(
-        DEFAULT_EXPERIENCE_ANCHOR, DEFAULT_EXPERIENCE, label="default messaging experience"
+        AGENT_DESCRIPTION_ANCHOR, AGENT_DESCRIPTION, label="agent view description"
     )
     manifest.substitute(SORT_ANCHOR, SORT, label="bot scope and event sort")
     manifest.append(HELPER)
@@ -130,7 +135,7 @@ def apply(root: Path) -> None:
     adapter.substitute(PROMPTS_ANCHOR, PROMPTS, label="suggested prompts config read")
     adapter.append(HELPER + PROMPTS_CONSTANT)
 
-    manifest.commit(f"agent view by default and {STOP_EVENT} when {FLAG_ENV} is on")
+    manifest.commit(f"{STOP_EVENT} and a named agent view when {FLAG_ENV} is on")
     adapter.commit(f"default suggested prompts when {FLAG_ENV} is on")
 
 

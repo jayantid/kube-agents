@@ -69,6 +69,61 @@ Until you do, a typed `/hermes <subcommand>` arrives as an ordinary channel mess
 
 ### Agent view
 
+With `KAGE_SLACK_UX=true` in the `PlatformAgent` CR's `spec.deployment.env` (the chart's `platformAgent.deployment.env`), the Slack bot offers three suggested prompts when a user starts a conversation with it (is anything unhealthy in my clusters right now, what's on the board, which clusters are behind their release channel), and tapping one sends it as the user's message. Slack sets them when a thread starts or the bot's DM opens, so conversations that already exist do not show them. No `PlatformAgent` field replaces the three yet.
+
+Slack's agent view, where the bot's DM opens on a Messages tab, needs a new manifest, and **the switch cannot be undone**: once Slack applies a manifest carrying agent view, the app cannot go back to the assistant view it has today. The manifest also replaces the whole app definition, display name included, so pass the name and description your app already has; left out, both become Hermes's:
+
+```bash
+kubectl exec -n kubeagents-system deploy/platform-agent-gateway -c platform-agent -- \
+  hermes slack manifest --agent-view --name "<app name>" --description "<app description>"
+```
+
+Paste the output into your app's **App Manifest** page in the Slack App Console and reinstall the app when Slack asks. With the flag set, every manifest but `--no-assistant`'s also subscribes `agent_session_stopped`, the event Slack sends when a user presses Stop; the bot does not act on it yet, so Stop does not interrupt a running reply. Try agent view on an app nobody else depends on first. The flag is off by default, and with it off the manifest and the DM are unchanged; with it on or off, `hermes slack manifest` without `--agent-view` never switches the view.
+
+### Home channel
+
+`spec.integration.googleChat.homeChannel` on the PlatformAgent (surfaced to the pod as `GOOGLE_CHAT_HOME_CHANNEL`) is the space a notification lands in when there is no thread to reply into — which is every alert-driven investigation, since nobody started the conversation.
+
+Unlike Slack's, this one is not covered by `/sethome`. That command writes the **Planning Agent** profile, which is enough for the gateway's own delivery, but a specialist runs as a kanban worker against its own profile and reads the value from the pod environment instead. Set `GOOGLE_CHAT_HOME_CHANNEL` in `install.env` (or pass `--google-chat-home-channel`), or configure `spec.integration.googleChat.homeChannel` on the `PlatformAgent` resource. If left unset, alert-driven reports have nowhere to go — the investigation still runs and still opens its remediation PR, so the only visible symptom is silence in chat.
+
+### What it looks like end to end
+
+1. User DMs the app or @-mentions it in a space.
+2. Chat sends the message event to the topic; the Planning Agent consumes it from the subscription.
+3. The Planning Agent picks the right specialist from the injected roster and files a kanban card with the full request context (`kanban_create`).
+4. The gateway's kanban dispatcher spawns the specialist — for infrastructure work, the Platform Agent (`hermes -p platform`) — which runs the tool loop and completes the card with a one-line `summary` and the full answer in `result`.
+5. The originating chat session is auto-subscribed to the card, so the thread fills itself: each `kanban_heartbeat(note=…)` milestone adds a `⏳` line to one rolling message that the notifier edits in place while the specialist works — so a card with five milestones notifies the space once, not five times — and the completion posts as a separate `✔ … done` message carrying the `result` verbatim. The rolling message is then marked finished (`✓`, or `⏹` for a card that failed). The notifier delivers all of it directly and the Planning Agent is woken for none of it; it is woken when a card blocks or fails.
+
+A card that also produced a file gets the file's contents pasted into the thread rather than attached: Chat's `media.upload` refuses app authentication, so an install reaching Chat through the credential proxy can never produce a native attachment. Text deliverables under a size ceiling are posted as message text, split across messages where they have to be; anything else — a PDF, an image, an oversize file — gets a notice naming the path the agent wrote it to instead. Which formats and what ceiling are in [`agents/platform/scripts/google_chat_relay_patch.py`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/scripts/google_chat_relay_patch.py).
+
+The agent has to declare the file for any of that to happen. Its terminal and file tools run in a separate sandbox pod, so a file it writes is on a volume the gateway cannot read; only paths the card names in its `artifacts` list get copied across to the gateway for delivery, and only for as long as the delivery takes. Four ceilings apply to that copy — 8 MiB per file, 16 files per card, 16 MiB across the card, and a two-minute deadline for the lot — and a file that exceeds one is skipped with a warning in the gateway log while the rest of the card still delivers. Paths under the sandbox's credential and system directories are refused outright. [`agents/platform/scripts/sandbox_artifact_patch.py`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/scripts/sandbox_artifact_patch.py) holds the limits and the denied prefixes.
+
+### Session metadata
+
+Every Chat message carries session context (space, user, thread) that flows through Hermes and out as OpenTelemetry spans. The full trace is documented in [`docs/designs/gchat-session-metadata-data-flow.md`](https://github.com/gke-labs/kube-agents/blob/main/docs/designs/gchat-session-metadata-data-flow.md).
+
+## Slack
+
+Slack is opt-in. Enable it in the installer's chat menu; the installer prompts for the token values below.
+
+### How it's wired
+
+- The installer's Slack interview collects `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_ALLOWED_USERS`, `SLACK_HOME_CHANNEL`, and `SLACK_HOME_CHANNEL_NAME`; the chart stores the tokens in the credentials Secret and wires the CR's `slack` section.
+- The Slack listener itself lives inside the Hermes runtime; it uses Socket Mode (no public webhook required) driven by the app token.
+- Setup for the Slack app itself (creating the app, generating tokens, installing to workspace) is documented in the Hermes docs: [hermes-agent.nousresearch.com/docs/user-guide/messaging/slack](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack).
+
+### Allowed users
+
+Slack ingress is gated by `SLACK_ALLOWED_USERS` (a comma-separated list of Slack user IDs). Messages from users not on the list are silently ignored — a per-channel allowlist for the harness. Leaving it empty allows all users (the operator sets `SLACK_ALLOW_ALL_USERS=true` in that case).
+
+### Slash commands
+
+Slack only routes a leading-slash message to the app's slash handler if that slash is **registered on the Slack app**, and the install configures the integration from tokens alone. Registering them is an optional post-install step — see [INSTALL.md](https://github.com/gke-labs/kube-agents/blob/main/INSTALL.md#2-slack-configuration-slack_enabledtrue) for the procedure.
+
+Until you do, a typed `/hermes <subcommand>` arrives as an ordinary channel message rather than a command. The `legacy_slash_commands` plugin on the Planning Agent profile unwraps that form before the gateway resolves it, so `/hermes sethome` behaves as `/sethome` either way — registering the slashes adds Slack's autocomplete, not the behaviour. The plugin's [README](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/defaults/plugins/legacy_slash_commands/README.md) is the design of record.
+
+### Agent view
+
 With `KAGE_SLACK_UX=true` in the `PlatformAgent` CR's `spec.deployment.env` (the chart's `platformAgent.deployment.env`), the Slack bot offers three suggested prompts when a user opens a conversation with it (is anything unhealthy in my clusters right now, what's on the board, which clusters are behind their release channel), and tapping one sends it as the user's message. Set `platforms.slack.extra.suggested_prompts` to replace them. The prompts appear in the bot's existing assistant threads as soon as the pod restarts.
 
 Moving the app to Slack's agent view, where the bot's DM opens on a Messages tab, needs a new manifest. The flag in the CR does not reach the container `kubectl exec` lands in, so pass it on the command line:

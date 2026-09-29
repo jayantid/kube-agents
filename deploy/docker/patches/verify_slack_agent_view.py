@@ -9,10 +9,12 @@ with it on, and asserts on what they return:
 
 * flag off: the default manifest is upstream's ``assistant`` experience with no
   ``agent_session_stopped``, and an unset ``suggested_prompts`` yields none;
-* flag on: the default manifest carries ``features.agent_view`` and
-  ``agent_session_stopped``, ``--no-assistant`` still turns the view off, and an
-  unset ``suggested_prompts`` yields the three kube-agents prompts while a
-  configured one still wins;
+* flag on: the default manifest is still ``assistant`` (agent view is one-way
+  in Slack, so only ``--agent-view`` picks it) and adds ``agent_session_stopped``;
+  ``--agent-view --name`` carries the stop event and describes the app by that
+  name; ``--no-assistant`` has neither view nor stop event; and an unset
+  ``suggested_prompts`` yields the three kube-agents prompts while a configured
+  one still wins;
 * either way: the emitted bot scopes include ``reactions:write``,
   ``users:read`` and ``files:write``, the scopes the Slack UX work spends.
 
@@ -39,6 +41,8 @@ ADAPTER_MODULE = "plugins.platforms.slack.adapter"
 
 REQUIRED_SCOPES = ("reactions:write", "users:read", "files:write")
 FLAG_ON = "true"
+APP_NAME = "Kage"
+AGENT_DESCRIPTION = f"Chat with {APP_NAME} in Slack Messages."
 
 CONFIGURED_PROMPTS = [{"title": "configured", "message": "configured"}]
 
@@ -104,14 +108,23 @@ def main(root: Path = Path("/opt/hermes")) -> None:
 
     with _flag(FLAG_ON):
         on = _manifest(manifest_module)
-        if "agent_view" not in on["features"] or "assistant_view" in on["features"]:
+        if "assistant_view" not in on["features"] or "agent_view" in on["features"]:
             raise _fail(f"flag on, default features are {sorted(on['features'])}")
         if STOP_EVENT not in on["settings"]["event_subscriptions"]["bot_events"]:
             raise _fail(f"flag on, the manifest does not subscribe {STOP_EVENT}")
         _check_scopes(on, "flag-on")
+        agent = _manifest(manifest_module, agent_view=True, name=APP_NAME)
+        description = agent["features"].get("agent_view", {}).get("agent_description")
+        if description != AGENT_DESCRIPTION:
+            raise _fail(f"flag on, --agent-view --name {APP_NAME} describes the app as {description!r}")
+        if STOP_EVENT not in agent["settings"]["event_subscriptions"]["bot_events"]:
+            raise _fail(f"flag on, --agent-view does not subscribe {STOP_EVENT}")
+        _check_scopes(agent, "flag-on agent-view")
         bare = _manifest(manifest_module, no_assistant=True)
         if {"agent_view", "assistant_view"} & set(bare["features"]):
             raise _fail("flag on, --no-assistant still emits a messaging view")
+        if STOP_EVENT in bare["settings"]["event_subscriptions"]["bot_events"]:
+            raise _fail(f"flag on, --no-assistant subscribes {STOP_EVENT}")
         got = [row["message"] for row in _prompts(adapter_cls, {})]
         if got != list(SUGGESTED_PROMPTS):
             raise _fail(f"flag on, default prompts are {got}")
@@ -120,8 +133,8 @@ def main(root: Path = Path("/opt/hermes")) -> None:
             raise _fail(f"flag on, a configured suggested_prompts became {configured}")
 
     print(
-        f"slack_agent_view verify: flag off is upstream's assistant view; flag on emits "
-        f"agent_view and {STOP_EVENT} with {len(SUGGESTED_PROMPTS)} default prompts"
+        f"slack_agent_view verify: flag off is upstream's; flag on keeps assistant view, adds "
+        f"{STOP_EVENT} and names agent view, with {len(SUGGESTED_PROMPTS)} default prompts"
     )
 
 

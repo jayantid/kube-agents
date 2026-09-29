@@ -738,11 +738,12 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # verifier can import it; the image ships it under /opt/defaults/scripts. Also
 # rides this COPY and RUN. See deploy/docker/patches/slack_ux_reactions.py.
 # Slack agent view, behind KAGE_SLACK_UX (off by default; off leaves both files
-# behaving as upstream). With it on, `hermes slack manifest` defaults to
-# --agent-view, every manifest subscribes agent_session_stopped so Slack can
-# offer Stop, and the adapter answers a DM open with three suggested prompts
-# when platforms.slack.extra.suggested_prompts is unset. Runs after the
-# reactions-scope patch because both edit slack_cli.py; the verifier drives the
+# behaving as upstream). With it on, every manifest but --no-assistant's
+# subscribes agent_session_stopped so Slack can offer Stop, --agent-view
+# describes the app by its --name, and the adapter answers a new thread or DM
+# open with three suggested prompts when platforms.slack.extra.suggested_prompts
+# is unset. The default stays assistant view: agent view is one-way in Slack.
+# Runs after the reactions-scope patch because both edit slack_cli.py; the verifier drives the
 # real manifest command and prompt reader with the flag off and on.
 # See the module docstring in deploy/docker/patches/apply_slack_agent_view.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \

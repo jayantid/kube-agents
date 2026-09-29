@@ -4,8 +4,8 @@
 Run: python3 -m unittest discover -s deploy/docker/patches -p 'test_*.py'
 
 The fixtures keep the shape of upstream's two files where the patch touches
-them: the manifest command's default-experience ``else``, the builder's closing
-sort, and the adapter's ``suggested_prompts`` read. The patched modules are
+them: the builder's agent-view description and closing sort, and the adapter's
+``suggested_prompts`` read. The patched modules are
 imported and driven with the flag off and on, so the tests assert on the
 manifest and prompts they return rather than on inserted text.
 ``verify_slack_agent_view.py`` does the same against the real tree in the image.
@@ -53,7 +53,7 @@ def _build_full_manifest(bot_name, bot_description, messaging_experience=None):
         bot_scopes.append("assistant:write")
         bot_events.extend(["assistant_thread_context_changed", "assistant_thread_started"])
     elif messaging_experience == "agent":
-        features["agent_view"] = {"agent_description": "d"}
+        features["agent_view"] = {"agent_description": "Chat with Hermes in Slack Messages."}
         bot_scopes.append("assistant:write")
         bot_events.extend(["app_context_changed", "app_home_opened"])
 
@@ -73,7 +73,8 @@ def slack_manifest_command(args) -> int:
         messaging_experience = "none"
     else:
         messaging_experience = "assistant"
-    manifest = _build_full_manifest("Hermes", "d", messaging_experience=messaging_experience)
+    name = getattr(args, "name", None) or "Hermes"
+    manifest = _build_full_manifest(name, "d", messaging_experience=messaging_experience)
     sys.stdout.write(json.dumps(manifest))
     return 0
 
@@ -157,7 +158,7 @@ class FlagOffTest(unittest.TestCase):
         before = load(original, MANIFEST)
         after = load(patched, MANIFEST)
         for value in (None, "", "0", "false", "off"):
-            for flags in ({}, {"agent_view": True}, {"no_assistant": True}):
+            for flags in ({}, {"agent_view": True}, {"no_assistant": True}, {"agent_view": True, "name": "Kage"}):
                 with self.subTest(flag=value, args=flags), flag(value):
                     self.assertEqual(manifest(after, **flags), manifest(before, **flags))
 
@@ -180,24 +181,31 @@ class FlagOnTest(unittest.TestCase):
         self.root = build()
         apply(self.root)
 
-    def test_default_manifest_is_agent_view_with_stop(self):
+    def test_default_manifest_stays_assistant_view_with_stop(self):
+        # Agent view is one-way in Slack, so the flag never picks it.
         for value in ("1", "true", "TRUE", " yes ", "on"):
             with self.subTest(flag=value), flag(value):
                 got = manifest(load(self.root, MANIFEST))
-                self.assertIn("agent_view", got["features"])
-                self.assertNotIn("assistant_view", got["features"])
+                self.assertIn("assistant_view", got["features"])
+                self.assertNotIn("agent_view", got["features"])
                 events = got["settings"]["event_subscriptions"]["bot_events"]
                 self.assertIn(STOP_EVENT, events)
-                self.assertIn("app_home_opened", events)
                 self.assertEqual(events, sorted(events))
 
-    def test_explicit_flags_still_decide(self):
+    def test_agent_view_is_named_and_has_stop(self):
         with flag("true"):
-            module = load(self.root, MANIFEST)
-            bare = manifest(module, no_assistant=True)
-            self.assertEqual(bare["features"], {})
-            self.assertIn(STOP_EVENT, bare["settings"]["event_subscriptions"]["bot_events"])
-            self.assertIn("agent_view", manifest(module, agent_view=True)["features"])
+            got = manifest(load(self.root, MANIFEST), agent_view=True, name="Kage")
+        self.assertEqual(got["features"]["agent_view"]["agent_description"], "Chat with Kage in Slack Messages.")
+        events = got["settings"]["event_subscriptions"]["bot_events"]
+        self.assertIn(STOP_EVENT, events)
+        self.assertIn("app_home_opened", events)
+        self.assertEqual(events, sorted(events))
+
+    def test_no_assistant_gets_no_stop(self):
+        with flag("true"):
+            bare = manifest(load(self.root, MANIFEST), no_assistant=True)
+        self.assertEqual(bare["features"], {})
+        self.assertNotIn(STOP_EVENT, bare["settings"]["event_subscriptions"]["bot_events"])
 
     def test_unset_prompts_fall_back_to_the_three_asks(self):
         with flag("true"):
@@ -233,12 +241,10 @@ class RefusalTest(unittest.TestCase):
             apply(root)
         self.assertIn(BUILD_MARKER, str(caught.exception))
 
-    def test_default_experience_moved(self):
+    def test_agent_description_moved(self):
         self._refuses(
-            "default messaging experience",
-            manifest=MANIFEST_SOURCE.replace(
-                'messaging_experience = "assistant"\n', 'messaging_experience = "assist"\n'
-            ),
+            "agent view description",
+            manifest=MANIFEST_SOURCE.replace("Chat with Hermes in Slack Messages.", "Chat in Slack."),
         )
 
     def test_sort_moved(self):
