@@ -67,6 +67,19 @@ Slack only routes a leading-slash message to the app's slash handler if that sla
 
 Until you do, a typed `/hermes <subcommand>` arrives as an ordinary channel message rather than a command. The `legacy_slash_commands` plugin on the Planning Agent profile unwraps that form before the gateway resolves it, so `/hermes sethome` behaves as `/sethome` either way — registering the slashes adds Slack's autocomplete, not the behaviour. The plugin's [README](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/defaults/plugins/legacy_slash_commands/README.md) is the design of record.
 
+### Agent view
+
+With `KAGE_SLACK_UX=true` in the `PlatformAgent` CR's `spec.deployment.env` (the chart's `platformAgent.deployment.env`), the Slack bot offers three suggested prompts when a user opens a conversation with it (is anything unhealthy in my clusters right now, what's on the board, which clusters are behind their release channel), and tapping one sends it as the user's message. Set `platforms.slack.extra.suggested_prompts` to replace them. The prompts appear in the bot's existing assistant threads as soon as the pod restarts.
+
+Moving the app to Slack's agent view, where the bot's DM opens on a Messages tab, needs a new manifest. The flag in the CR does not reach the container `kubectl exec` lands in, so pass it on the command line:
+
+```bash
+kubectl exec -n kubeagents-system deploy/platform-agent-gateway -- \
+  env KAGE_SLACK_UX=true hermes slack manifest
+```
+
+Paste the output into your app's **App Manifest** page in the Slack App Console and reinstall the app when Slack asks. The manifest also subscribes `agent_session_stopped`, the event Slack sends when a user presses Stop; the bot does not act on it yet, so Stop does not interrupt a running reply. Try the switch on an app nobody else depends on first. The flag is off by default, and with it off the manifest and the DM are unchanged.
+
 ### Home channel
 
 `SLACK_HOME_CHANNEL` designates the channel an unprompted message lands in when no user thread is involved. Set it to a monitoring/oncall channel your team already watches.
