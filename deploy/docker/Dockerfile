@@ -785,6 +785,16 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # gateway/slack_ux_incident.py returns, which is the notifier's own with the
 # flag off. Anchors on apply_kanban_progress_lines' call above. Also rides this
 # COPY and RUN. See deploy/docker/patches/slack_ux_incident.py.
+#
+# Slack agent view, behind KAGE_SLACK_UX (off by default; off leaves both files
+# behaving as upstream). With it on, every manifest but --no-assistant's
+# subscribes agent_session_stopped so Slack can offer Stop, --agent-view
+# describes the app by its --name, and the adapter answers a new thread or DM
+# open with three suggested prompts when platforms.slack.extra.suggested_prompts
+# is unset. The default stays assistant view: agent view is one-way in Slack.
+# Runs after the reactions-scope patch because both edit slack_cli.py; the verifier drives the
+# real manifest command and prompt reader with the flag off and on.
+# See the module docstring in deploy/docker/patches/apply_slack_agent_view.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
      deploy/docker/patches/apply_google_chat_attachment_notice.py \
@@ -812,6 +822,8 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      agents/platform/scripts/slack_presenter.py \
      agents/platform/scripts/slack_status.py \
      agents/platform/scripts/slack_moments.py \
+     deploy/docker/patches/apply_slack_agent_view.py \
+     deploy/docker/patches/verify_slack_agent_view.py \
      deploy/docker/patches/patchlib.py \
      /tmp/message-surface/
 RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis.py /opt/hermes && \
@@ -841,6 +853,9 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     install -m 0644 /tmp/message-surface/slack_ux_incident.py /opt/hermes/gateway/slack_ux_incident.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_incident.py /opt/hermes && \
     grep -qF "_kage_slack_incident.adapter_for(" /opt/hermes/gateway/kanban_watchers_notifier.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_agent_view.py /opt/hermes && \
+    grep -qF "def _kage_slack_ux_on(" /opt/hermes/hermes_cli/slack_cli.py && \
+    grep -qF "_KAGE_SUGGESTED_PROMPTS = " /opt/hermes/plugins/platforms/slack/adapter.py && \
     cd /opt/hermes && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_code_emphasis.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_google_chat_attachment_notice.py && \
@@ -851,6 +866,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_moments.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_boilerplate.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_incident.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_agent_view.py && \
     rm -rf /tmp/message-surface
 
 # Perf: hide worker-only kanban tools from orchestrator profiles. Upstream gates

@@ -67,6 +67,19 @@ Slack only routes a leading-slash message to the app's slash handler if that sla
 
 Until you do, a typed `/hermes <subcommand>` arrives as an ordinary channel message rather than a command. The `legacy_slash_commands` plugin on the Planning Agent profile unwraps that form before the gateway resolves it, so `/hermes sethome` behaves as `/sethome` either way — registering the slashes adds Slack's autocomplete, not the behaviour. The plugin's [README](https://github.com/gke-labs/kube-agents/blob/main/agents/chat/defaults/plugins/legacy_slash_commands/README.md) is the design of record.
 
+### Agent view
+
+With `KAGE_SLACK_UX=true` in the `PlatformAgent` CR's `spec.deployment.env` (the chart's `platformAgent.deployment.env`), the Slack bot offers three suggested prompts when a user starts a conversation with it (is anything unhealthy in my clusters right now, what's on the board, which clusters are behind their release channel), and tapping one sends it as the user's message. Slack sets them when a thread starts or the bot's DM opens, so conversations that already exist do not show them. No `PlatformAgent` field replaces the three yet.
+
+Slack's agent view, where the bot's DM opens on a Messages tab, needs a new manifest, and **the switch cannot be undone**: once Slack applies a manifest carrying agent view, the app cannot go back to the assistant view it has today. The manifest also replaces the whole app definition, display name included, so pass the name and description your app already has; left out, both become Hermes's:
+
+```bash
+kubectl exec -n kubeagents-system deploy/platform-agent-gateway -c platform-agent -- \
+  hermes slack manifest --agent-view --name "<app name>" --description "<app description>"
+```
+
+Paste the output into your app's **App Manifest** page in the Slack App Console and reinstall the app when Slack asks. With the flag set, every manifest but `--no-assistant`'s also subscribes `agent_session_stopped`, the event Slack sends when a user presses Stop; the bot does not act on it yet, so Stop does not interrupt a running reply. Try agent view on an app nobody else depends on first. The flag is off by default, and with it off the manifest and the DM are unchanged; with it on or off, `hermes slack manifest` without `--agent-view` never switches the view.
+
 ### Home channel
 
 `SLACK_HOME_CHANNEL` designates the channel an unprompted message lands in when no user thread is involved. Set it to a monitoring/oncall channel your team already watches.
