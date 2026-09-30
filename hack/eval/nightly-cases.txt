@@ -78,7 +78,11 @@
 # repetition, ~10min each at three): forty-eight cases, ~1131-1151min serial.
 # 2026-09-25 also added obtainability-planted-orphan-service (~45min at the
 # 900s band; tofu, so it serializes on the infra lock with the other tofu
-# cases). Forty-nine cases, ~1176-1196min serial. The
+# cases). Forty-nine cases, ~1176-1196min serial. 2026-09-28 adds
+# bootstrap-discovery-fanout (~30min at its 600s hint; tofu, so it too
+# serializes on the infra lock): fifty-two cases across the two files,
+# counted from the lists, since the running totals above had fallen two
+# behind. The
 # periodic runs at 00:00 UTC -- 8 PM EDT, after the working day's presubmit
 # herd -- with a 480m deadline, EVAL_TASK_PARALLELISM=8 (6 from #1491 until
 # oss-test-infra#2707, 2026-09-25; the arithmetic that follows was done at
@@ -89,7 +93,7 @@
 # wider, realises ~2.4x or better. Night one (2026-09-16, build
 # 2100374258805903360, #1491)
 # realised 5.57x on the thirty-nine-case matrix and used 71% of the budget,
-# so the ten additions since are priced inside its headroom. The first nights after this change measure it:
+# so the thirteen additions since are priced inside its headroom. The first nights after this change measure it:
 # record the wall clock and any truncation on #1491, and if the deadline
 # bites, the lever is the periodic's timeout or this list's tail, in that
 # order. A deadline kill is survivable by design -- the cost-hinted queue
@@ -450,3 +454,10 @@
 # prebuilt/first-install-hello arms per case. No fixture; the host install only.
 ./tasks/first-install-hello-running/task.yaml
 ./tasks/first-install-hello-done/task.yaml
+
+# The onboarding discovery sweep's fan-out (#1872): re-arms the
+# bootstrap-inventory-scan gate on the install under test and grades the
+# cards the sweep's worker files against the Cluster Agent roster. Nightly
+# rather than presubmit because the fan-out's cards take dispatcher slots
+# from whatever else is running.
+./tasks/bootstrap-discovery-fanout/task.yaml

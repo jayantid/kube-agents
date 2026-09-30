@@ -10,7 +10,6 @@ surface; with it on, the runtime module takes over.
 """
 
 import asyncio
-import enum
 import importlib
 import os
 import shutil
@@ -111,6 +110,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _cards(*ids, board="default", status="running", resumes=0):
+    """A board read: open cards as ``{(board, id): _Card}``."""
+    return {(board, task): runtime._Card(status, resumes) for task in ids}
+
+
 class _Root:
     """A throwaway Hermes root holding the fixture adapter and the runtime module."""
 
@@ -161,9 +165,31 @@ class ApplierTest(unittest.TestCase):
         self.assertEqual(path.read_text(), UPSTREAM.replace("when message processing begins", "on start"))
 
     def test_verifier_passes_on_patched_tree(self):
+        # The board read needs the image's hermes_cli; the image build runs it.
         applier.apply(self.root.dir)
         with mock.patch.dict(os.environ, {}, clear=False):
-            verifier.main(self.root.dir)
+            verifier.main(self.root.dir, board_read=False)
+
+    def test_verifier_refuses_a_drifted_adapter_member(self):
+        applier.apply(self.root.dir)
+        path = self.root.dir / applier.RELATIVE
+        patched = path.read_text()
+        drifts = {
+            "react keyword": ("team_id, *, remove):", "team_id, remove=False):"),
+            "target arity": ("return (ts, team_id, marker) if", "return (ts, marker) if"),
+            "target order": ("return (ts, team_id, marker) if", "return (team_id, ts, marker) if"),
+            "react order": ("_react(self, channel, timestamp, emoji, team_id, *", "_react(self, channel, emoji, timestamp, team_id, *"),
+            "tracked set": ('self._reacting_message_ids = {"m"}', "self._reacting_message_ids = []"),
+            "target gone": ("def _reacting_target(self, event):", "def _target(self, event):"),
+        }
+        for name, (old, new) in drifts.items():
+            with self.subTest(drift=name):
+                self.assertEqual(patched.count(old), 1)
+                path.write_text(patched.replace(old, new))
+                with self.assertRaises(SystemExit):
+                    verifier.check_adapter(self.root.dir)
+        path.write_text(patched)
+        verifier.check_adapter(self.root.dir)
 
     def test_verifier_refuses_unpatched_tree(self):
         with self.assertRaises(SystemExit):
@@ -215,7 +241,7 @@ class FlagOffIdentityTest(unittest.TestCase):
         adapter = patched["SlackAdapter"]()
         event = _event("fix it")
         with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": "1"}), mock.patch.object(
-            reactions, "open_cards", mock.AsyncMock(return_value=frozenset())
+            reactions, "open_cards", mock.AsyncMock(return_value={})
         ):
             _run(adapter.on_processing_start(event))
             _run(adapter.on_processing_complete(event, patched["ProcessingOutcome"].SUCCESS))
@@ -253,8 +279,8 @@ class RuntimeTest(unittest.TestCase):
         self.boards = []
         self.board_args = []
 
-        async def open_cards(chat_id, thread_id, board=None):
-            self.board_args.append((chat_id, thread_id, board))
+        async def open_cards(chat_id, thread_id):
+            self.board_args.append((chat_id, thread_id))
             return self.boards.pop(0)
 
         cards = mock.patch.object(runtime, "open_cards", open_cards)
@@ -272,16 +298,16 @@ class RuntimeTest(unittest.TestCase):
         return {"platform": platform, "chat_id": CHANNEL, "thread_id": THREAD, "task_id": task}
 
     def test_direct_answer_settles_now(self):
-        adapter = self._turn("board", frozenset(), frozenset())
+        adapter = self._turn("board", {}, {})
         self.assertEqual(adapter.calls, [("clipboard", False), ("white_check_mark", False)])
 
     def test_failed_turn(self):
-        adapter = self._turn("checkout is down", frozenset(), frozenset(), "failure")
+        adapter = self._turn("checkout is down", {}, {}, "failure")
         self.assertEqual(adapter.calls, [("rotating_light", False), ("x", False)])
 
     def test_cancelled_turn_adds_nothing_more(self):
         adapter = _Stub()
-        self.boards[:] = [frozenset()]
+        self.boards[:] = [{}]
         _run(runtime.on_processing_start(adapter, _event("hi")))
         _run(runtime.on_processing_complete(adapter, _event("hi"), SimpleNamespace(value="cancelled")))
         self.assertEqual(adapter.calls, [("eyes", False)])
@@ -295,15 +321,15 @@ class RuntimeTest(unittest.TestCase):
 
     def test_old_open_card_does_not_defer(self):
         # A card from an earlier ask is still running; this turn answered directly.
-        adapter = self._turn("why?", frozenset({"t_old"}), frozenset({"t_old"}))
+        adapter = self._turn("why?", _cards("t_old"), _cards("t_old"))
         self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
 
     def test_unreadable_board_settles_now(self):
-        adapter = self._turn("why?", None, frozenset({"t_a"}))
+        adapter = self._turn("why?", None, _cards("t_a"))
         self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
 
     def test_delegated_settles_when_the_last_card_does(self):
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a"}))
+        adapter = self._turn("fix it", {}, _cards("t_a"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
         # A card this ask did not open finishes: nothing, and no board is read.
         reads = len(self.board_args)
@@ -323,15 +349,21 @@ class RuntimeTest(unittest.TestCase):
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
         self.assertEqual(len(adapter.calls), 3)
 
+    def test_a_failed_turn_that_delegated_settles_failed(self):
+        adapter = self._turn("fix it", {}, _cards("t_a"), "failure")
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
+        self.assertEqual(adapter.calls[-1], ("x", False))
+
     def test_delegated_failure(self):
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a"}))
+        adapter = self._turn("fix it", {}, _cards("t_a"))
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "gave_up"))
         self.assertEqual(adapter.calls[-1], ("x", False))
 
     def test_fan_out_with_a_give_up_settles_once_as_failed(self):
         # Hermes leaves a gave-up card at status 'blocked', so it still reads as
         # open on the board; the ask must settle on the event, not the board.
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a", "t_b"}))
+        adapter = self._turn("fix it", {}, _cards("t_a", "t_b"))
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "gave_up"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
         _run(runtime.settle_delegated(adapter, self._sub("t_b"), "completed"))
@@ -340,7 +372,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(len(adapter.calls), 2)
 
     def test_a_stale_blocked_card_in_the_thread_does_not_hold_the_settle(self):
-        adapter = self._turn("fix it", frozenset({"t_old"}), frozenset({"t_old", "t_a"}))
+        adapter = self._turn("fix it", _cards("t_old"), _cards("t_old", "t_a"))
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
         self.assertEqual(adapter.calls[-1], ("white_check_mark", False))
         # The stale card finishing later touches nothing.
@@ -349,8 +381,8 @@ class RuntimeTest(unittest.TestCase):
 
     def test_two_asks_in_one_thread_settle_on_their_own_cards(self):
         log = []
-        first = self._turn("fix it", frozenset(), frozenset({"t_a"}), adapter=_Stub("111.001", log))
-        second = self._turn("scale it", frozenset({"t_a"}), frozenset({"t_a", "t_b"}), adapter=_Stub("111.002", log))
+        first = self._turn("fix it", {}, _cards("t_a"), adapter=_Stub("111.001", log))
+        second = self._turn("scale it", _cards("t_a"), _cards("t_a", "t_b"), adapter=_Stub("111.002", log))
         _run(runtime.settle_delegated(second, self._sub("t_b"), "blocked"))
         self.assertEqual(log[-1], ("111.002", "double_vertical_bar"))
         _run(runtime.settle_delegated(second, self._sub("t_b"), "completed"))
@@ -363,35 +395,160 @@ class RuntimeTest(unittest.TestCase):
         # The notifier delivers the card's final event between the turn's board
         # read and its deferral: the turn settles at once instead of waiting.
         adapter = _Stub()
-        self.boards[:] = [frozenset()]
+        self.boards[:] = [{}]
         _run(runtime.on_processing_start(adapter, _event("fix it")))
 
-        async def read_then_race(chat_id, thread_id, board=None):
+        async def read_then_race(chat_id, thread_id):
             await runtime.settle_delegated(adapter, self._sub("t_a"), "gave_up")
-            return frozenset({"t_a"})
+            return _cards("t_a")
 
         with mock.patch.object(runtime, "open_cards", read_then_race):
             _run(runtime.on_processing_complete(adapter, _event("fix it"), SimpleNamespace(value="success")))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("x", False)])
         self.assertFalse(runtime._deferred)
 
+    def _turn_racing(self, text, before, after, events, adapter):
+        """A turn whose end-of-turn board read sees the notifier deliver ``events`` first."""
+        self.boards[:] = [before]
+        _run(runtime.on_processing_start(adapter, _event(text)))
+
+        async def read_then_race(chat_id, thread_id):
+            for task, kind in events:
+                await runtime.settle_delegated(adapter, self._sub(task), kind)
+            return after
+
+        with mock.patch.object(runtime, "open_cards", read_then_race):
+            _run(runtime.on_processing_complete(adapter, _event(text), SimpleNamespace(value="success")))
+
+    def test_a_card_reopened_after_it_finished_waits_on_its_new_run(self):
+        log = []
+        first = self._turn("fix it", {}, _cards("t_a"), adapter=_Stub("111.001", log))
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "completed"))
+        self.assertEqual(log[-1], ("111.001", "white_check_mark"))
+        # The finished card is closed, so the next turn's start read misses it;
+        # the turn reopens it. Its earlier finish does not settle this ask.
+        self._turn("fix it again", {}, _cards("t_a"), adapter=_Stub("111.002", log))
+        self.assertEqual([ts for ts, _ in log].count("111.002"), 1)
+        self.assertEqual(runtime._deferred[(CHANNEL, THREAD)][0].cards, {("default", "t_a")})
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "completed"))
+        self.assertEqual(log[-1], ("111.002", "white_check_mark"))
+
+    def test_a_resumed_card_that_gives_up_within_the_turn_fails_it(self):
+        # Blocked at the start, unblocked, and parked at blocked again before the end.
+        adapter = _Stub()
+        before, after = _cards("t_a", status="blocked", resumes=7), _cards("t_a", status="blocked", resumes=9)
+        self._turn_racing("try again", before, after, [("t_a", "gave_up")], adapter)
+        self.assertEqual(adapter.calls, [("eyes", False), ("x", False)])
+        self.assertFalse(runtime._deferred)
+
+    def test_a_give_up_from_before_the_turn_reported_during_it_is_not_the_turns(self):
+        # The card was parked before the ask arrived; the notifier's report lags.
+        adapter = _Stub()
+        blocked = _cards("t_a", status="blocked", resumes=7)
+        self._turn_racing("why?", blocked, blocked, [("t_a", "gave_up")], adapter)
+        self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
+
+    def test_a_resumed_card_that_blocks_again_within_the_turn_pauses_the_ask(self):
+        adapter = _Stub()
+        before, after = _cards("t_a", status="blocked"), _cards("t_a", status="blocked", resumes=3)
+        self._turn_racing("yes, go ahead", before, after, [("t_a", "blocked")], adapter)
+        self.assertEqual(adapter.calls, [("eyes", False), ("double_vertical_bar", False)])
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "gave_up"))
+        self.assertEqual(adapter.calls[-1], ("x", False))
+
+    def test_a_blocked_card_that_completes_within_the_turn_is_its(self):
+        # Completed from blocked means resumed first; the card is closed at the end.
+        adapter = _Stub()
+        self._turn_racing("yes, go ahead", _cards("t_a", status="blocked"), {}, [("t_a", "completed")], adapter)
+        self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
+
+    def test_a_card_that_blocks_before_the_turn_ends_pauses_the_ask(self):
+        adapter = _Stub()
+        self._turn_racing("fix it", {}, _cards("t_a", status="blocked"), [("t_a", "blocked")], adapter)
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("double_vertical_bar", False)])
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
+        self.assertEqual(adapter.calls[-1], ("white_check_mark", False))
+
+    def test_a_card_that_blocks_and_resumes_within_the_turn_does_not_pause_the_ask(self):
+        adapter = _Stub()
+        self._turn_racing("fix it", {}, _cards("t_a", resumes=4), [("t_a", "blocked")], adapter)
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
+        self.assertEqual(runtime._deferred[(CHANNEL, THREAD)][0].cards, {("default", "t_a")})
+
+    def test_a_card_running_at_the_start_that_finishes_is_not_the_turns(self):
+        adapter = _Stub()
+        self._turn_racing("why?", _cards("t_a"), {}, [("t_a", "gave_up")], adapter)
+        self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
+
+    def test_a_finish_in_another_thread_is_not_the_turns(self):
+        adapter = _Stub()
+        self.boards[:] = [{}]
+        _run(runtime.on_processing_start(adapter, _event("fix it")))
+        other = {**self._sub("t_a"), "thread_id": "999.000"}
+        _run(runtime.settle_delegated(adapter, other, "completed"))
+        self.boards[:] = [_cards("t_a")]
+        _run(runtime.on_processing_complete(adapter, _event("fix it"), SimpleNamespace(value="success")))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
+        self.assertEqual(runtime._deferred[(CHANNEL, THREAD)][0].cards, {("default", "t_a")})
+
+    def test_resuming_a_blocked_card_waits_on_it(self):
+        # Ask 1's card blocks on the user; ask 2 answers and unblocks it.
+        log = []
+        first = self._turn("fix it", {}, _cards("t_a"), adapter=_Stub("111.001", log))
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "blocked"))
+        self._turn("yes, go ahead", _cards("t_a", status="blocked"), _cards("t_a"), adapter=_Stub("111.002", log))
+        self.assertEqual(log[-1], ("111.002", "eyes"))
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "completed"))
+        self.assertEqual(sorted(log[-2:]), [("111.001", "white_check_mark"), ("111.002", "white_check_mark")])
+
+    def test_a_retry_after_give_up_waits_on_the_new_run(self):
+        log = []
+        first = self._turn("fix it", {}, _cards("t_a"), adapter=_Stub("111.001", log))
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "gave_up"))
+        self.assertEqual(log[-1], ("111.001", "x"))
+        # Hermes parks the gave-up card at blocked; "try again" unblocks it.
+        self._turn("try again", _cards("t_a", status="blocked"), _cards("t_a"), adapter=_Stub("111.002", log))
+        self.assertEqual(log[-1], ("111.002", "eyes"))
+        _run(runtime.settle_delegated(first, self._sub("t_a"), "completed"))
+        self.assertEqual(log[-1], ("111.002", "white_check_mark"))
+        self.assertEqual(len(log), 4)
+
+    def test_a_card_still_blocked_after_the_turn_is_not_its(self):
+        adapter = self._turn("why?", _cards("t_a", status="blocked"), _cards("t_a", status="blocked"))
+        self.assertEqual(adapter.calls, [("eyes", False), ("white_check_mark", False)])
+
+    def test_a_card_on_another_board_settles_on_that_board_only(self):
+        adapter = self._turn("fix it", {}, _cards("t_a", board="b2"))
+        # The same id on the default board is a different card.
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed", board="b2"))
+        self.assertEqual(adapter.calls[-1], ("white_check_mark", False))
+
+    def test_a_thread_keeps_only_its_newest_deferred_asks(self):
+        for n in range(runtime.DEFERRED_PER_THREAD + 2):
+            self._turn("fix it", {}, _cards(f"t_{n}"), adapter=_Stub(f"111.{n:03d}"))
+        asks = runtime._deferred[(CHANNEL, THREAD)]
+        self.assertEqual(len(asks), runtime.DEFERRED_PER_THREAD)
+        self.assertEqual(asks[0].ts, "111.002")
+
     def test_settle_ignores_other_platforms_and_unknown_threads(self):
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a"}))
+        adapter = self._turn("fix it", {}, _cards("t_a"))
         _run(runtime.settle_delegated(adapter, self._sub(platform="google_chat"), "completed"))
         other = dict(self._sub(), thread_id="999.000")
         _run(runtime.settle_delegated(adapter, other, "completed"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
 
     def test_nothing_is_ever_removed(self):
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a"}))
+        adapter = self._turn("fix it", {}, _cards("t_a"))
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
-        self.boards[:] = [frozenset()]
+        self.boards[:] = [{}]
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
         self.assertTrue(adapter.calls)
         self.assertTrue(all(remove is False for _emoji, remove in adapter.calls))
 
     def test_flag_off_settle_is_inert(self):
-        adapter = self._turn("fix it", frozenset(), frozenset({"t_a"}))
+        adapter = self._turn("fix it", {}, _cards("t_a"))
         with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": ""}):
             _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
@@ -405,13 +562,87 @@ class OpenCardsQueryTest(unittest.TestCase):
         conn.executescript(
             "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT);"
             "CREATE TABLE kanban_notify_subs (task_id TEXT, platform TEXT, chat_id TEXT, thread_id TEXT);"
+            "CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT);"
+            "INSERT INTO task_events VALUES (1,'b','unblocked'),(2,'b','blocked'),(3,'b','unblocked'),(4,'a','blocked');"
             "INSERT INTO tasks VALUES ('a','running'),('b','blocked'),('c','done'),('d','archived'),('e','ready');"
             "INSERT INTO kanban_notify_subs VALUES"
             " ('a','slack','C1','111.000'),('b','slack','C1','111.000'),('c','slack','C1','111.000'),"
             " ('d','slack','C1','111.000'),('e','slack','C1','222.000'),('a','telegram','C1','111.000');"
         )
         rows = conn.execute(runtime.OPEN_CARDS_SQL, ("slack", "C1", "111.000")).fetchall()
-        self.assertEqual(sorted(r[0] for r in rows), ["a", "b"])
+        self.assertEqual(sorted(rows), [("a", "running", 0), ("b", "blocked", 3)])
+
+    def _fake_hermes(self, paths, rows, reads, broken=()):
+        """``hermes_cli`` modules listing ``paths`` as boards, each database returning ``rows``."""
+
+        class Conn:
+            def __init__(self, path):
+                self.path = path
+
+            def execute(self, sql, params):
+                reads.append((self.path, params))
+                return SimpleNamespace(fetchall=lambda: rows[self.path])
+
+            def close(self):
+                pass
+
+        def connect(board=None):
+            if board in broken:
+                raise RuntimeError("database is locked")
+            return Conn(paths[board])
+
+        kb = SimpleNamespace(
+            DEFAULT_BOARD="default",
+            list_boards=lambda include_archived: [{"slug": s, "db_path": p} for s, p in paths.items()],
+            kanban_db_path=lambda slug: Path(paths[slug]),
+        )
+        connector = SimpleNamespace(connect=connect)
+        hermes = SimpleNamespace(kanban_db=kb, kanban_db_connect=connector)
+        return {"hermes_cli": hermes, "hermes_cli.kanban_db": kb, "hermes_cli.kanban_db_connect": connector}
+
+    def _databases(self, *names):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return [str((tmp / name).resolve()) for name in names]
+
+    def test_reads_every_live_board_once(self):
+        # Two boards share a database, as a board listed twice would: one read
+        # under the first slug. A third board has its own database.
+        default, b2 = self._databases("default.db", "b2.db")
+        Path(default).touch()
+        Path(b2).touch()
+        paths = {"default": default, "alias": default, "b2": b2}
+        rows = {default: [("t_a", "running", 0)], b2: [("t_b", "running", 0), ("t_c", "blocked", 5)]}
+        reads = []
+        with mock.patch.dict(sys.modules, self._fake_hermes(paths, rows, reads)):
+            found = runtime._query_open_cards("C1", "111.000")
+        self.assertEqual(found, {**_cards("t_a"), **_cards("t_b", board="b2"), **_cards("t_c", board="b2", status="blocked", resumes=5)})
+        self.assertEqual([path for path, _ in reads], [default, b2])
+        self.assertEqual(reads[0][1], ("slack", "C1", "111.000"))
+
+    def test_a_board_with_no_database_is_skipped(self):
+        good, absent = self._databases("good.db", "absent.db")
+        Path(good).touch()
+        reads = []
+        paths = {"default": good, "b3": absent}
+        with mock.patch.dict(sys.modules, self._fake_hermes(paths, {good: [("t_a", "running", 0)]}, reads)):
+            found = runtime._query_open_cards("C1", "111.000")
+        self.assertEqual(found, _cards("t_a"))
+        # b3 has no database: never connected to, so never created.
+        self.assertEqual([path for path, _ in reads], [good])
+
+    def test_an_unreadable_board_fails_the_whole_read(self):
+        # A partial read, compared with a whole one, would misattribute the
+        # missing board's cards; the turn settles now instead.
+        good, bad = self._databases("good.db", "bad.db")
+        Path(good).touch()
+        Path(bad).touch()
+        hermes = self._fake_hermes({"default": good, "b2": bad}, {good: [("t_a", "running", 0)]}, [], broken={"b2"})
+        with mock.patch.dict(sys.modules, hermes):
+            self.assertIsNone(_run(runtime.open_cards("C1", "111.000")))
+        hermes["hermes_cli.kanban_db"].list_boards = mock.Mock(side_effect=RuntimeError("locked"))
+        with mock.patch.dict(sys.modules, hermes):
+            self.assertIsNone(_run(runtime.open_cards("C1", "111.000")))
 
     def test_read_failure_is_none(self):
         with mock.patch.object(runtime, "_query_open_cards", side_effect=RuntimeError("locked")):
@@ -436,11 +667,6 @@ class MissingPresenterTest(unittest.TestCase):
             ), mock.patch.object(runtime.logger, "warning") as warning:
                 runtime.enabled()
                 self.assertEqual(warning.called, warns)
-
-
-# Keep the enum import used: the fixture's ProcessingOutcome is exec'd, this
-# module compares outcomes by value only.
-assert enum.Enum
 
 
 if __name__ == "__main__":

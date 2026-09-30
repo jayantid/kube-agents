@@ -14,6 +14,7 @@ Evaluation harness that runs [kubernetes-sigs/devops-bench](https://github.com/k
   `/api/v1` interaction contract. It waits for aggregate terminal state before
   producing assertions.
 - `kube_agents_bench/verifiers.py` — the leaf verifiers this repository adds to devops-bench's own, published through the `devops_bench.verifiers` entry-point group.
+- `kube_agents_bench/discovery.py` — reads the onboarding discovery sweep off the agent pod for the `bootstrap_fanout` verifier: the sweep's board rows and the Cluster Agent profiles beside them, in one `kubectl exec`.
 - `kube_agents_bench/fleet.py` — resolves a seeded-fleet fixture ROLE to the kubeconfig that reaches it. Fails loudly rather than falling back to the ambient config; see [tf/fleet/README.md](tf/fleet/README.md).
 - `kube_agents_bench/cases.py`, `scoring.py`, `baselines.py`, `gate.py` — the presubmit's verdict, described under [The gate](#the-gate) below. Nothing devops-bench calls; these read the records it writes.
 - `tasks/` — task definitions. `agent-kanban-smoke` is a no-infrastructure smoke task that exercises the whole pipeline using only toolsets the deployed agent actually ships with. The rest are the Phase 2 domain scenarios; [`tasks/DRAFTS.md`](tasks/DRAFTS.md) is their status page.
@@ -21,7 +22,7 @@ Evaluation harness that runs [kubernetes-sigs/devops-bench](https://github.com/k
 - `scenarios/` — evaluation matrices using `Agent + Persona + Scenario + Goals
 -> Run -> Assertions` terminology.
 - `tests/` — offline tests: the harness against a local HTTP stub, and the gate against real run records captured from a live cluster (`tests/fixtures/runs/`).
-- `hack/` — `run-gitops-pilot.sh`, the laptop driver for the `b-0011-gitops` case (optional devops-bench pin with the case rendered to `mode: hold`, result-row model, agent base branch, tokens, stack and harness env, cleanup).
+- `hack/` — `run-gitops-pilot.sh`, the laptop driver for the `b-0011-gitops` and `b-0022b-gitops` cases (`TASK` picks one; optional devops-bench pin with the case rendered to `mode: hold`, result-row model, agent base branch, tokens, stack and harness env, cleanup; `GITOPS_REPO` and `AGENT_STATE_RESET` for an isolated run); `gitops-run-repo.sh`, one GitOps repository per run (create, mint check, archive); `gitops-audit.py`, the isolation counts of a run record; `gitops-compare.py`, two run records side by side.
 - `tools/` — operator-run scripts that are neither tasks nor tests. `live_check_fleet_safeguards.py` drives every `fleet_resource_property` check in the cluster-debugging cases against a live cluster, through the real verifier, without running an agent.
 
 To add a task or plug in a different agent, see

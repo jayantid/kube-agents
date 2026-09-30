@@ -486,11 +486,11 @@ RUN cd /opt/hermes && \
 # One patch for the kanban notifier's terminal-event path, because clipping the
 # handoff, delivering `result`, and deciding whether to wake the creator are
 # three edits to the same few lines of what is now
-# gateway/kanban_watchers_notifier.py. Three appliers meant four anchors into
-# one function and four ways for an upstream edit to break the build; this is
-# five -- the handoff, the wake set, the incident row (which shared the wake
-# anchor until upstream split the per-event send loop from the wake step), the
-# completion message, and the wake step's outcome.
+# gateway/kanban_watchers_notifier.py. One applier owns all five anchors in
+# that file -- the handoff, the wake set, the incident row (which shared the
+# wake anchor until upstream split the per-event send loop from the wake step),
+# the completion message, and the wake step's outcome -- so an upstream edit
+# that breaks one fails one build step that names it.
 #   * Clip: upstream hard-slices the handoff at 200/160 characters and discards
 #     every line after the first, which delivered a severed GitHub link -- a
 #     ledger URL cut to ".../is" -- on 2026-08-03. Both slices are swapped for a
@@ -580,7 +580,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-notifier/apply_kanban_notifier.py 
     grep -q "_kanban_note_suppressed(" /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -qF '_kanban_store_incident(ev, self.task, self.sub, posted=self.send_passive)' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -qF 'return _kanban_completion_text(n.head, n.title, handoff, n.platform_str)' /opt/hermes/gateway/kanban_watchers_notifier.py && \
-    grep -qF '_kanban_tell_unexplained(self.runner, self.adapter, self.sub, set())' /opt/hermes/gateway/kanban_watchers_notifier.py && \
+    grep -qF '_kanban_tell_unexplained(self.runner, self.adapter, self.sub, set(), self._owner_scope)' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     cd /opt/hermes && /opt/hermes/.venv/bin/python3 -c "\
 import sys; from gateway.kanban_notifier import DEFAULT_WAKE_KINDS; \
 sys.exit('heartbeat is in DEFAULT_WAKE_KINDS: every mid-run progress note would wake the card creator for a full LLM turn') if 'heartbeat' in DEFAULT_WAKE_KINDS else None" && \
@@ -2096,6 +2096,13 @@ RUN set -eu; \
 
 USER 10000:10000
 
+# Slack presentation (reactions by kind, settle reaction), off by
+# default. An install turns it on through the PlatformAgent's
+# spec.deployment.env (the chart's platformAgent.deployment.env), which the
+# container's environment takes over this default. Read by
+# agents/platform/scripts/slack_presenter.py.
+ENV KAGE_SLACK_UX=0
+
 # The build this image came from, for the `User-Agent` that remote MCP calls
 # carry. Hermes resolves `${KUBE_AGENTS_VERSION}` in an `mcp_servers` entry's
 # `args` from the agent process environment, so the value has to be on the
@@ -2113,13 +2120,6 @@ USER 10000:10000
 # names the exact image.
 ARG KUBE_AGENTS_VERSION
 ENV KUBE_AGENTS_VERSION=${KUBE_AGENTS_VERSION}
-
-# Slack presentation (reactions by kind, settle reaction), off by
-# default. An install turns it on through the PlatformAgent's
-# spec.deployment.env (the chart's platformAgent.deployment.env), which the
-# container's environment takes over this default. Read by
-# agents/platform/scripts/slack_presenter.py.
-ENV KAGE_SLACK_UX=0
 
 # --- CREDENTIAL PROXY TOOLING ---
 # Everything the sidecar needs that is not agent source: the credential-aware

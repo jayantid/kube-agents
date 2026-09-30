@@ -175,6 +175,11 @@ FIXTURE_NOT_READY = {
         "no CI tier can run it yet; run it locally "
         "with bench/hack/run-gitops-pilot.sh"
     ),
+    "b-0022b-gitops": (
+        "#1307: the second task through the GitOps fix-cycle stack (gitops_task "
+        "b-0022b); parked for the same reason as b-0011-gitops; run it locally "
+        "with TASK=b-0022b bench/hack/run-gitops-pilot.sh"
+    ),
     "scope-second-project-denied": (
         "#1865: needs a second GCP project per pool project, declared in the "
         "harness install's spec.scope.projects, whose listing the agent's service "
@@ -197,6 +202,19 @@ FIXTURE_NOT_READY = {
         "#1873: needs the stalled-controller role, a Deployment in seeded-stall "
         "on seeded cluster A waiting on a ConfigMap that does not exist; no "
         "fixture role plants a stall today"
+    ),
+    "gitops-drift-noise-filtered-triage": (
+        "#911: needs an audit ingress on the eval install -- a drift-audit "
+        "topic, a subscription and a detector enabled to pull from it, none of "
+        "which hack/ci-deploy.sh builds, so no record of any tier reaches the "
+        "classifier and the case files no card at all, which is broken rather "
+        "than red. The umbrella owns it because the gap is the eval install "
+        "not asking for what the composition already builds behind "
+        "enable_drift_pubsub, not a defect anyone has filed separately. The "
+        "case's own header carries the rest: why the sink is the one part of "
+        "the trio it can do without, why #2137 is not a second blocker, and "
+        "the ALERT_DAILY_LIMIT_DRIFT raise the unparking pull request owes "
+        "alongside the ingress"
     ),
 }
 
@@ -287,6 +305,8 @@ CHECK_ASSERTIONS: dict[str, tuple[str, ...]] = {
     "tool_called": ("tool_names",),
     "worker_commands": ("required_patterns", "forbidden_patterns"),
     "worker_agents": ("required_agents",),
+    # This repository, agent-disk-reading: the discovery sweep a cron job filed.
+    "bootstrap_fanout": ("require",),
 }
 
 # Check types that read live cluster state. A case using one is asserting on

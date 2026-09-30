@@ -487,9 +487,11 @@ async def deliver(
 
     Terminal events are unchanged from the caller's point of view — a new
     message, with the artifact upload and failure accounting that follow it
-    untouched. The only thing added on that path is settling the rolling
-    message first, and that is best-effort: a failed cosmetic edit must not
-    reach the notifier's ``except``, where it would rewind the cursor and count
+    untouched. Two things are added on that path, both best-effort: settling
+    the rolling message first, and, once the terminal message has posted,
+    the ``KAGE_SLACK_UX`` settle reaction on the ask
+    (``slack_ux_reactions.settle_delegated``). Neither may reach the notifier's
+    ``except``, where a failed cosmetic call would rewind the cursor and count
     against the subscription's send-failure budget.
 
     That is the flag-off behaviour. With ``KAGE_SLACK_UX`` on and a Slack card,
@@ -497,14 +499,15 @@ async def deliver(
     last line rather than the whole trail. And a failure the creator's wake will
     explain is held rather than posted, returning ``None`` like the replay path;
     the notifier's wake step drops it once the wake is admitted for the kind, and
-    posts it if the wake raises or never covers the kind, so the thread gets the
-    failure at least once. A line that cannot be held is posted. See section 6
-    of ``gateway/kanban_notifier.py``. And the card's progress goes on its row
-    in the thread's plan rather than in a rolling message of its own, with the
-    rolling message as the fallback when the plan cannot be posted; ``title``
-    is the card's, for the row. See ``gateway/slack_ux_status.py``. Every line
-    it posts, holds or edits keeps the ``@assignee`` and drops the board tag
-    and ``Kanban <id>`` (:func:`slack_line`). A card blocked on ``needs_input``
+    posts it if the wake raises or never covers the kind, so a failed wake does
+    not leave the failure untold. A line that cannot be held is posted. Section 6
+    of ``gateway/kanban_notifier.py`` has the retry and the gap it leaves. And
+    the card's progress goes on its row in the thread's plan rather than in a
+    rolling message of its own, with the rolling message as the fallback when
+    the plan cannot be posted; ``title`` is the card's, for the row. See
+    ``gateway/slack_ux_status.py``. Every line it posts, holds or edits keeps
+    the ``@assignee`` and drops the board tag and ``Kanban <id>``
+    (:func:`slack_line`). A card blocked on ``needs_input``
     posts its question instead of the blocked line, and loses that question's
     buttons at its next event; a note or report saying a PR was opened is
     followed by that PR as a message of its own. See
@@ -547,7 +550,10 @@ async def deliver(
             await _settle_reaction(adapter, sub, kind, board)
             return None
         result = await adapter.send(chat_id, message, metadata=metadata)
-        # A failed post is retried from a rewound cursor; the retry settles.
+        # A failed post raises in the notifier, which rewinds its claim so the
+        # next tick posts again, and that post settles. After the notifier's
+        # MAX_SEND_FAILURES it drops the subscription instead, and the ask
+        # keeps its arrival reaction alone.
         if getattr(result, "success", True) is not False:
             await _settle_reaction(adapter, sub, kind, board)
         if kind == PR_REPORT_KIND:

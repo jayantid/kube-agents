@@ -138,6 +138,7 @@ ADDED_AFTER_THE_MOVE = [
     "chat-voice-ack-names-target",  # the front door's delegation ack
     "first-install-hello-running",  # the first-install hello, both variants
     "first-install-hello-done",
+    "bootstrap-discovery-fanout",  # the onboarding discovery fan-out, PR #2085
 ]
 
 # Admitted after the split, each by a pull request that cited the record
