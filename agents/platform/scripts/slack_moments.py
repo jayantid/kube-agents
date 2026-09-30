@@ -6,9 +6,10 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
 * A pull request the work opened (:func:`pr_opened`): a bold headline naming
   the PR, the worker's own line below it as evidence, and "Open PR" and
   "Files changed" url buttons. :func:`opened_pr` finds it in a progress note or a report, and
-  only where the line says it opened that PR, the verb in front of the url, so
-  a note citing someone else's PR ("… pull/300, opened by bob") is not
-  announced as ours.
+  only where the line says it opened that PR, the verb in front of the url
+  with no one else as its subject, so a note citing someone else's PR
+  ("… pull/300, opened by bob", "Dependabot opened …") is not announced as
+  ours.
 * A question the work is waiting on (:func:`needs_you`): the worker's question
   in bold, the rest of its reason below it, a choice button for each option
   the reason ends with, and a "waiting on you" line. A click is the clicker's
@@ -39,6 +40,14 @@ OPENED_BEFORE_URL = re.compile(
 )
 #: A negation just before the verb: "not opened", "haven't yet opened".
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+#: Who opened it: nothing (or punctuation, a bullet, an emoji) before the verb,
+#: "I"/"we", or "and"/"then" joining it to the worker's earlier steps, with at
+#: most two of "have", "just" and the like between; "Dependabot opened <url>"
+#: is someone else's PR.
+OUR_SUBJECT = re.compile(
+    r"(?:^|[^\w\s']|\b(?:I|we|and|then)\b)\s*(?:(?:have|'ve|also|just|then|now|already)\s+){0,2}$",
+    re.IGNORECASE,
+)
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
@@ -72,7 +81,8 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     for line in str(text or "").splitlines():
         for match in PR_URL.finditer(line):
             verb = OPENED_BEFORE_URL.search(line[: match.start()])
-            if verb and not NEGATED_VERB.search(line[: verb.start()]):
+            before = line[: verb.start()] if verb else ""
+            if verb and OUR_SUBJECT.search(before) and not NEGATED_VERB.search(before):
                 return match.group(0), match.group(2), match.group(3), line.strip()
     return None
 
@@ -113,7 +123,8 @@ def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
     start = len(lines)
     while start > 1 and (not lines[start - 1].strip() or OPTION_LINE.match(lines[start - 1])):
         start -= 1
-    options = [m.group(1) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
+    # A button is plain text: `code` and **bold** would show their markup.
+    options = [_presenter._plain(m.group(1)) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
     if not options or not lines[start - 1].rstrip().endswith(QUESTION_END):
         return len(lines), []
     return start, options

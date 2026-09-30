@@ -1242,6 +1242,12 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
             [("Checking seeded-a.", 1), (self.PR_NOTE, 1), (f"Done. {self.PR_NOTE}", 2)],
         )
 
+    async def test_a_long_note_is_scanned_whole(self):
+        # The rolling line clips at 300 characters, cutting a url past it whole.
+        note = "Reconciled the overlays. " * 13 + self.PR_NOTE
+        await deliver(SimpleNamespace(), _Adapter(), SLACK_SUB, "heartbeat", _beat(1, note), "", None, HEADER)
+        self.assertEqual([text for _task, text, _sent in self.announced], [note])
+
     async def test_a_failed_send_announces_nothing(self):
         class _Refusing(_Adapter):
             async def send(self, chat_id, content, metadata=None):

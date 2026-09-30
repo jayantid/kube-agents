@@ -64,6 +64,14 @@ class OpenedPrTest(unittest.TestCase):
         for lead in ("I have not opened", "Never opened", "I haven't yet opened a PR:", "didn't create"):
             self.assertIsNone(m.opened_pr(f"{lead} {PR}"), lead)
 
+    def test_someone_else_as_the_subject_is_not_ours(self):
+        for lead in ("Dependabot opened", "alice created", "bob has opened", "Renovate just opened"):
+            self.assertIsNone(m.opened_pr(f"{lead} {PR} to bump the base image"), lead)
+
+    def test_our_own_subject_or_steps_still_count(self):
+        for lead in ("I opened", "We've opened", "I have just opened", "Re-ran the suite and opened PR", "- Opened", "✅ Opened", "Done: opened"):
+            self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+
     def test_the_opened_pr_is_found_after_a_cited_one(self):
         other = "https://github.com/acme/x/pull/300"
         self.assertEqual(m.opened_pr(f"Following up {other}, opened {PR}")[0], PR)
@@ -112,6 +120,10 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(blocks[-1]["block_id"], p.WAITING_BLOCK_ID)
         self.assertEqual(text.split("\n")[:2], ["*Which checkout-gateway did you mean?*", "Two clusters run one. Which?"])
         self.assertIn("seeded-debug", text)
+
+    def test_option_markup_is_not_on_the_button(self):
+        blocks, _ = m.needs_you("Which cluster?\n- `seeded-reliability`\n- **seeded-debug**")
+        self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["seeded-reliability", "seeded-debug"])
 
     def test_a_list_after_the_question_is_not_choices(self):
         reason = "Should I restart it?\nI found:\n- pod a is OOMKilled\n- pod b is Pending"

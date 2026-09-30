@@ -652,7 +652,9 @@ async def deliver(
     moments = _slack_moments(quiet)
     await _settle_question(moments, adapter, sub, kind)
     result = await _roll(adapter, sub, metadata, header, title, line, _slack_plan(quiet), event_id, tracked)
-    await _pr_opened(moments, adapter, sub, line, result)
+    # The whole note, not the clipped line: a url past the clip is cut whole.
+    note = progress_note(getattr(ev, "payload", None), limit=0) if kind == "heartbeat" else ""
+    await _pr_opened(moments, adapter, sub, note or line, result)
     return result
 
 
