@@ -3618,6 +3618,15 @@ class TestSlackAuditHeadline(unittest.TestCase):
         self._post(blocks_post=lambda *a, **k: self.BLOCKS_TS)
         self.assertEqual(self.posts[0].kwargs["timeout"], session_kv_server.AUDIT_BLOCKS_POST_TIMEOUT_S)
 
+    def test_refused_blocks_with_no_fold_are_not_retried(self):
+        self._blocks_on()
+        issue = dict(self.ISSUE, body="Nothing listed.")
+        refused = session_kv_server.slack_blocks_post.Refused("invalid_blocks")
+        _, calls = self._post(composed=self.ONE_LINE, issue=issue, blocks_post=refused)
+        self.assertEqual(len(self.posts), 1)
+        self.assertNotIn("container", self._types(self.posts[0].args[2]))
+        self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
+
     def test_a_refused_fold_on_the_one_line_report_threads_every_finding(self):
         self._blocks_on()
         answers = iter([session_kv_server.slack_blocks_post.Refused("invalid_blocks"), self.BLOCKS_TS])

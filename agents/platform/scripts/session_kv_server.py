@@ -2005,8 +2005,10 @@ CRON_REPORT_MAX_LABEL_CHARS = 200
 # the worst case before the Slack send is the two together.
 AUDIT_LEDGER_FETCH_TIMEOUT_S = 20
 # Each Block Kit post of that headline, which can run twice (once more without
-# the fold when Slack refuses it), adds to the same budget.
-AUDIT_BLOCKS_POST_TIMEOUT_S = 10
+# the fold when Slack refuses it), adds to the same budget. It is the relay's
+# own bound on one Slack call, because giving up sooner on a post the relay is
+# still making falls back to text and can leave two headlines in the channel.
+AUDIT_BLOCKS_POST_TIMEOUT_S = slack_blocks_post.POST_TIMEOUT_S
 
 # Only a fleet-audit job's report gets the audit headline. The job is looked up
 # in its profile's cron roster under the agent home: the default profile's

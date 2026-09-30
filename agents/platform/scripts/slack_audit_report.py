@@ -203,8 +203,8 @@ def blocks_from_issue(
     links = [(LEDGER_BUTTON.format(number=ref.number), ref.url)]
     head = _head(parsed)
     fold_rows = _rows(parsed.findings[:FOLD_ROWS_MAX])
-    if len(fold_rows) == parsed.count:
-        fold_title = FOLD_TITLE.format(count=parsed.count)
+    if len(fold_rows) >= parsed.count:
+        fold_title = FOLD_TITLE.format(count=len(fold_rows))
     else:
         fold_title = FOLD_TITLE_PARTIAL.format(shown=len(fold_rows), count=parsed.count)
     blocks = blocks_report(

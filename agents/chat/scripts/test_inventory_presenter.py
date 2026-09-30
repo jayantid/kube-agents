@@ -337,6 +337,12 @@ class BlocksDeliveryTest(unittest.TestCase):
         self.assertEqual(self._run(OSError("connection refused")), PRESENTED)
         self.assertEqual(len(self.posts), 1)
 
+    def test_refused_blocks_with_no_fold_are_not_retried(self):
+        quiet = "# Scan\n\nAll quiet. One thing stands out.\n\n1. **A (minor)**\n   Fix it.\n2. **B**\n   Fix that.\n"
+        (self.d / "INVENTORY.md").write_text(quiet, encoding="utf-8")
+        self.assertEqual(self._run(self.sbp.Refused("invalid_blocks")), inventory_presenter.present(quiet))
+        self.assertEqual(len(self.posts), 1)
+
     def test_a_post_that_may_have_landed_still_prints_the_text(self):
         # The first inventory is sent once, so a second copy beats none.
         self.assertEqual(self._run(TimeoutError("timed out")), PRESENTED)

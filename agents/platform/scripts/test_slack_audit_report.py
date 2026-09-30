@@ -227,6 +227,11 @@ class BlocksFromIssueTest(unittest.TestCase):
         blocks, _, _ = sar.blocks_from_issue(issue, REF, REPORT)
         self.assertEqual(blocks[-1]["title"]["text"], "all 4 findings")
 
+    def test_more_findings_listed_than_counted_titles_the_rows(self):
+        issue = dict(ISSUE, title="[audit] Security & RBAC Posture Audit — 3 findings (2 critical)")
+        blocks, _, _ = sar.blocks_from_issue(issue, REF, REPORT)
+        self.assertEqual(blocks[-1]["title"]["text"], "all 4 findings")
+
     def test_without_the_fold_the_findings_are_markdown_for_the_thread(self):
         blocks, _, rest = sar.blocks_from_issue(ISSUE, REF, REPORT, fold_in_place=False)
         self.assertEqual(blocks[-1]["type"], "actions")
