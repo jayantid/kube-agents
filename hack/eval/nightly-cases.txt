@@ -443,3 +443,10 @@
 # §2, step 4). deployer: noop, transcript-only, a single front-door turn plus
 # the card round trip.
 ./tasks/chat-voice-ack-names-target/task.yaml
+
+# The first-install hello, both variants: the greeting's shape (one message,
+# Kage, read-only, results in this chat, changes as pull requests, one
+# question) over the bootstrap_onboarding plugin's eval seam, which
+# prebuilt/first-install-hello arms per case. No fixture; the host install only.
+./tasks/first-install-hello-running/task.yaml
+./tasks/first-install-hello-done/task.yaml
