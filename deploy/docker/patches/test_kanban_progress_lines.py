@@ -1136,6 +1136,7 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         self.posts_question = True
         self.settled = []
         self.questions_settled = []
+        self.asked_event = 0
         test = self
 
         async def needs_you(adapter, sub, payload, event_id=0):
@@ -1157,6 +1158,7 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         reactions = SimpleNamespace(enabled=lambda: test.flag, settle_delegated=settle_delegated)
         moments = SimpleNamespace(
             enabled=lambda: test.flag,
+            asked=lambda sub, event_id: event_id == test.asked_event,
             needs_you=needs_you,
             pr_opened=pr_opened,
             settle_question=settle_question,
@@ -1192,6 +1194,21 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.sent, [])
         self.assertEqual(self.settled, [("t_e0c1", "blocked")])
         self.assertFalse(getattr(self.watcher, kanban_notifier.HELD_ATTR, {}), "the line was also held")
+
+    async def test_a_replayed_block_neither_settles_nor_reposts_its_question(self):
+        self.asked_event = 3
+        adapter = _Adapter()
+        self.assertIsNone(await self._blocked(adapter, {"kind": "needs_input", "reason": "Which cluster?"}))
+        self.assertEqual((self.asked, self.questions_settled, adapter.sent), ([], [], []))
+        self.assertFalse(getattr(self.watcher, kanban_notifier.HELD_ATTR, {}), "the replay held the line")
+
+    async def test_a_failed_replay_check_posts_the_question(self):
+        def asked(sub, event_id):
+            raise RuntimeError("boom")
+
+        self.modules["gateway.slack_ux_moments"].asked = asked
+        self.assertIsNone(await self._blocked(_Adapter(), {"kind": "needs_input", "reason": "Which cluster?"}))
+        self.assertEqual(len(self.asked), 1)
 
     async def test_a_block_with_no_question_keeps_the_blocked_path(self):
         for posts in (False, RuntimeError("boom")):

@@ -62,6 +62,21 @@ class SlackAdapter:
     def _wire_plugin_handlers(self, app):
         return None
 
+    async def _begin_interaction(self, ack, body, action, kind, *, team_scoped=True):
+        await ack()
+        team_id = action_id = value = msg_ts = channel_id = user_name = user_id = ""
+        message = {}
+        return team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id
+
+    def _get_client(self, chat_id, team_id=None):
+        return None
+
+    async def _handle_slack_message(self, event, payload=None):
+        return None
+
+    _slack_disable_dms = staticmethod(lambda: False)
+    _slack_allowed_channels = staticmethod(set)
+
     def _register_bolt_handlers(self) -> None:
         """Wire every Bolt listener onto ``self._app``; must run before Socket Mode starts."""
         self._app.action(re.compile(r"^hermes_clarify_choice_\\d+$"))(self._handle_clarify_action)
@@ -146,6 +161,28 @@ class ApplierTest(unittest.TestCase):
     def test_verifier_refuses_unpatched_tree(self):
         with self.assertRaises(SystemExit):
             verifier.main(self.root.dir)
+
+    def test_verifier_refuses_an_adapter_missing_what_the_runtime_calls(self):
+        applier.apply(self.root.dir)
+        path = self.root.dir / applier.RELATIVE
+        patched = path.read_text()
+        returns = "return team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id"
+        for old, new, named in (
+            ("def _get_client(", "def _client_for(", "_get_client"),
+            ("_slack_disable_dms = ", "_disable_dms = ", "_slack_disable_dms"),
+            ("_slack_allowed_channels = ", "_allowed_channels = ", "_slack_allowed_channels"),
+            ("def _handle_slack_message(", "def _handle_message(", "_handle_slack_message"),
+            ("def _begin_interaction(", "def _start_interaction(", "_begin_interaction"),
+            ("body, action, kind, *", "body, action, source, kind, *", "_begin_interaction takes"),
+            (returns, returns.replace("channel_id, user_name", "user_name, channel_id"), "returns"),
+            (returns, returns + ", None", "returns"),
+        ):
+            with self.subTest(named=named, new=new):
+                self.assertEqual(patched.count(old), 1, old)
+                path.write_text(patched.replace(old, new))
+                with self.assertRaises(SystemExit) as caught:
+                    verifier.main(self.root.dir)
+                self.assertIn(named, str(caught.exception))
 
 
 class FlagOffIdentityTest(unittest.TestCase):
@@ -352,6 +389,15 @@ class RuntimeTest(unittest.TestCase):
         self._answer(_Adapter(), *_choice())
         self.assertTrue(runtime.answered(CHANNEL, MESSAGE_TS))
         self.assertFalse(runtime.answered("C0OTHER", MESSAGE_TS))
+
+    def test_a_failed_rewrite_is_not_reported_answered_but_still_answers_once(self):
+        adapter = _Adapter(fail=("chat_update",))
+        with self.assertLogs(runtime.logger, level="WARNING"):
+            self._answer(adapter, *_choice(1, "Leave it"))
+        self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS), "a question the click did not rewrite reads settled")
+        self._answer(_Adapter(), *_choice(0, "Raise to 512Mi"))
+        self.assertEqual([entry[0] for entry in adapter.log], ["chat_postMessage", "message"])
+        self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS))
 
     def test_label_is_escaped_in_what_slack_shows_but_not_in_the_turn(self):
         adapter = _Adapter()

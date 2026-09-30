@@ -8,10 +8,14 @@ that point in the build).
 
 Two things are checked:
 
-1. The adapter. ``_register_bolt_handlers`` still wires the plugin action
-   handlers, and the flag guard calling ``_kage_slack_clicks.register(self)``
-   follows that call directly. The import the guard names is bound at module
-   level.
+1. The adapter. ``SlackAdapter`` still has the members the runtime calls:
+   ``_begin_interaction(ack, body, action, kind)`` returning the eight fields
+   :func:`slack_ux_clicks.answer` unpacks, in that order, plus
+   ``_slack_allowed_channels``, ``_slack_disable_dms``, ``_get_client`` and
+   ``_handle_slack_message``. ``_register_bolt_handlers`` still wires the plugin
+   action handlers, and the flag guard calling
+   ``_kage_slack_clicks.register(self)`` follows that call directly. The import
+   the guard names is bound at module level.
 2. The runtime module, loaded by path from ``gateway/`` and driven with a stub
    adapter: flag off it registers nothing; flag on, an authorized choice click
    rewrites the message, echoes, and reaches the message handler as the
@@ -39,6 +43,18 @@ PLUGIN_WIRING = "_register_plugin_action_handlers"
 GUARD_ALIAS = "_kage_slack_clicks"
 IMPORT_MODULE = "gateway"
 IMPORT_NAME = "slack_ux_clicks"
+
+ADAPTER_CLASS = "SlackAdapter"
+#: The adapter members ``slack_ux_clicks`` calls; the stub below supplies them,
+#: so only this check ties them to upstream.
+RUNTIME_MEMBERS = (
+    "_begin_interaction", "_slack_allowed_channels", "_slack_disable_dms", "_get_client",
+    "_handle_slack_message",
+)
+BEGIN_INTERACTION = "_begin_interaction"
+BEGIN_POSITIONAL = ("self", "ack", "body", "action", "kind")
+#: What ``_begin_interaction`` returns, unpacked positionally by ``answer()``.
+BEGIN_RETURNS = ("team_id", "action_id", "value", "message", "msg_ts", "channel_id", "user_name", "user_id")
 
 CHANNEL = "C0KAGE"
 TEAM = "T0KAGE"
@@ -93,11 +109,47 @@ def _is_guard(stmt: ast.stmt) -> bool:
     )
 
 
+def _members(cls: ast.ClassDef) -> dict[str, ast.AST]:
+    """The class body's methods and assigned names (upstream builds some getters by assignment)."""
+    found: dict[str, ast.AST] = {}
+    for stmt in cls.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            found[stmt.name] = stmt
+        elif isinstance(stmt, ast.Assign):
+            found.update({t.id: stmt for t in stmt.targets if isinstance(t, ast.Name)})
+    return found
+
+
+def check_members(tree: ast.Module) -> None:
+    """The adapter members the runtime calls exist, and ``_begin_interaction`` has its shape."""
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == ADAPTER_CLASS]
+    if len(classes) != 1:
+        raise _fail(f"{ADAPTER} has {len(classes)} class {ADAPTER_CLASS}, expected 1")
+    members = _members(classes[0])
+    missing = [name for name in RUNTIME_MEMBERS if name not in members]
+    if missing:
+        raise _fail(f"{ADAPTER_CLASS} no longer has {', '.join(missing)}, which slack_ux_clicks calls")
+    begin = members[BEGIN_INTERACTION]
+    if not isinstance(begin, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        raise _fail(f"{ADAPTER_CLASS}.{BEGIN_INTERACTION} is no longer a method")
+    positional = tuple(a.arg for a in [*begin.args.posonlyargs, *begin.args.args])
+    if positional != BEGIN_POSITIONAL:
+        raise _fail(f"{BEGIN_INTERACTION} takes {positional!r}, slack_ux_clicks passes {BEGIN_POSITIONAL!r}")
+    returned = [
+        tuple(e.id if isinstance(e, ast.Name) else ast.unparse(e) for e in n.value.elts)
+        for n in ast.walk(begin)
+        if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple)
+    ]
+    if returned != [BEGIN_RETURNS]:
+        raise _fail(f"{BEGIN_INTERACTION} returns {returned!r}, slack_ux_clicks unpacks {BEGIN_RETURNS!r}")
+
+
 def check_adapter(root: Path) -> None:
     path = root / ADAPTER
     if not path.is_file():
         raise _fail(f"{path} does not exist")
     tree = ast.parse(path.read_text())
+    check_members(tree)
     methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == METHOD]
     if len(methods) != 1:
         raise _fail(f"{ADAPTER} has {len(methods)} def {METHOD}(), expected 1")

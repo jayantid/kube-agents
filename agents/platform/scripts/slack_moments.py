@@ -11,7 +11,8 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
   ("… pull/300, opened by bob", "Dependabot opened …") is not announced as
   ours.
 * A question the work is waiting on (:func:`needs_you`): the worker's question
-  in bold, the rest of its reason below it, a choice button for each option
+  in bold (plain, when bold would cost it a ``*`` or a ``__name__``), the rest
+  of its reason below it, a choice button for each option
   the reason ends with, and a "waiting on you" line. A click is the clicker's
   answer in the thread (``gateway/slack_ux_clicks.py``), the same path as
   typing it. The options are buttons only when there are two to five, each
@@ -49,20 +50,33 @@ OUR_SUBJECT = re.compile(
     r"(?:(?:have|[’']ve|also|just|then|now|already|\w+ly)\s+){0,3}$",
     re.IGNORECASE,
 )
-#: Someone else before a joining "and"/"then": "Dependabot then opened",
-#: "Alice reviewed and opened", "@bob and opened". A clause led by a mention or a
-#: capitalised name and "has"/"had" or a past-tense verb, or a mention or a lone
-#: capitalised name (not "I", not a past-tense verb like "Fixed") right before it.
-OTHER_BEFORE_JOIN = re.compile(
-    r"(?:(?:^|[^\w\s'’])\s*(?:@\w+|(?!I\b)[A-Z]\w*)\s+(?:has|had|\w+ed)\b[^.!?;:]*"
-    r"|@\w+\s*|(?:^|[^\w\s'’])\s*(?!I\b)[A-Z]\w*(?<!ed)\s*)$"
-)
+#: Where the clause before a joining "and"/"then" starts: after the last of these.
+CLAUSE_BREAK = re.compile(r"[.!?;:]")
+#: A clause's words, a mention's "@" and a hyphenated verb's "-" kept.
+CLAUSE_WORD = re.compile(r"[\w@'’-]+")
+#: Words skipped at the start of that clause: "Just fixed and opened".
+CLAUSE_FILLER = re.compile(r"also|just|now|already|then|\w+ly", re.IGNORECASE)
+#: The clause is the worker's own step when it starts with "I"/"we" or a
+#: past-tense verb, regular or one of these.
+OUR_CLAUSE_LEAD = re.compile(r"I|we|we[’']ve|I[’']ve", re.IGNORECASE)
+PAST_VERB = re.compile(r"[\w-]+ed", re.IGNORECASE)
+IRREGULAR_PAST = frozenset({
+    "ran", "re-ran", "reran", "made", "wrote", "rewrote", "built", "rebuilt", "found", "took",
+    "did", "put", "set", "got", "sent", "split", "kept", "began", "brought", "gave",
+})
+#: After a leading "-ed" word, one of these makes that word a name doing the
+#: step, "Fred reviewed and opened", not the worker's verb.
+NAME_THEN_VERB = re.compile(r"has|had|was|[\w-]+ed", re.IGNORECASE)
 #: The worker's line under the headline, clipped: a note can be one long
 #: paragraph, and a Slack context element holds at most 3,000 characters.
 EVIDENCE_MAX = 300
 #: Markup a button cannot show, stripped from an option with its pair only, so
 #: a glob (``app=web-*``) or a dunder name keeps its characters.
 OPTION_MARKUP = re.compile(r"`([^`]+)`|\*\*([^*]+)\*\*")
+#: The same for the question's headline, plus a paired ``*emphasis*``.
+HEADLINE_MARKUP = re.compile(
+    r"`([^`]+)`|\*\*([^*]+)\*\*|(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])"
+)
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
@@ -101,10 +115,28 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
             if not subject or NEGATED_VERB.search(before):
                 continue
             joined = subject.group("joined")
-            if joined and OTHER_BEFORE_JOIN.search(before[: subject.start("joined")]):
+            if joined and not _our_step(before[: subject.start("joined")]):
                 continue
             return match.group(0), match.group(2), match.group(3), line.strip()
     return None
+
+
+def _our_step(before_join: str) -> bool:
+    """Whether the clause before a joining "and"/"then" is the worker's own step.
+
+    "Fixed and opened" and "I reviewed and opened" are; "Dependabot then
+    opened", "bob reviewed and opened" and "Kube Agents Robot then opened"
+    are not, since a clause that does not start with "I"/"we" or a past-tense
+    verb names someone else.
+    """
+    words = CLAUSE_WORD.findall(CLAUSE_BREAK.split(before_join)[-1])
+    while words and CLAUSE_FILLER.fullmatch(words[0]):
+        words.pop(0)
+    if not words or OUR_CLAUSE_LEAD.fullmatch(words[0]):
+        return True
+    if not (PAST_VERB.fullmatch(words[0]) or words[0].lower() in IRREGULAR_PAST):
+        return False
+    return not (len(words) > 1 and NAME_THEN_VERB.fullmatch(words[1]))
 
 
 def _escape(text: str) -> str:
@@ -139,6 +171,16 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
 
 def _unmarked(option: str) -> str:
     return OPTION_MARKUP.sub(lambda m: m.group(1) or m.group(2), option).strip()
+
+
+def _headline_text(headline: str) -> str:
+    """``headline`` as plain text, stripped of paired markup only, so a glob
+    (``app=web-*``) or a dunder name keeps its characters; the presenter's
+    ``_plain`` drops every ``*`` and collapses ``__name__``."""
+    text = _presenter.HEADING.sub("", headline.strip())
+    text = _presenter.LIST_MARKER.sub("", text)
+    text = _presenter.MD_LINK.sub(r"\1", text)
+    return HEADLINE_MARKUP.sub(lambda m: m.group(1) or m.group(2) or m.group(3), text).strip()
 
 
 def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
@@ -197,6 +239,13 @@ def needs_you(reason: str, buttons: bool = True) -> tuple[list[dict], str] | Non
         "elements": [{"type": "mrkdwn", "text": WAITING}],
     })
     first, *more = _presenter.fallback_text(headline, choices=options).split("\n")
+    title = _headline_text(headline)
+    if title != _presenter._plain(headline):
+        # Slack mrkdwn has no escape for "*", so a headline the presenter would
+        # change goes out as plain text, unbolded but with its characters.
+        title = _presenter._clip(title, _presenter.HEADLINE_MAX)
+        blocks[0] = {"type": "section", "text": {"type": "plain_text", "text": title, "emoji": True}}
+        first = _escape(title)
     return blocks, "\n".join([_text(first, detail), *more])
 
 

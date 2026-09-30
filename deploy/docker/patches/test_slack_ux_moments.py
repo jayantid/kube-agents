@@ -197,6 +197,23 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(len(adapter.updates), 1)
         self.assertEqual(runtime._questions[runtime._sub_key(SUB)][0], 9)
 
+    def test_a_replayed_block_neither_settles_nor_reposts(self):
+        adapter = _Adapter()
+        self.assertTrue(_run(runtime.needs_you(adapter, SUB, QUESTION, 3)))
+        self.assertTrue(runtime.asked(SUB, 3))
+        self.assertFalse(runtime.asked(SUB, 4))
+        self.assertFalse(runtime.asked({**SUB, "task_id": "t_other"}, 3))
+        self.assertTrue(_run(runtime.needs_you(adapter, SUB, QUESTION, 3)))
+        self.assertEqual((len(adapter.posts), adapter.updates), (1, []))
+        self.assertTrue(runtime.asked(SUB, 3), "the replay dropped the open question")
+
+    def test_a_question_with_no_event_id_is_never_a_replay(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION))
+        self.assertFalse(runtime.asked(SUB, 0))
+        _run(runtime.needs_you(adapter, SUB, QUESTION))
+        self.assertEqual(len(adapter.posts), 2)
+
     def test_the_card_is_found_by_its_open_questions_message(self):
         adapter = _Adapter()
         _run(runtime.needs_you(adapter, SUB, QUESTION, 3))

@@ -471,6 +471,17 @@ async def _needs_you(moments: Any, adapter: Any, sub: dict, ev: Any) -> bool:
         return False
 
 
+def _asked(moments: Any, sub: dict, event_id: int) -> bool:
+    """Whether the card's open question was posted for this event: a replay of its ``blocked``."""
+    if moments is None or not event_id:
+        return False
+    try:
+        return bool(moments.asked(sub, event_id))
+    except Exception as exc:  # noqa: BLE001 — fail towards settling and posting as before
+        logger.debug("kanban progress: reading the question for %s failed: %s", sub.get("task_id"), exc)
+        return False
+
+
 async def _settle_question(moments: Any, adapter: Any, sub: dict, kind: str) -> None:
     """Take the buttons off the card's open question: any event means it was answered,
     since a card blocks again only once unblocked. A new question posts after this."""
@@ -613,8 +624,9 @@ async def deliver(
     ``gateway/slack_ux_status.py``. Every line it posts, holds or edits keeps
     the ``@assignee`` and drops the board tag and ``Kanban <id>``
     (:func:`slack_line`). A card blocked on ``needs_input``
-    posts its question instead of the blocked line, and loses that question's
-    buttons at its next event; a note or report saying a PR was opened is
+    posts its question instead of the blocked line, once however often the
+    notifier replays the event, and loses that question's buttons at its next
+    event; a note or report saying a PR was opened is
     followed by that PR as a message of its own. See
     ``gateway/slack_ux_moments.py``.
     """
@@ -646,6 +658,10 @@ async def deliver(
                 )
         tracked.pop(key, None)
         moments = _slack_moments(quiet)
+        if kind == NEEDS_YOU_KIND and _asked(moments, sub, event_id):
+            # An at-least-once replay of the block whose question is up: settling
+            # it would take its buttons off and posting would repeat it.
+            return None
         await _settle_question(moments, adapter, sub, kind)
         if kind == NEEDS_YOU_KIND and moments is not None and await _needs_you(moments, adapter, sub, ev):
             await _settle_reaction(adapter, sub, kind, board)

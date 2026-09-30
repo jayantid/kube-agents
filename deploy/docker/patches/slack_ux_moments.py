@@ -21,7 +21,7 @@ reaches the thread as "⏸ <head> blocked: <reason>", clipped to 160
 characters, and the ``blocked`` wake has the Planning Agent explain it, so
 the thread gets the question twice, once as a paraphrase. With the flag on,
 :func:`needs_you` instead posts the reason as a question: the first line in
-bold, the rest below (clipped at 2,000 characters), a choice button per option
+bold (plain if bold would drop a ``*``), the rest below (clipped at 2,000 characters), a choice button per option
 the question ends with, and "waiting on you". Buttons need the card's thread, since a click answers in the
 thread it was clicked in; a card with no thread keeps its options as text.
 The wake still runs, since it is how the Planning Agent learns which card an
@@ -34,8 +34,11 @@ and ``kanban_unblock``. A click's turn names the card, which
 When the card moves on, any event of it, :func:`settle_question` takes the
 buttons and "waiting on you" off the question, so a typed answer does not
 leave them live. A question a click already answered was rewritten by the
-click and is left alone. The open questions are held in process, so a restart
-leaves the buttons of any it forgot.
+click and is left alone; one whose rewrite failed is settled here. The
+notifier delivers at least once, so a ``blocked`` event replayed after its
+question posted (:func:`asked`) neither settles nor reposts it. The open
+questions are held in process, so a restart leaves the buttons of any it
+forgot.
 
 Fail-soft: a moment that cannot be posted is logged, and the caller falls back
 to what it did before.
@@ -173,6 +176,8 @@ async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) ->
     )
     if moment is None:
         return False
+    if asked(sub, event_id):
+        return True
     # A card blocks again only after it was unblocked, so an earlier question is answered.
     await settle_question(adapter, sub)
     blocks, text = moment
@@ -182,6 +187,13 @@ async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) ->
     entry = (int(event_id or 0), str(sub.get("chat_id") or ""), ts, blocks, text)
     _remember(_questions, _sub_key(sub), entry)
     return True
+
+
+def asked(sub: dict, event_id: int) -> bool:
+    """Whether the card's open question was posted for the ``blocked`` event ``event_id``:
+    a notifier replay of that event, which must not settle or repost it."""
+    entry = _questions.get(_sub_key(sub))
+    return bool(event_id) and entry is not None and entry[0] == int(event_id)
 
 
 def question_card(channel: str, ts: str) -> str | None:

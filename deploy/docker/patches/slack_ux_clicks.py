@@ -36,7 +36,8 @@ With the flag on, :func:`register` adds two listeners:
 
 A message is answered once: the first authorized click wins, and a second
 click on the same message, before the rewrite lands, is dropped in this
-process.
+process. :func:`answered` reports the message only once the rewrite landed, so
+a question whose rewrite failed is still settled when its card moves on.
 
 Fail-soft throughout: a rewrite or echo that fails is logged and the turn
 still runs, because the click was the user's answer.
@@ -91,7 +92,8 @@ FALLBACK_TS = "kage-click-{ts}-{action}-{user}"
 #: Bound on the answered-message map, oldest evicted first.
 ANSWERED_MAX = 512
 
-_answered: OrderedDict[tuple, None] = OrderedDict()
+#: ``(channel, ts, kind)`` a click answered -> whether its rewrite landed.
+_answered: OrderedDict[tuple, bool] = OrderedDict()
 _warned_missing = False
 
 
@@ -127,8 +129,8 @@ def _escape(text: str) -> str:
 
 
 def answered(channel_id: str, msg_ts: str) -> bool:
-    """Whether a choice click in this process already answered the message."""
-    return (str(channel_id), str(msg_ts), CHOICE_KIND) in _answered
+    """Whether a choice click in this process answered the message and rewrote it."""
+    return bool(_answered.get((str(channel_id), str(msg_ts), CHOICE_KIND)))
 
 
 def _answered_by(other: str) -> bool:
@@ -215,7 +217,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     key = (channel_id, msg_ts, kind)
     if key in _answered:
         return
-    _answered[key] = None
+    _answered[key] = False
     while len(_answered) > ANSWERED_MAX:
         _answered.popitem(last=False)
 
@@ -228,6 +230,8 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
             channel=channel_id, ts=msg_ts, text=message.get("text") or note,
             blocks=answered_blocks(message.get("blocks"), _answered_by, note),
         )
+        if key in _answered:
+            _answered[key] = True
     except Exception as exc:  # noqa: BLE001 — the click still answers
         logger.warning("slack_ux_clicks: could not mark %s answered: %s", msg_ts, exc)
     try:

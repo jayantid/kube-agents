@@ -68,6 +68,8 @@ class OpenedPrTest(unittest.TestCase):
         for lead in (
             "Dependabot opened", "alice created", "bob has opened", "Renovate just opened",
             "Dependabot then opened", "Alice reviewed and opened", "@bob and opened", "bob successfully opened",
+            "bob reviewed and opened", "Kube Agents Robot then opened", "Fred reviewed and opened",
+            "Tests passed. Renovate rebased and opened", "the bot then opened",
         ):
             self.assertIsNone(m.opened_pr(f"{lead} {PR} to bump the base image"), lead)
 
@@ -76,7 +78,8 @@ class OpenedPrTest(unittest.TestCase):
             "I opened", "We've opened", "I have just opened", "Re-ran the suite and opened PR", "- Opened",
             "✅ Opened", "Done: opened", "Successfully created PR #412:", "Successfully opened",
             "I have successfully opened", "Finally opened", "Done! I’ve opened", "I have now also opened",
-            "Fixed and opened", "Checked the limits, then opened",
+            "Fixed and opened", "Checked the limits, then opened", "I reviewed and opened",
+            "Just fixed it and then opened", "Tests passed. Rebuilt the image and opened", "We've tested and opened",
         ):
             self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
 
@@ -142,6 +145,22 @@ class NeedsYouTest(unittest.TestCase):
     def test_a_glob_or_dunder_option_keeps_its_characters(self):
         blocks, _ = m.needs_you("Which pods?\n- Delete app=web-*\n- Keep `__pycache__`\n- Scale to 2*3")
         self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["Delete app=web-*", "Keep __pycache__", "Scale to 2*3"])
+
+    def test_a_glob_or_dunder_headline_keeps_its_characters(self):
+        for reason, title in (
+            ("Scale app=web-* to 0?\n- Yes\n- No", "Scale app=web-* to 0?"),
+            ("Delete __pycache__ from the image?\n- Yes\n- No", "Delete __pycache__ from the image?"),
+            ("Delete `app=web-*` & **all** its pods?", "Delete app=web-* & all its pods?"),
+        ):
+            blocks, text = m.needs_you(reason)
+            self.assertEqual(blocks[0]["text"], {"type": "plain_text", "text": title, "emoji": True}, reason)
+            self.assertEqual(text.split("\n")[0], title.replace("&", "&amp;"), reason)
+            self.assertEqual(m.needs_you_settled(blocks)[0], blocks[0])
+
+    def test_a_headline_the_presenter_keeps_whole_stays_bold(self):
+        blocks, text = m.needs_you("Restart the **prod** pods in `web`?\n- Yes\n- No")
+        self.assertEqual(blocks[0]["text"], {"type": "mrkdwn", "text": "*Restart the prod pods in web?*"})
+        self.assertEqual(text.split("\n")[0], "*Restart the prod pods in web?*")
 
     def test_a_list_after_the_question_is_not_choices(self):
         reason = "Should I restart it?\nI found:\n- pod a is OOMKilled\n- pod b is Pending"
