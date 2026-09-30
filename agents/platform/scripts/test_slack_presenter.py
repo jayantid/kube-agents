@@ -350,6 +350,10 @@ class BlocksReportTest(unittest.TestCase):
     def test_fold_left_out_when_not_in_place(self):
         self.assertNotIn("container", [b["type"] for b in self._report(fold_in_place=False)])
 
+    def test_has_fold(self):
+        self.assertTrue(sp.has_fold(self._report()))
+        self.assertFalse(sp.has_fold(self._report(fold_in_place=False)))
+
     def test_fold_rows_are_bounded(self):
         fold = self._report(fold_rows=[{"text": "x"}] * (sp.FOLD_ROWS_MAX + 5))[-1]
         self.assertEqual(len(fold["child_blocks"][0]["elements"]), sp.FOLD_ROWS_MAX)

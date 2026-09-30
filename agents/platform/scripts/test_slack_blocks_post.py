@@ -28,9 +28,9 @@ class _Response(io.BytesIO):
         return False
 
 
-def _http_error(body: dict) -> urllib.error.HTTPError:
+def _http_error(body: dict, code: int = 502) -> urllib.error.HTTPError:
     raw = json.dumps(body).encode("utf-8")
-    return urllib.error.HTTPError(RELAY, 502, "Bad Gateway", {}, io.BytesIO(raw))
+    return urllib.error.HTTPError(RELAY, code, "Bad Gateway", {}, io.BytesIO(raw))
 
 
 class PostTest(unittest.TestCase):
@@ -69,9 +69,22 @@ class PostTest(unittest.TestCase):
         with self.assertRaisesRegex(sbp.Refused, "invalid_blocks"):
             self._post(_http_error({"error": "slack_api_error", "slack": {"error": "invalid_blocks"}}))
 
-    def test_a_relay_failure_is_not_a_refusal(self):
-        with self.assertRaises(urllib.error.HTTPError):
+    def test_a_relay_server_error_may_have_posted(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
             self._post(_http_error({"error": "upstream timeout"}))
+        self.assertNotIsInstance(caught.exception, (sbp.Refused, sbp.NotSent))
+
+    def test_a_relay_client_error_was_not_sent(self):
+        with self.assertRaisesRegex(sbp.NotSent, "401"):
+            self._post(_http_error({"error": "unauthorized"}, code=401))
+
+    def test_a_failure_before_sending_was_not_sent(self):
+        with self.assertRaisesRegex(sbp.NotSent, "connection refused"):
+            self._post(urllib.error.URLError("connection refused"))
+
+    def test_a_timeout_reading_the_answer_may_have_posted(self):
+        with self.assertRaises(TimeoutError):
+            self._post(TimeoutError("timed out"))
 
     def test_no_relay_posts_nothing(self):
         os.environ[sbp.RELAY_ENV] = " "

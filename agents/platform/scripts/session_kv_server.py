@@ -2004,6 +2004,9 @@ CRON_REPORT_MAX_LABEL_CHARS = 200
 # (`GITOPS_STATE_READ_TIMEOUT_SECONDS`) when the state file is not mounted, so
 # the worst case before the Slack send is the two together.
 AUDIT_LEDGER_FETCH_TIMEOUT_S = 20
+# Each Block Kit post of that headline, which can run twice (once more without
+# the fold when Slack refuses it), adds to the same budget.
+AUDIT_BLOCKS_POST_TIMEOUT_S = 10
 
 # Only a fleet-audit job's report gets the audit headline. The job is looked up
 # in its profile's cron roster under the agent home: the default profile's
@@ -2415,6 +2418,14 @@ def _unrelayed_notice(profile: str, job_id: str) -> str:
     )
 
 
+class AuditPost(NamedTuple):
+    """Where :func:`_post_audit_blocks` left the report: its thread, whether the fold is in place, and the thread's rest."""
+
+    thread_id: str
+    folded: bool
+    rest: str
+
+
 class AuditHeadline(NamedTuple):
     """The text headline, and the ledger issue it was built from (None when unreadable)."""
 
@@ -2521,14 +2532,18 @@ def _post_audit_fold(profile: str, job_id: str, message: str, chat_id: str, thre
 
 def _post_audit_blocks(
     profile: str, job_id: str, headline: AuditHeadline, message: str, chat_id: str, thread_id: str
-) -> tuple[str, bool] | None:
-    """Post mock 08's Block Kit report; ``(thread id, folded in place)``, or None to post text instead.
+) -> AuditPost | None:
+    """Post mock 08's Block Kit report; where it landed, or None to post text instead.
 
     None, before anything is posted, when there are no blocks to build (no
     issue, a clean run, an issue that does not parse) or no Slack relay in the
-    environment; and after a relay failure, which posted nothing Slack
-    accepted. Slack refusing the blocks is retried once without the fold,
-    whose findings then go in the thread as the text path's do.
+    environment; after Slack refused the blocks without and with the fold; and
+    after a relay failure. Slack refusing the fold is retried once without it,
+    and ``rest`` then carries its findings for the thread. A failure that may
+    have posted (a timeout once the request was sent) still falls back to text:
+    a leg with no thread id fails the route, and ``report_to_chat``'s caller
+    then returns the whole report for relay again, so declining to re-post
+    here would trade a possible second copy for a certain one.
     """
     if headline.issue is None or not slack_blocks_post.configured():
         return None
@@ -2537,16 +2552,27 @@ def _post_audit_blocks(
         built = slack_audit_report.blocks_from_issue(headline.issue, headline.ref, message, fold_in_place)
         if built is None:
             return None
-        blocks, text = built
+        blocks, text, rest = built
         try:
-            ts = slack_blocks_post.post(chat_id or _slack_home_channel(), text, blocks, thread_id if threaded else "")
+            ts = slack_blocks_post.post(
+                chat_id or _slack_home_channel(),
+                text,
+                blocks,
+                thread_id if threaded else "",
+                timeout=AUDIT_BLOCKS_POST_TIMEOUT_S,
+            )
         except slack_blocks_post.Refused as exc:
             logger.warning(f"Relay for {profile}/{job_id}: Slack refused the report blocks ({exc})")
+            if not slack_presenter.has_fold(blocks):
+                return None
             continue
-        except Exception as exc:
-            logger.warning(f"Relay for {profile}/{job_id}: report blocks not posted, posting text: {exc!r}")
+        except slack_blocks_post.NotSent as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: report blocks not sent, posting text: {exc}")
             return None
-        return (thread_id if threaded else ts), fold_in_place
+        except Exception as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: report blocks may have posted, posting text: {exc!r}")
+            return None
+        return AuditPost(thread_id if threaded else ts, fold_in_place, rest)
     return None
 
 
@@ -2735,13 +2761,17 @@ def relay_cron_report(
         # A truncated report keeps its notice, which the blocks have no place for.
         if headline and not truncation_notice:
             posted = _post_audit_blocks(profile, job_id, headline, message, leg_chat_id, leg_thread_id)
+        rest = ""
         if posted is not None:
-            new_thread_id, folded = posted[0] or None, posted[1]
+            new_thread_id, folded, rest = posted.thread_id or None, posted.folded, posted.rest
         else:
             leg_message = truncation_notice + headline.text if headline else message
             new_thread_id, folded = _send_to_chat(platform, leg_message, leg_chat_id, leg_thread_id), False
-        if new_thread_id and headline and not folded and slack_audit_report.has_more(message):
-            _post_audit_fold(profile, job_id, message, leg_chat_id, new_thread_id)
+        if new_thread_id and headline and not folded:
+            if slack_audit_report.has_more(message):
+                _post_audit_fold(profile, job_id, message, leg_chat_id, new_thread_id)
+            elif rest:
+                _post_audit_fold(profile, job_id, rest, leg_chat_id, new_thread_id)
         if new_thread_id:
             threads[platform] = new_thread_id
         else:

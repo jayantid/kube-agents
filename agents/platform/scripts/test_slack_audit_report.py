@@ -191,7 +191,7 @@ class HasMoreTest(unittest.TestCase):
 
 class BlocksFromIssueTest(unittest.TestCase):
     def test_mock_08(self):
-        blocks, text = sar.blocks_from_issue(ISSUE, REF, REPORT)
+        blocks, text, rest = sar.blocks_from_issue(ISSUE, REF, REPORT)
         self.assertEqual(
             [b["type"] for b in blocks], ["rich_text", "divider", "rich_text", "divider", "actions", "container"]
         )
@@ -205,8 +205,10 @@ class BlocksFromIssueTest(unittest.TestCase):
         self.assertEqual(choice["action_id"], "kage_audit.choice.0")
         self.assertEqual(choice["style"], "primary")
         self.assertEqual((link["text"]["text"], link["url"]), ("Ledger issue #231 ↗", LEDGER))
-        self.assertEqual(blocks[5]["title"]["text"], "all 7 findings")
+        # The issue lists four of the seven its title counts, and the fold says so.
+        self.assertEqual(blocks[5]["title"]["text"], "4 of 7 findings")
         self.assertEqual(len(blocks[5]["child_blocks"][0]["elements"]), 4)
+        self.assertEqual(rest, "")
         self.assertEqual(
             text,
             "*Security &amp; RBAC Posture audit: 7 findings, 2 critical.*\n"
@@ -217,12 +219,22 @@ class BlocksFromIssueTest(unittest.TestCase):
 
     def test_choice_label_comes_from_the_finding(self):
         body = BODY.replace("seeded-b, seeded-c: `cluster-admin` bound to the default service account", "privileged pods")
-        blocks, _ = sar.blocks_from_issue(dict(ISSUE, body=body), REF, REPORT)
+        blocks, _, _ = sar.blocks_from_issue(dict(ISSUE, body=body), REF, REPORT)
         self.assertEqual(blocks[4]["elements"][0]["text"]["text"], "look at: privileged pods")
 
-    def test_without_the_fold(self):
-        blocks, _ = sar.blocks_from_issue(ISSUE, REF, REPORT, fold_in_place=False)
+    def test_every_finding_listed_is_all_of_them(self):
+        issue = dict(ISSUE, title="[audit] Security & RBAC Posture Audit — 4 findings (2 critical)")
+        blocks, _, _ = sar.blocks_from_issue(issue, REF, REPORT)
+        self.assertEqual(blocks[-1]["title"]["text"], "all 4 findings")
+
+    def test_without_the_fold_the_findings_are_markdown_for_the_thread(self):
+        blocks, _, rest = sar.blocks_from_issue(ISSUE, REF, REPORT, fold_in_place=False)
         self.assertEqual(blocks[-1]["type"], "actions")
+        self.assertEqual(
+            rest.splitlines()[:2],
+            ["**4 of 7 findings**", "`critical` seeded-b, seeded-c: `cluster-admin` bound to the default service account"],
+        )
+        self.assertEqual(len(rest.splitlines()), 5)
 
     def test_clean_and_unparsed_runs_have_no_blocks(self):
         clean = {"title": "[audit] Cost Audit — 0 findings (0 critical)", "body": "Nothing."}

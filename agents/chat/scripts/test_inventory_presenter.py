@@ -337,6 +337,11 @@ class BlocksDeliveryTest(unittest.TestCase):
         self.assertEqual(self._run(OSError("connection refused")), PRESENTED)
         self.assertEqual(len(self.posts), 1)
 
+    def test_a_post_that_may_have_landed_still_prints_the_text(self):
+        # The first inventory is sent once, so a second copy beats none.
+        self.assertEqual(self._run(TimeoutError("timed out")), PRESENTED)
+        self.assertEqual(len(self.posts), 1)
+
     def test_no_chat_id_prints_the_text(self):
         self.assertEqual(self._run(lambda *a: "9.9", origin={"platform": "slack"}), PRESENTED)
         self.assertEqual(self.posts, [])

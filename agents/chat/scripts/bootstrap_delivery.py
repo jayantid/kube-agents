@@ -174,8 +174,10 @@ def _posted_as_blocks(content: str) -> bool:
     """Whether the report was posted to Slack as Block Kit; False posts nothing.
 
     False, and the caller prints the text, unless the flag is on, the origin is
-    Slack with a chat id, the relay is configured and the report parses. A
-    relay failure is False too: it posted nothing Slack accepted.
+    Slack with a chat id, the relay is configured and the report parses. Any
+    failure is False too, including one that may have posted (a timeout once
+    the request was sent): this report is sent once per install, and a second
+    copy of it is a smaller loss than none.
     """
     try:
         import slack_presenter
@@ -201,6 +203,8 @@ def _posted_as_blocks(content: str) -> bool:
                 ts = slack_blocks_post.post(channel, text, blocks, thread_ts)
             except slack_blocks_post.Refused as e:
                 sys.stderr.write(f"bootstrap_delivery: Slack refused the report blocks ({e})\n")
+                if not slack_presenter.has_fold(blocks):
+                    return False
                 continue
             if rest:
                 _post_rest(slack_blocks_post, channel, rest, thread_ts or ts)
@@ -242,8 +246,8 @@ def main(data_dir: Path | None = None) -> int:
         sys.stdout.write(_presented(content))
         sys.stdout.flush()
 
-    # Cleanup runs only after the report is safely on stdout (already captured
-    # by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
+    # Cleanup runs only after the report is posted or safely on stdout (already
+    # captured by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
     _cleanup(data_dir)
     return 0
 

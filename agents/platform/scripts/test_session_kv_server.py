@@ -3555,13 +3555,13 @@ class TestSlackAuditHeadline(unittest.TestCase):
 
     def test_flag_off_with_a_relay_posts_no_blocks(self):
         os.environ["SLACK_RELAY_URL"] = "http://127.0.0.1:8765"
-        _, calls = self._post(blocks_post=lambda *a: self.BLOCKS_TS)
+        _, calls = self._post(blocks_post=lambda *a, **k: self.BLOCKS_TS)
         self.assertEqual(self.posts, [])
         self.assertEqual([c.args for c in calls], [("slack", self.COMPOSED, "", "")])
 
     def test_flag_on_with_a_relay_posts_the_report_as_blocks_folded_in_place(self):
         self._blocks_on()
-        response, calls = self._post(blocks_post=lambda *a: self.BLOCKS_TS)
+        response, calls = self._post(blocks_post=lambda *a, **k: self.BLOCKS_TS)
         self.assertEqual(response.json()["status"], "delivered")
         self.assertEqual(calls, [])  # the fold holds the findings, so nothing goes in the thread
         (post,) = self.posts
@@ -3579,7 +3579,7 @@ class TestSlackAuditHeadline(unittest.TestCase):
         self._blocks_on()
         answers = iter([session_kv_server.slack_blocks_post.Refused("invalid_blocks"), self.BLOCKS_TS])
 
-        def post(*args):
+        def post(*args, **kwargs):
             answer = next(answers)
             if isinstance(answer, Exception):
                 raise answer
@@ -3600,22 +3600,50 @@ class TestSlackAuditHeadline(unittest.TestCase):
         self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
         self.assertEqual(calls[1].args, ("slack", self.COMPOSED, self.HOME, self.SLACK_THREAD))
 
-    def test_a_relay_failure_posts_the_text_headline_without_retrying(self):
+    def test_a_post_that_never_reached_slack_posts_the_text_headline_without_retrying(self):
         self._blocks_on()
-        _, calls = self._post(blocks_post=OSError("connection refused"))
+        _, calls = self._post(blocks_post=session_kv_server.slack_blocks_post.NotSent("connection refused"))
         self.assertEqual(len(self.posts), 1)
         self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
 
+    def test_a_post_that_may_have_landed_still_posts_the_text_headline(self):
+        # A leg with no thread fails the route, and its caller relays the whole report again.
+        self._blocks_on()
+        _, calls = self._post(blocks_post=TimeoutError("timed out"))
+        self.assertEqual(len(self.posts), 1)
+        self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
+
+    def test_the_blocks_post_is_bounded_by_its_own_timeout(self):
+        self._blocks_on()
+        self._post(blocks_post=lambda *a, **k: self.BLOCKS_TS)
+        self.assertEqual(self.posts[0].kwargs["timeout"], session_kv_server.AUDIT_BLOCKS_POST_TIMEOUT_S)
+
+    def test_a_refused_fold_on_the_one_line_report_threads_every_finding(self):
+        self._blocks_on()
+        answers = iter([session_kv_server.slack_blocks_post.Refused("invalid_blocks"), self.BLOCKS_TS])
+
+        def post(*args, **kwargs):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        response, calls = self._post(composed=self.ONE_LINE, blocks_post=post)
+        self.assertEqual(response.json()["status"], "delivered")
+        ((platform, rest, chat_id, thread_id),) = [c.args for c in calls]
+        self.assertEqual((platform, chat_id, thread_id), ("slack", self.HOME, self.BLOCKS_TS))
+        self.assertEqual(rest, "**1 of 7 findings**\n`critical` cluster-admin bound to default")
+
     def test_an_unreadable_ledger_posts_text_and_no_blocks(self):
         self._blocks_on()
-        _, calls = self._post(composed=self.ONE_LINE, issue=None, blocks_post=lambda *a: self.BLOCKS_TS)
+        _, calls = self._post(composed=self.ONE_LINE, issue=None, blocks_post=lambda *a, **k: self.BLOCKS_TS)
         self.assertEqual(self.posts, [])
         self.assertTrue(calls[0].args[1].startswith("**Security & RBAC posture audit: 2 new"))
 
     def test_a_second_blocks_report_goes_into_the_existing_thread(self):
         self._blocks_on()
-        self._post(job_id="rbac-3", blocks_post=lambda *a: self.BLOCKS_TS)
-        self._post(job_id="rbac-3", blocks_post=lambda *a: self.BLOCKS_TS)
+        self._post(job_id="rbac-3", blocks_post=lambda *a, **k: self.BLOCKS_TS)
+        self._post(job_id="rbac-3", blocks_post=lambda *a, **k: self.BLOCKS_TS)
         self.assertEqual((self.posts[0].args[0], self.posts[0].args[3]), (self.HOME, self.BLOCKS_TS))
 
 class TestCronReportLabelSanitisation(unittest.TestCase):

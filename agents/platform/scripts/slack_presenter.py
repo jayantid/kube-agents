@@ -161,6 +161,8 @@ UNTAGGED_PLURAL = "findings"
 FOLD_ROWS_MAX = 50
 ROW_TEXT_MAX = 300
 PRIMARY_STYLE = "primary"
+#: Slack's collapsible block, the report's fold.
+FOLD_BLOCK = "container"
 
 CODE_FENCE = "```"
 HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
@@ -516,7 +518,7 @@ def blocks_report(
     fold: list[dict] = []
     if fold_in_place and fold_rows:
         fold.append({
-            "type": "container",
+            "type": FOLD_BLOCK,
             "title": {"type": "plain_text", "text": _clip(_plain(fold_title or DEFAULT_FOLD_TITLE), BUTTON_TEXT_MAX)},
             "is_collapsible": True,
             "default_collapsed": True,
@@ -527,6 +529,11 @@ def blocks_report(
     actions = _actions(choice_buttons + link_buttons)
     blocks.extend(fold + actions if fold_first else actions + fold)
     return blocks
+
+
+def has_fold(blocks: Sequence[dict]) -> bool:
+    """Whether ``blocks`` fold in place, so leaving the fold out is worth a retry."""
+    return any(block.get("type") == FOLD_BLOCK for block in blocks)
 
 
 def fold_reply(fold_title: str | None, fold_markdown: str) -> str:

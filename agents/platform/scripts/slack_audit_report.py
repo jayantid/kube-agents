@@ -26,7 +26,16 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from slack_presenter import ELLIPSIS, HEADLINE_MAX, _clip, _plain, blocks_report, fallback_text, severity_row
+from slack_presenter import (
+    ELLIPSIS,
+    FOLD_ROWS_MAX,
+    HEADLINE_MAX,
+    _clip,
+    _plain,
+    blocks_report,
+    fallback_text,
+    severity_row,
+)
 
 ISSUE_URL = r"https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
 #: The ledger link: the report's last URL, after the SOPs' dash or a "Ledger:"
@@ -65,6 +74,8 @@ ACTION_ID_PREFIX = "kage_audit"
 LOOK_AT = "look at: {finding}"
 LEDGER_BUTTON = "Ledger issue #{number} ↗"
 FOLD_TITLE = "all {count} findings"
+#: The fold's title when the issue lists fewer findings than its title counts.
+FOLD_TITLE_PARTIAL = "{shown} of {count} findings"
 
 
 class LedgerRef(NamedTuple):
@@ -175,14 +186,14 @@ def headline_from_issue(issue: dict, ref: LedgerRef, report: str = "") -> str | 
 
 def blocks_from_issue(
     issue: dict, ref: LedgerRef, report: str = "", fold_in_place: bool = True
-) -> tuple[list[dict], str] | None:
-    """Mock 08's ``(blocks, text)`` built from the fetched ledger issue, or None.
+) -> tuple[list[dict], str, str] | None:
+    """Mock 08's ``(blocks, text, rest)`` built from the fetched ledger issue, or None.
 
     None when the issue does not parse, and for a clean run, which stays the
     one line :func:`headline_from_issue` gives. ``text`` is the message's
     mrkdwn ``text`` field. With ``fold_in_place`` False the fold is left out,
-    for a caller whose container Slack refused, which then posts the report
-    in the thread instead.
+    for a caller whose container Slack refused, and ``rest`` is its findings
+    as markdown for the thread; otherwise ``rest`` is empty.
     """
     parsed = _parse_issue(issue, report)
     if parsed is None or parsed.count == 0:
@@ -191,18 +202,26 @@ def blocks_from_issue(
     choices = [LOOK_AT.format(finding=_plain(top[0]["text"]))] if top else []
     links = [(LEDGER_BUTTON.format(number=ref.number), ref.url)]
     head = _head(parsed)
+    fold_rows = _rows(parsed.findings[:FOLD_ROWS_MAX])
+    if len(fold_rows) == parsed.count:
+        fold_title = FOLD_TITLE.format(count=parsed.count)
+    else:
+        fold_title = FOLD_TITLE_PARTIAL.format(shown=len(fold_rows), count=parsed.count)
     blocks = blocks_report(
         head,
         note=parsed.note,
         rows=top,
         choices=choices,
         links=links,
-        fold_title=FOLD_TITLE.format(count=parsed.count),
-        fold_rows=_rows(parsed.findings),
+        fold_title=fold_title,
+        fold_rows=fold_rows,
         action_id_prefix=ACTION_ID_PREFIX,
         fold_in_place=fold_in_place,
     )
-    return blocks, fallback_text(head, rows=top, links=links)
+    rest = ""
+    if fold_rows and not fold_in_place:
+        rest = "\n".join([f"**{fold_title}**", *(severity_row(row["severity"], row["text"]) for row in fold_rows)])
+    return blocks, fallback_text(head, rows=top, links=links), rest
 
 
 def _fallback_line(line: str) -> str:
