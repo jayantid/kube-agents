@@ -318,6 +318,28 @@ class SettleQuestionTest(unittest.TestCase):
         with self.assertLogs(runtime.logger, "WARNING"):
             _run(runtime.settle_question(adapter, SUB))
 
+    def test_a_failed_rewrite_keeps_the_question_and_the_next_settle_retries(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
+        card = runtime.question_card("C0KAGE", POSTED_TS)
+        self.assertIsNotNone(card)
+        adapter.fail = True
+        with self.assertLogs(runtime.logger, "WARNING"):
+            _run(runtime.settle_question(adapter, SUB))
+        self.assertEqual(runtime.question_card("C0KAGE", POSTED_TS), card)
+        adapter.fail = False
+        _run(runtime.settle_question(adapter, SUB))
+        self.assertEqual(_buttons(adapter.updates[-1]["blocks"]), [])
+        self.assertEqual(runtime._questions, {})
+        self.assertIsNone(runtime.question_card("C0KAGE", POSTED_TS))
+
+    def test_a_clicked_question_is_forgotten_without_a_rewrite(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
+        with mock.patch.object(runtime, "_clicked", return_value=True):
+            _run(runtime.settle_question(adapter, SUB))
+        self.assertEqual(runtime._questions, {})
+
 
 class _Root:
     """A throwaway Hermes root holding the fixture notifier and the runtime module."""

@@ -217,20 +217,30 @@ def _clicked(channel: str, ts: str) -> bool:
 
 
 async def settle_question(adapter: Any, sub: dict) -> None:
-    """Take the buttons and "waiting on you" off the card's open question, if it has one."""
-    entry = _questions.pop(_sub_key(sub), None)
+    """Take the buttons and "waiting on you" off the card's open question, if it has one.
+
+    The question is forgotten only once the rewrite succeeds (or a click has
+    answered it), so a failed rewrite is retried on the card's next event and
+    a click in between still names the card.
+    """
+    key = _sub_key(sub)
+    entry = _questions.get(key)
     if entry is None:
         return
     _event_id, channel, ts, blocks, text = entry
     if not ts or _clicked(channel, ts):
+        _questions.pop(key, None)
         return
     try:
         client = adapter._get_client(channel, team_id=sub.get("team_id") or None)
         await client.chat_update(
             channel=channel, ts=ts, text=text, blocks=_moments.needs_you_settled(blocks)
         )
-    except Exception as exc:  # noqa: BLE001 — cosmetic; the card has moved on
+    except Exception as exc:  # noqa: BLE001 — cosmetic; the next event retries
         logger.warning("slack_ux_moments: settling the question %s failed: %s", ts, exc)
+        return
+    if _questions.get(key) is entry:
+        _questions.pop(key, None)
 
 
 def wake_text(sub: dict, events: Iterable[Any], wake_kinds: Any, text: str) -> str:
