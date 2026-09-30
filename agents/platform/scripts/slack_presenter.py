@@ -2,9 +2,9 @@
 
 Pure functions only. Nothing here imports the Hermes gateway, the Slack SDK or
 the network, so any process that posts to Slack can use it, and it can move
-with Slack ingress when it leaves the gateway. Today its one caller is the
+with Slack ingress when it leaves the gateway. Today its callers are the
 gateway's reactions patch (``slack_ux_reactions``), which the kanban notifier
-also reaches.
+also reaches, and its button-click patch (``slack_ux_clicks``).
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
@@ -122,11 +122,12 @@ ELLIPSIS = "…"
 
 #: Action ids: ``<prefix>.link.<n>`` and ``<prefix>.choice.<n>``. Link buttons
 #: open their url client-side and Slack still sends a block_actions request,
-#: which the no-op handler acknowledges; choice buttons are the caller's to
-#: handle.
+#: which the no-op handler acknowledges; a choice click is answered as the
+#: clicker's reply (the gateway's ``slack_ux_clicks``).
 LINK_ACTION = "link"
 CHOICE_ACTION = "choice"
 LINK_ACTION_ID_PATTERN = re.compile(r"\.link\.\d+$")
+CHOICE_ACTION_ID_PATTERN = re.compile(r"\.choice\.\d+$")
 
 #: Row severity markers. Unknown or absent severity gets no marker.
 SEVERITY_MARKERS = {
