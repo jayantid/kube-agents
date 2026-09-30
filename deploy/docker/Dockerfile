@@ -246,6 +246,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/kanban-progress/apply_kanban_progress_lin
     grep -qF '"heartbeat": _fmt_heartbeat,' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -q 'note = _progress_note(ev.payload)' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -q '_send_res = await _progress_deliver(' /opt/hermes/gateway/kanban_watchers_notifier.py && \
+    grep -qF 'await _progress_silent_event(self, ev)' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -qF 'self.runner, adapter, sub, ev.kind, ev, msg, metadata,' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -qF 'self.progress_header = f"{self.board_tag}{tag}"' /opt/hermes/gateway/kanban_watchers_notifier.py && \
     grep -q 'from gateway.kanban_progress_lines import deliver as _progress_deliver' /opt/hermes/gateway/kanban_watchers_notifier.py && \
@@ -524,8 +525,8 @@ RUN cd /opt/hermes && \
 #     completion message drops its `done` head line, and a failure line the
 #     creator's wake will explain is held rather than posted. The wake step
 #     drops it once the wake is admitted for its kind, and posts it if the wake
-#     raises or never asked for the kind, so a failed wake cannot leave the
-#     failure untold.
+#     raises or never asked for the kind, so a failed wake does not by itself
+#     leave the failure untold (the module's section 6 lists what still does).
 #
 # The wake edit is now three greps rather than one because v2026.8.13 gave the
 # subscription its own `delivery_mode`, so the patched line is a parenthesized
