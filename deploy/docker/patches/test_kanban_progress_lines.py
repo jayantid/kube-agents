@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s deploy/docker/patches -p 'test_*.py' -t dep
 """
 
 import ast
+import os
 import shutil
 import sys
 import tempfile
@@ -12,8 +13,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2] / "agents" / "platform" / "scripts"))
+
 import apply_kanban_progress_lines as applier
 import kanban_notifier
+import kanban_progress_lines
+import slack_moments
+import slack_presenter
+import slack_ux_moments
 import kanban_notify_delivery
 from kanban_handoff_clip import ELLIPSIS
 from kanban_progress_lines import (
@@ -1289,6 +1297,137 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
             await self._blocked(without, payload)
         self.assertEqual((with_module.sent, with_module.edits), (without.sent, without.edits))
         self.assertEqual((self.asked, self.announced, self.questions_settled), ([], [], []))
+
+
+class _SlackClient:
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    async def chat_postMessage(self, **kwargs):
+        self.adapter.posts.append(kwargs)
+        return {"ts": "1790717880.000300"}
+
+    async def chat_update(self, **kwargs):
+        self.adapter.updates.append(kwargs)
+
+
+class _SlackAdapter(_Adapter):
+    """A Slack adapter: the moments module posts and updates through its client."""
+
+    def __init__(self):
+        super().__init__()
+        self.posts = []
+        self.updates = []
+
+    def _get_client(self, chat_id, team_id=None):
+        return _SlackClient(self)
+
+
+class TypedAnswerSettlesTheQuestionTest(unittest.IsolatedAsyncioTestCase):
+    """KAGE_SLACK_UX on: a card unblocked by a typed answer takes its question's buttons off.
+
+    Upstream claims ``unblocked`` but formats it to None, so ``_send_pings``
+    skips it before ``deliver`` and only the applier's silent-kind hook passes
+    it on. This runs the applied notifier with the real ``deliver``,
+    ``silent_event`` and ``slack_ux_moments``: the question posts on
+    ``blocked`` and loses its buttons and "waiting on you" on ``unblocked``,
+    not at the card's next delivered event.
+    """
+
+    QUESTION = {"kind": "needs_input", "reason": "Which cluster should I check first?\n- seeded-a\n- seeded-b"}
+
+    def setUp(self):
+        self.flag = "1"
+        test = self
+
+        async def settle_delegated(adapter, sub, kind, board=None):
+            return None
+
+        reactions = SimpleNamespace(
+            enabled=lambda: test.flag == "1", settle_delegated=settle_delegated,
+        )
+        modules = {
+            "gateway": SimpleNamespace(
+                slack_ux_reactions=reactions,
+                slack_ux_moments=slack_ux_moments,
+                kanban_progress_lines=kanban_progress_lines,
+            ),
+            "gateway.slack_ux_reactions": reactions,
+            "gateway.slack_ux_moments": slack_ux_moments,
+            "gateway.kanban_progress_lines": kanban_progress_lines,
+        }
+        for patcher in (
+            mock.patch.dict(sys.modules, modules),
+            mock.patch.object(slack_ux_moments, "_moments", slack_moments),
+            mock.patch.object(slack_ux_moments, "_presenter", slack_presenter),
+            mock.patch.object(slack_ux_moments, "_questions", type(slack_ux_moments._questions)()),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _notification(self, adapter):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        (root / "gateway").mkdir()
+        (root / "tools").mkdir()
+        # The fixture's _send_pings ends at the skip; upstream sends what it did not skip.
+        (root / applier.NOTIFIER_RELATIVE).write_text(
+            _notifier_source(True) + "            await self._send_event(ev, msg)\n"
+        )
+        (root / applier.SCHEMAS_RELATIVE).write_text(_SCHEMAS_SOURCE)
+        applier.apply(root)
+        path = root / applier.NOTIFIER_RELATIVE
+        namespace = {}
+        exec(compile("from typing import Any, Callable\n" + path.read_text(), str(path), "exec"), namespace)
+        formatters = namespace["_EVENT_FORMATTERS"]
+        formatters["blocked"] = lambda ev, n: (f"⏸ {n.head} blocked", None, None)
+        notification = namespace["_KanbanNotification"](SimpleNamespace(), {})
+        notification.sub, notification.adapter = SLACK_SUB, adapter
+        notification.board_slug, notification.title = "default", "Pick a cluster"
+        # Upstream's format_event, reduced: a kind with no formatter is silent.
+        notification.format_event = lambda ev: (
+            formatters[ev.kind](ev, notification)[0] if ev.kind in formatters else None
+        )
+        return notification
+
+    async def _ask_then_unblock(self, adapter):
+        notification = self._notification(adapter)
+        with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": self.flag}):
+            notification.events = [SimpleNamespace(id=3, kind="blocked", payload=self.QUESTION)]
+            await notification._send_pings()
+            posted = list(adapter.posts)
+            notification.events = [SimpleNamespace(id=4, kind="unblocked", payload=None)]
+            await notification._send_pings()
+        return posted
+
+    async def test_an_unblocked_card_takes_the_buttons_off_its_question(self):
+        adapter = _SlackAdapter()
+        posted = await self._ask_then_unblock(adapter)
+        self.assertEqual(len(posted), 1)
+        self.assertTrue(_choices(posted[0]["blocks"]))
+        self.assertEqual(len(adapter.updates), 1, "the unblock left the question's buttons live")
+        settled = adapter.updates[0]
+        self.assertEqual(settled["ts"], "1790717880.000300")
+        self.assertEqual(_choices(settled["blocks"]), [])
+        self.assertNotIn(
+            slack_presenter.WAITING_BLOCK_ID, [block.get("block_id") for block in settled["blocks"]],
+        )
+        self.assertEqual(adapter.sent, [])
+
+    async def test_flag_off_the_unblock_touches_nothing(self):
+        self.flag = "0"
+        adapter = _SlackAdapter()
+        await self._ask_then_unblock(adapter)
+        self.assertEqual((adapter.posts, adapter.updates), ([], []))
+        self.assertEqual(len(adapter.sent), 1)
+
+
+def _choices(blocks):
+    return [
+        element for block in blocks if block.get("type") == "actions"
+        for element in block.get("elements") or ()
+        if slack_presenter.CHOICE_ACTION_ID_PATTERN.search(str(element.get("action_id") or ""))
+    ]
 
 
 if __name__ == "__main__":
