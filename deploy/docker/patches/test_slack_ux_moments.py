@@ -197,6 +197,15 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(len(adapter.updates), 1)
         self.assertEqual(runtime._questions[runtime._sub_key(SUB)][0], 9)
 
+    def test_the_card_is_found_by_its_open_questions_message(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
+        self.assertEqual(runtime.question_card("C0KAGE", POSTED_TS), SUB["task_id"])
+        self.assertIsNone(runtime.question_card("C0OTHER", POSTED_TS))
+        self.assertIsNone(runtime.question_card("C0KAGE", "1700000000.000999"))
+        _run(runtime.settle_question(adapter, SUB))
+        self.assertIsNone(runtime.question_card("C0KAGE", POSTED_TS))
+
 
 class WakeTextTest(unittest.TestCase):
     """The ``blocked`` wake notes a question needs_you posted for that event, and nothing else."""

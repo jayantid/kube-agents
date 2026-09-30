@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
@@ -301,10 +302,31 @@ class RuntimeTest(unittest.TestCase):
             {
                 "type": "message", "user": USER, "text": "Leave it", "channel": CHANNEL, "ts": ACTION_TS,
                 "thread_ts": THREAD, "_hermes_force_process": True, "team": TEAM,
-                "_kage_click": {"action_id": "kage.choice.1", "message_ts": MESSAGE_TS},
             },
         )
         self.assertEqual(adapter.acks, 1)
+
+    def test_a_click_on_a_cards_question_names_the_card(self):
+        moments = SimpleNamespace(
+            question_card=lambda channel, ts: "t_e0c1" if (channel, ts) == (CHANNEL, MESSAGE_TS) else None
+        )
+        with mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_moments=moments), "gateway.slack_ux_moments": moments}):
+            adapter = _Adapter()
+            self._answer(adapter, *_choice())
+        turn = adapter.log[-1][1]
+        self.assertEqual(turn["text"], "Leave it\n\n" + runtime.CARD_NOTE.format(card="t_e0c1"))
+
+    def test_a_click_on_any_other_message_is_the_label_alone(self):
+        moments = SimpleNamespace(question_card=lambda channel, ts: None)
+        for modules in (
+            {"gateway": SimpleNamespace(slack_ux_moments=moments), "gateway.slack_ux_moments": moments},
+            {"gateway": None, "gateway.slack_ux_moments": None},
+        ):
+            with self.subTest(modules=modules), mock.patch.dict(sys.modules, modules):
+                runtime._answered.clear()
+                adapter = _Adapter()
+                self._answer(adapter, *_choice())
+                self.assertEqual(adapter.log[-1][1]["text"], "Leave it")
 
     def test_unlisted_user_changes_nothing(self):
         adapter = _Adapter(authorized=False)

@@ -20,20 +20,22 @@ report often both carry it.
 reaches the thread as "⏸ <head> blocked: <reason>", clipped to 160
 characters, and the ``blocked`` wake has the Planning Agent explain it, so
 the thread gets the question twice, once as a paraphrase. With the flag on,
-:func:`needs_you` instead posts the whole reason as a question: the first line
-in bold, the rest below, a choice button per option the reason lists, and
-"waiting on you". Buttons need the card's thread, since a click answers in the
+:func:`needs_you` instead posts the reason as a question: the first line in
+bold, the rest below (clipped at 2,000 characters), a choice button per option
+the question ends with, and "waiting on you". Buttons need the card's thread, since a click answers in the
 thread it was clicked in; a card with no thread keeps its options as text.
 The wake still runs, since it is how the Planning Agent learns which card an
 answer belongs to, but :func:`wake_text` adds a note that the question is
 already posted, so it says nothing now and only takes the answer, typed or
 clicked (``gateway/slack_ux_clicks.py``), to the card with ``kanban_comment``
-and ``kanban_unblock``. Other block kinds keep the line.
+and ``kanban_unblock``. A click's turn names the card, which
+:func:`question_card` looks up. Other block kinds keep the line.
 
-When the card moves on, :func:`settle_question` takes the buttons and
-"waiting on you" off the question, so a typed answer does not leave them live.
-A question a click already answered was rewritten by the click and is left
-alone.
+When the card moves on, any event of it, :func:`settle_question` takes the
+buttons and "waiting on you" off the question, so a typed answer does not
+leave them live. A question a click already answered was rewritten by the
+click and is left alone. The open questions are held in process, so a restart
+leaves the buttons of any it forgot.
 
 Fail-soft: a moment that cannot be posted is logged, and the caller falls back
 to what it did before.
@@ -71,8 +73,8 @@ BLOCKED_KIND = "blocked"
 
 #: Added to the ``blocked`` wake when the question is already in the thread.
 WAKE_NOTE = (
-    "The specialist's question is already posted in this thread, word for word, as its own "
-    "message with its choices. Do not restate, paraphrase or acknowledge it. If nothing else "
+    "The specialist's question is already posted in this thread, in the specialist's words, as "
+    "its own message with its choices. Do not restate, paraphrase or acknowledge it. If nothing else "
     "in this notification needs saying, reply with exactly [SILENT]. When the user answers, "
     "typed or clicked, carry the answer to the card with kanban_comment, then kanban_unblock."
 )
@@ -180,6 +182,14 @@ async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) ->
     entry = (int(event_id or 0), str(sub.get("chat_id") or ""), ts, blocks, text)
     _remember(_questions, _sub_key(sub), entry)
     return True
+
+
+def question_card(channel: str, ts: str) -> str | None:
+    """The card whose open question this process posted as ``ts`` in ``channel``, else None."""
+    for key, (_event_id, posted_channel, posted_ts, _blocks, _text) in list(_questions.items()):
+        if ts and posted_ts == str(ts) and posted_channel == str(channel):
+            return key[0] or None
+    return None
 
 
 def _clicked(channel: str, ts: str) -> bool:

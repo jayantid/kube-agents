@@ -26,16 +26,17 @@ With the flag on, :func:`register` adds two listeners:
   a line naming who chose what, a short echo ("↳ @user: label") is posted in
   the thread, since a bot token cannot post as the user, and the label is fed
   to the adapter's message handler as that user's message in that thread, the
-  path a reaction trigger already takes. That path applies the channel and
-  user checks a typed message gets, so a click can do nothing its clicker
-  could not do by typing the label.
+  path a reaction trigger already takes. When the clicked message is a card's
+  question (``gateway/slack_ux_moments.py``), the turn also names the card, so
+  with two cards blocked in one thread the answer reaches the right one. That
+  path applies the channel and user checks a typed message gets, so a click
+  can do nothing its clicker could not do by typing the label.
 * A link button (``<prefix>.link.<n>``) is acknowledged and nothing else;
   Slack has already opened the url.
 
 A message is answered once: the first authorized click wins, and a second
 click on the same message, before the rewrite lands, is dropped in this
-process. The fold needs no handler; it is a collapsible container that Slack
-opens and closes itself.
+process.
 
 Fail-soft throughout: a rewrite or echo that fails is logged and the turn
 still runs, because the click was the user's answer.
@@ -77,6 +78,9 @@ MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
 #: the guard in front keeps it an answer. Zero-width, so the agent reads the label.
 COMMAND_PREFIXES = ("/", "!")
 COMMAND_GUARD = "\u200b"
+
+#: Added to the turn when the clicked message is a card's question.
+CARD_NOTE = "(Clicked on the question from card {card}.)"
 
 #: A DM channel id's first letter, as the adapter's message handler reads it.
 DM_CHANNEL_PREFIX = "D"
@@ -174,6 +178,23 @@ def _as_answer(label: str) -> str:
     return COMMAND_GUARD + label if label.startswith(COMMAND_PREFIXES) else label
 
 
+def _question_card(channel_id: str, msg_ts: str) -> str:
+    """The card whose question this process posted as the message, else ""."""
+    try:
+        from gateway import slack_ux_moments
+    except ImportError:
+        return ""
+    try:
+        return str(slack_ux_moments.question_card(channel_id, msg_ts) or "")
+    except Exception:  # noqa: BLE001 — the label alone still answers
+        return ""
+
+
+def _turn_text(label: str, card: str) -> str:
+    text = _as_answer(label)
+    return f"{text}\n\n{CARD_NOTE.format(card=card)}" if card else text
+
+
 def _thread_ts(body: dict, message: dict, msg_ts: str) -> str:
     container = body.get("container") or {}
     return str(message.get("thread_ts") or container.get("thread_ts") or msg_ts)
@@ -219,7 +240,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     synthetic = {
         "type": "message",
         "user": user_id,
-        "text": _as_answer(label),
+        "text": _turn_text(label, _question_card(channel_id, msg_ts)),
         "channel": channel_id,
         # The click's own ts keeps the deduplicator from conflating this turn
         # with the echo or the clicked message, as a reaction trigger's does.
@@ -227,7 +248,6 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
         "thread_ts": thread_ts,
         # Skips the mention requirement only; channel and user checks still apply.
         "_hermes_force_process": True,
-        "_kage_click": {"action_id": action_id, "message_ts": msg_ts},
     }
     if team_id:
         synthetic["team"] = team_id

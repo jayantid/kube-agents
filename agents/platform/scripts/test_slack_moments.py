@@ -57,6 +57,12 @@ class OpenedPrTest(unittest.TestCase):
         for lead in ("Opened PR", "created a pull request:", "Raised a new PR", "filed the PR"):
             self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
         self.assertEqual(m.opened_pr(f"Opened <{PR}|PR #412>")[0], PR)
+        self.assertEqual(m.opened_pr(f"Opened [PR #412]({PR})")[0], PR)
+        self.assertEqual(m.opened_pr(f"Opened PR #412: {PR}")[0], PR)
+
+    def test_a_negated_verb_is_not_an_opened_pr(self):
+        for lead in ("I have not opened", "Never opened", "I haven't yet opened a PR:", "didn't create"):
+            self.assertIsNone(m.opened_pr(f"{lead} {PR}"), lead)
 
     def test_the_opened_pr_is_found_after_a_cited_one(self):
         other = "https://github.com/acme/x/pull/300"
@@ -83,6 +89,11 @@ class PrOpenedTest(unittest.TestCase):
         self.assertEqual(text.split("\n")[1], "Opened PR #412 raising the limit")
         self.assertIn(PR + "/files", text)
 
+    def test_a_link_around_the_url_is_shortened_whole(self):
+        for line in (f"Opened <{PR}|PR #412> raising it", f"Opened [PR #412]({PR}) raising it"):
+            blocks, _ = m.pr_opened(PR, "fleet-config", "412", line)
+            self.assertEqual(_contexts(blocks), ["Opened PR #412 raising it"], line)
+
     def test_the_workers_line_cannot_mention_anyone(self):
         blocks, text = m.pr_opened(PR, "fleet-config", "412", f"Opened {PR} <!channel>")
         self.assertEqual(_contexts(blocks), ["Opened PR #412 &lt;!channel&gt;"])
@@ -91,16 +102,31 @@ class PrOpenedTest(unittest.TestCase):
 
 class NeedsYouTest(unittest.TestCase):
     def test_listed_options_become_choice_buttons(self):
-        reason = "Which checkout-gateway did you mean?\nTwo clusters run one.\n- seeded-reliability\n2) seeded-debug"
+        reason = "Which checkout-gateway did you mean?\nTwo clusters run one. Which?\n- seeded-reliability\n2) seeded-debug"
         blocks, text = m.needs_you(reason)
         self.assertEqual(blocks[0]["text"]["text"], "*Which checkout-gateway did you mean?*")
-        self.assertEqual(_contexts(blocks), ["Two clusters run one.", m.WAITING])
+        self.assertEqual(_contexts(blocks), ["Two clusters run one. Which?", m.WAITING])
         buttons = _buttons(blocks)
         self.assertEqual([b["text"]["text"] for b in buttons], ["seeded-reliability", "seeded-debug"])
         self.assertTrue(all(p.CHOICE_ACTION_ID_PATTERN.search(b["action_id"]) for b in buttons))
         self.assertEqual(blocks[-1]["block_id"], p.WAITING_BLOCK_ID)
-        self.assertEqual(text.split("\n")[:2], ["*Which checkout-gateway did you mean?*", "Two clusters run one."])
+        self.assertEqual(text.split("\n")[:2], ["*Which checkout-gateway did you mean?*", "Two clusters run one. Which?"])
         self.assertIn("seeded-debug", text)
+
+    def test_a_list_after_the_question_is_not_choices(self):
+        reason = "Should I restart it?\nI found:\n- pod a is OOMKilled\n- pod b is Pending"
+        blocks, _ = m.needs_you(reason)
+        self.assertEqual(_buttons(blocks), [])
+        self.assertEqual(_contexts(blocks)[0], "I found:\n- pod a is OOMKilled\n- pod b is Pending")
+
+    def test_a_list_that_does_not_end_the_reason_is_not_choices(self):
+        blocks, _ = m.needs_you("Which cluster?\n- seeded-a\n- seeded-b\nThe preflight failed on both.")
+        self.assertEqual(_buttons(blocks), [])
+
+    def test_the_question_can_follow_the_headline(self):
+        blocks, _ = m.needs_you("Preflight failed.\nDetails here.\nWhich should I use?\n\n- seeded-a\n- seeded-b")
+        self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["seeded-a", "seeded-b"])
+        self.assertEqual(_contexts(blocks)[0], "Details here.\nWhich should I use?")
 
     def test_no_list_is_text_only(self):
         blocks, text = m.needs_you("Which namespace should I scale?")
@@ -118,13 +144,13 @@ class NeedsYouTest(unittest.TestCase):
     def test_one_option_or_too_many_stay_in_the_text(self):
         for count in (1, p.BUTTONS_PER_ROW + 1):
             options = [f"- option {n}" for n in range(count)]
-            blocks, _ = m.needs_you("\n".join(["Pick one", *options]))
+            blocks, _ = m.needs_you("\n".join(["Pick one?", *options]))
             self.assertEqual(_buttons(blocks), [], count)
             self.assertIn("option 0", _contexts(blocks)[0])
 
     def test_an_option_too_long_for_a_button_keeps_all_of_them_in_the_text(self):
         long = "x" * (p.BUTTON_TEXT_MAX + 1)
-        blocks, _ = m.needs_you(f"Pick one\n- short\n- {long}")
+        blocks, _ = m.needs_you(f"Pick one?\n- short\n- {long}")
         self.assertEqual(_buttons(blocks), [])
         self.assertIn(long, _contexts(blocks)[0])
 
@@ -141,19 +167,21 @@ class NeedsYouTest(unittest.TestCase):
         self.assertTrue(detail.endswith(p.ELLIPSIS))
 
     def test_the_reason_cannot_mention_anyone(self):
-        blocks, _ = m.needs_you("Question\n<@U123> said so")
-        self.assertEqual(_contexts(blocks)[0], "&lt;@U123&gt; said so")
+        blocks, text = m.needs_you("Question\n<@U123> said so. Which?\n- <!here>\n- <!channel>")
+        self.assertEqual(_contexts(blocks)[0], "&lt;@U123&gt; said so. Which?")
+        for mention in ("<@U123>", "<!here>", "<!channel>"):
+            self.assertNotIn(mention, text)
 
     def test_an_empty_reason_is_no_question(self):
         self.assertIsNone(m.needs_you(""))
         self.assertIsNone(m.needs_you("  \n "))
 
     def test_settled_drops_the_choices_and_the_waiting_line_only(self):
-        blocks, _ = m.needs_you("Which cluster?\nTwo run it.\n- seeded-a\n- seeded-b")
+        blocks, _ = m.needs_you("Which cluster?\nTwo run it. Which?\n- seeded-a\n- seeded-b")
         settled = m.needs_you_settled(blocks)
         self.assertEqual(_buttons(settled), [])
         self.assertEqual(settled, [b for b in blocks if b["type"] != "actions"][:-1])
-        self.assertEqual(_contexts(settled), ["Two run it."])
+        self.assertEqual(_contexts(settled), ["Two run it. Which?"])
 
     def test_settled_keeps_a_link_beside_the_choices(self):
         link = {"type": "button", "action_id": "kage.link.0", "url": "https://example.com"}

@@ -1132,11 +1132,16 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
                 held = getattr(self.watcher, kanban_notifier.HELD_ATTR)
                 self.assertIn(3, held[sub_key(SLACK_SUB)], "the blocked line was not held for the wake")
 
-    async def test_every_event_after_the_block_settles_the_question(self):
+    async def test_every_event_settles_the_open_question(self):
         await self._blocked(_Adapter(), {"kind": "needs_input", "reason": "Which cluster?"})
-        self.assertEqual(self.questions_settled, [])
+        self.assertEqual(self.questions_settled, ["t_e0c1"], "a block settles any earlier question first")
         await self._notes_then_report(_Adapter())
-        self.assertEqual(self.questions_settled, ["t_e0c1"] * 3)
+        self.assertEqual(self.questions_settled, ["t_e0c1"] * 4)
+
+    async def test_a_block_with_no_question_settles_the_earlier_one(self):
+        self.posts_question = False
+        await self._blocked(_Adapter(), {"kind": "capability", "reason": "no GPU"})
+        self.assertEqual(self.questions_settled, ["t_e0c1"])
 
     async def test_a_failed_settle_still_delivers(self):
         async def settle_question(adapter, sub):

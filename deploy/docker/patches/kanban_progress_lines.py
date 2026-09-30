@@ -51,7 +51,10 @@ the rolling message is settled — the ``⏳`` becomes ``✓`` or ``⏹`` — an
 result posts as a message of its own, which is the one that should ping. With
 ``KAGE_SLACK_UX`` on, a Slack card settles to its last line only, a failure
 the creator's wake will explain is held for the wake step rather than posted,
-and no line carries the board tag or ``Kanban <id>``; see :func:`deliver`.
+no line carries the board tag or ``Kanban <id>``, an opened pull request and a
+``needs_input`` question post as messages of their own
+(``gateway/slack_ux_moments.py``), and any later event takes the buttons off
+the card's open question; see :func:`deliver`.
 
 Three properties of the surrounding code make this nearly free:
 
@@ -422,7 +425,9 @@ async def _needs_you(moments: Any, adapter: Any, sub: dict, ev: Any) -> bool:
 
 
 async def _settle_question(moments: Any, adapter: Any, sub: dict, kind: str) -> None:
-    if moments is None or kind == NEEDS_YOU_KIND:
+    """Take the buttons off the card's open question: any event means it was answered,
+    since a card blocks again only once unblocked. A new question posts after this."""
+    if moments is None:
         return
     try:
         await moments.settle_question(adapter, sub)

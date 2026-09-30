@@ -2,7 +2,7 @@
 """Build-time behaviour gate for the KAGE_SLACK_UX button-click patch.
 
 Run by ``deploy/docker/Dockerfile`` against the patched ``/opt/hermes`` tree,
-immediately after ``apply_slack_ux_clicks.py``, with ``slack_presenter.py``
+after the patches in the same ``RUN`` have applied, with ``slack_presenter.py``
 staged beside this script (``/opt/defaults/scripts`` is not populated yet at
 that point in the build).
 

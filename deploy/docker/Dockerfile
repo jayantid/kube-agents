@@ -2051,8 +2051,8 @@ RUN set -eu; \
 
 USER 10000:10000
 
-# Slack presentation (reactions by kind, settle reaction), off by
-# default. An install turns it on through the PlatformAgent's
+# Slack presentation (reactions, status plan, quieter board lines, PR and
+# question messages, choice clicks), off by default. An install turns it on through the PlatformAgent's
 # spec.deployment.env (the chart's platformAgent.deployment.env), which the
 # container's environment takes over this default. Read by
 # agents/platform/scripts/slack_presenter.py.

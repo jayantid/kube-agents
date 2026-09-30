@@ -103,38 +103,6 @@ class SettleReactionTest(unittest.TestCase):
         self.assertEqual(len(names), 7)
 
 
-class SplitAnswerTest(unittest.TestCase):
-    def test_first_sentence_is_headline(self):
-        md = "checkout-gateway is crashlooping on an OOM. It hit its 256Mi limit.\n\nRaise it to 512Mi."
-        headline, body = sp.split_answer(md)
-        self.assertEqual(headline, "checkout-gateway is crashlooping on an OOM.")
-        self.assertEqual(body, ["It hit its 256Mi limit.", "Raise it to 512Mi."])
-
-    def test_markdown_stripped_from_headline(self):
-        headline, body = sp.split_answer("## **Yes**, [seeded-a](https://x) is `healthy`\n- one\n- two")
-        self.assertEqual(headline, "Yes, seeded-a is healthy")
-        self.assertEqual(body, ["- one\n- two"])
-
-    def test_empty(self):
-        self.assertEqual(sp.split_answer(""), ("", []))
-        self.assertEqual(sp.split_answer("   \n\n "), ("", []))
-
-    def test_code_fence_not_split(self):
-        md = "Here it is.\n\n```\na\n\nb\n```\n\nDone."
-        _, body = sp.split_answer(md)
-        self.assertEqual(body, ["```\na\n\nb\n```", "Done."])
-
-    def test_leading_code_block_has_no_headline(self):
-        headline, body = sp.split_answer("```\nkubectl get pods\n```")
-        self.assertEqual(headline, "")
-        self.assertEqual(body, ["```\nkubectl get pods\n```"])
-
-    def test_long_headline_clipped(self):
-        headline, _ = sp.split_answer("word " * 100)
-        self.assertLessEqual(len(headline), sp.HEADLINE_MAX)
-        self.assertTrue(headline.endswith("…"))
-
-
 class BlocksAnswerTest(unittest.TestCase):
     def test_headline_only(self):
         self.assertEqual(
@@ -145,34 +113,6 @@ class BlocksAnswerTest(unittest.TestCase):
     def test_headline_escaped(self):
         blocks = sp.blocks_answer("a < b & c")
         self.assertEqual(blocks[0]["text"]["text"], "*a &lt; b &amp; c*")
-
-    def test_rows_with_severity(self):
-        blocks = sp.blocks_answer(
-            "Two findings.",
-            rows=[{"text": "**seeded-a**: OOM", "severity": "critical"}, {"text": "seeded-b: ok"}, "plain"],
-        )
-        self.assertEqual(
-            blocks[1]["text"]["text"],
-            ":red_circle: *seeded-a*: OOM\n• seeded-b: ok\n• plain",
-        )
-
-    def test_rows_split_at_section_limit(self):
-        rows = [{"text": "x" * 1000} for _ in range(5)]
-        blocks = sp.blocks_answer("h", rows=rows)
-        sections = blocks[1:]
-        self.assertGreater(len(sections), 1)
-        for block in sections:
-            self.assertLessEqual(len(block["text"]["text"]), sp.SECTION_TEXT_MAX)
-
-    def test_fold_points_at_thread(self):
-        blocks = sp.blocks_answer("h", fold_title="Why", fold_markdown="because **reasons**")
-        self.assertEqual(
-            blocks[1], {"type": "context", "elements": [{"type": "mrkdwn", "text": "Why: in the thread"}]}
-        )
-        self.assertEqual(sp.fold_reply("Why", "because **reasons**"), "*Why*\nbecause *reasons*")
-
-    def test_empty_fold_omitted(self):
-        self.assertEqual(len(sp.blocks_answer("h", fold_title="Why", fold_markdown="  ")), 1)
 
     def test_link_buttons(self):
         blocks = sp.blocks_answer(
@@ -222,59 +162,25 @@ class BlocksAnswerTest(unittest.TestCase):
         self.assertEqual(button["value"], "word " * 40)
 
     def test_order(self):
-        blocks = sp.blocks_answer(
-            "h", rows=["r"], fold_markdown="f", links=[("l", "https://l")], choices=["c"]
-        )
-        self.assertEqual(
-            [b["type"] for b in blocks], ["section", "section", "context", "actions", "actions"]
-        )
-        self.assertIn("url", blocks[3]["elements"][0])
-        self.assertIn("value", blocks[4]["elements"][0])
+        blocks = sp.blocks_answer("h", links=[("l", "https://l")], choices=["c"])
+        self.assertEqual([b["type"] for b in blocks], ["section", "actions", "actions"])
+        self.assertIn("url", blocks[1]["elements"][0])
+        self.assertIn("value", blocks[2]["elements"][0])
 
 
 class FallbackTextTest(unittest.TestCase):
     def test_same_layout_as_mrkdwn(self):
-        text = sp.fallback_text(
-            "Two findings.",
-            rows=[{"text": "seeded-a: OOM", "severity": "warning"}],
-            fold_title="Why",
-            fold_markdown="because",
-            links=[("Open PR", "https://p")],
-            choices=["Yes", "No"],
-        )
-        self.assertEqual(
-            text,
-            "*Two findings.*\n"
-            ":large_yellow_circle: seeded-a: OOM\n"
-            "<https://p|Open PR>\n"
-            "Reply with one of: Yes · No\n"
-            "*Why*\nbecause",
-        )
+        text = sp.fallback_text("Two findings.", links=[("Open PR", "https://p")], choices=["Yes", "No"])
+        self.assertEqual(text, "*Two findings.*\n<https://p|Open PR>\nReply with one of: Yes · No")
 
-    def test_fold_can_be_left_out(self):
-        self.assertEqual(sp.fallback_text("h", fold_markdown="because", include_fold=False), "*h*")
-
-
-class ToMrkdwnTest(unittest.TestCase):
-    def test_conversions(self):
-        self.assertEqual(sp.to_mrkdwn("# Title"), "*Title*")
-        self.assertEqual(sp.to_mrkdwn("see [docs](https://d)"), "see <https://d|docs>")
-        self.assertEqual(sp.to_mrkdwn("**bold** and `**code**`"), "*bold* and `**code**`")
-        self.assertEqual(sp.to_mrkdwn("```\n**x**\n```"), "```\n**x**\n```")
+    def test_labels_cannot_mention_anyone(self):
+        text = sp.fallback_text("h", links=[("<!here>", "https://p")], choices=["<@U1> & <!channel>", "No"])
+        self.assertNotIn("<!", text)
+        self.assertNotIn("<@", text)
+        self.assertIn("&lt;@U1&gt; &amp; &lt;!channel&gt;", text)
 
 
 class LinkAckTest(unittest.TestCase):
-    def test_registers_only_when_enabled(self):
-        ctx = mock.Mock()
-        with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": ""}):
-            self.assertFalse(sp.register_link_ack(ctx))
-        ctx.register_slack_action_handler.assert_not_called()
-        with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": "1"}):
-            self.assertTrue(sp.register_link_ack(ctx))
-        ctx.register_slack_action_handler.assert_called_once_with(
-            sp.LINK_ACTION_ID_PATTERN, sp.ack_link_click
-        )
-
     def test_ack_does_nothing_else(self):
         ack = mock.AsyncMock()
         body = mock.Mock()

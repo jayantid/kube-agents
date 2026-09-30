@@ -11,10 +11,12 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
   announced as ours.
 * A question the work is waiting on (:func:`needs_you`): the worker's question
   in bold, the rest of its reason below it, a choice button for each option
-  the reason lists, and a "waiting on you" line. A click is the clicker's
+  the reason ends with, and a "waiting on you" line. A click is the clicker's
   answer in the thread (``gateway/slack_ux_clicks.py``), the same path as
-  typing it. With no list, or with no thread for a click to answer in, the
-  question is text only, and a typed reply is the answer.
+  typing it. The options are buttons only when there are two to five, each
+  fits on a button, they end the reason, and the line right before them is a
+  question; otherwise, and with no thread for a click to answer in, the
+  question is text only and a typed reply is the answer.
 """
 
 from __future__ import annotations
@@ -28,18 +30,22 @@ import slack_presenter as _presenter
 #: (``/files``, ``#discussion``) left out of the match.
 PR_URL = re.compile(r"https?://[^\s/<>|]+/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: What must sit right before the url for a line to announce the PR as ours:
-#: the verb, then optionally "a"/"the", "new", and "PR"/"pull request".
+#: the verb, then optionally "a"/"the", "new", "PR"/"pull request" with its
+#: number, a colon, and the opening of a ``[label](`` or ``<`` link.
 OPENED_BEFORE_URL = re.compile(
     r"\b(?:opened|created|raised|filed|submitted)\s+(?:(?:an?|the)\s+)?(?:new\s+)?"
-    r"(?:(?:PR|pull\s+request)\s*:?\s*)?<?$",
+    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*:?\s*)?(?:\[[^\]]*\]\(|<)?$",
     re.IGNORECASE,
 )
+#: A negation just before the verb: "not opened", "haven't yet opened".
+NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
 #: The url in the worker's line, with a "PR" already in front of it, so
 #: "Opened PR <url>" reads "Opened PR #412" rather than "Opened PR PR #412".
-PR_REF_SPAN = r"(?:\bPR\s+)?{url}"
+#: A Slack ``<url|label>`` or markdown ``[label](url)`` link around it goes too.
+PR_REF_SPAN = r"(?:\bPR\s+)?(?:<{url}(?:\|[^>]*)?>|\[[^\]]*\]\({url}\)|{url})"
 OPEN_PR = "Open PR ↗"
 FILES_CHANGED = "Files changed ↗"
 FILES_PATH = "/files"
@@ -47,8 +53,12 @@ PR_ACTION_PREFIX = "kage_pr"
 
 #: An option line in a block reason: a bullet or a numbered item.
 OPTION_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
-#: Buttons only for two to five options, each short enough that Slack shows
-#: all of it; otherwise the options stay in the text.
+#: How the line right before the options must end for them to be choices; a
+#: list after "I found:" is evidence, not answers.
+QUESTION_END = "?"
+#: Buttons only for two to five options that end the reason, right after a
+#: question, each short enough that Slack shows all of it; otherwise the
+#: options stay in the text.
 OPTIONS_MIN = 2
 OPTIONS_MAX = _presenter.BUTTONS_PER_ROW
 #: The reason below the question, clipped; ``kanban_block`` puts no bound on it.
@@ -61,7 +71,8 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     """``(url, repo, number, line)`` for the first PR ``text`` says was opened, else None."""
     for line in str(text or "").splitlines():
         for match in PR_URL.finditer(line):
-            if OPENED_BEFORE_URL.search(line[: match.start()]):
+            verb = OPENED_BEFORE_URL.search(line[: match.start()])
+            if verb and not NEGATED_VERB.search(line[: verb.start()]):
                 return match.group(0), match.group(2), match.group(3), line.strip()
     return None
 
@@ -96,23 +107,33 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
     return _with_subline(blocks, evidence), "\n".join([_text(first, evidence), *rest])
 
 
+def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
+    """Where the option lines that end ``lines`` start, and their text, when a question
+    comes right before them; ``(len(lines), [])`` otherwise."""
+    start = len(lines)
+    while start > 1 and (not lines[start - 1].strip() or OPTION_LINE.match(lines[start - 1])):
+        start -= 1
+    options = [m.group(1) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
+    if not options or not lines[start - 1].rstrip().endswith(QUESTION_END):
+        return len(lines), []
+    return start, options
+
+
 def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     """The reason's first line, the lines after it, and its options when they can be buttons."""
     lines = str(reason or "").strip().splitlines()
     if not lines:
         return "", [], []
-    rest = lines[1:]
-    options = [m.group(1) for m in (OPTION_LINE.match(line) for line in rest) if m]
+    start, options = _trailing_options(lines)
     usable = buttons and OPTIONS_MIN <= len(options) <= OPTIONS_MAX and all(
         len(option) <= _presenter.BUTTON_TEXT_MAX for option in options
     )
-    first = lines[0].strip()
-    if len(first) > _presenter.HEADLINE_MAX:
-        # The headline is clipped; the whole line goes below it too.
-        rest = lines
     if not usable:
-        return first, rest, []
-    return first, [line for line in rest if not OPTION_LINE.match(line)], options
+        start, options = len(lines), []
+    first = lines[0].strip()
+    # A clipped headline keeps its whole line below it too.
+    below = 0 if len(first) > _presenter.HEADLINE_MAX else 1
+    return first, lines[below:start], options
 
 
 def _detail(lines: Sequence[str]) -> str:

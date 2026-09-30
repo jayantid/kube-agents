@@ -7,14 +7,15 @@ not populated yet at that point in the build).
 
 Three things are checked:
 
-1. ``gateway/kanban_progress_lines.py`` imports the module, since nothing else
-   reaches it and an import that drifted would read as flag off.
+1. ``gateway/kanban_progress_lines.py`` imports the module, since it is the
+   only caller that posts a moment and an import that drifted would read as
+   flag off.
 2. ``gateway/kanban_watchers_notifier.py`` passes its wake text through
    ``wake_text`` (``apply_slack_ux_moments.py``).
 3. The module, loaded by path and driven with a stub adapter: flag off it is
    inert; flag on, an opened PR posts once with its two url buttons, a PR
    that is only cited posts nothing, and a ``needs_input`` block posts its
-   question with a choice per listed option while any other block posts
+   question with a choice per option it ends with while any other block posts
    nothing. The wake for that question's ``blocked`` event carries the note
    and a wake for another event does not; the question loses its buttons when
    settled; and a card with no thread gets the question without buttons.
@@ -43,7 +44,7 @@ THREAD = "1700000000.000100"
 PR = "https://github.com/acme/fleet-config/pull/412"
 OPENED = f"Opened PR {PR} raising the limit to 512Mi"
 CITED = f"{PR} already covers this"
-QUESTION = "Which checkout-gateway did you mean?\nTwo clusters run one.\n- seeded-reliability\n- seeded-debug"
+QUESTION = "Which checkout-gateway did you mean?\nTwo clusters run one. Which should I look at?\n- seeded-reliability\n- seeded-debug"
 CHOICES = ["seeded-reliability", "seeded-debug"]
 BLOCKED = "blocked"
 BLOCKED_ID = 7
