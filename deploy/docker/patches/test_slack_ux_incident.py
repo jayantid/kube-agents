@@ -69,7 +69,7 @@ NOTIFIER = '''\
 calls = []
 
 
-async def _progress_deliver(runner, adapter, sub, kind, ev, msg, metadata, header, board):
+async def _progress_deliver(runner, adapter, sub, kind, ev, msg, metadata, header, board, title):
     calls.append(adapter)
 
 
@@ -82,6 +82,7 @@ class Watcher:
         self.platform_str = "slack"
         self.progress_header = ""
         self.board_slug = "default"
+        self.title = "card"
 
     async def _send_event(self, ev, msg):
         sub, adapter = self.sub, self.adapter
