@@ -5,6 +5,7 @@ import io
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -150,6 +151,34 @@ class PresentTest(unittest.TestCase):
                 self.assertEqual(inventory_presenter.present(report), report)
 
 
+class OriginPlatformTest(unittest.TestCase):
+    def _with_jobs(self, get_job):
+        cron = types.ModuleType("cron")
+        jobs = types.ModuleType("cron.jobs")
+        jobs.get_job = get_job
+        return mock.patch.dict(sys.modules, {"cron": cron, "cron.jobs": jobs})
+
+    def test_reads_the_bound_platform(self):
+        with self._with_jobs(lambda _id: {"origin": {"platform": "slack", "chat_id": "C1"}}):
+            self.assertEqual(bootstrap_delivery._origin_platform(), "slack")
+
+    def test_a_missing_job_or_origin_is_none(self):
+        for job in (None, {}, {"origin": None}):
+            with self.subTest(job=job), self._with_jobs(lambda _id, job=job: job):
+                self.assertIsNone(bootstrap_delivery._origin_platform())
+
+    def test_a_get_job_error_is_none(self):
+        def boom(_id):
+            raise OSError("jobs.json unreadable")
+
+        with self._with_jobs(boom), contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(bootstrap_delivery._origin_platform())
+
+    def test_no_cron_module_is_none(self):
+        with mock.patch.dict(sys.modules, {"cron": None, "cron.jobs": None}), contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(bootstrap_delivery._origin_platform())
+
+
 class DeliveryFlagTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -160,12 +189,16 @@ class DeliveryFlagTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _run(self, flag):
+    def _run(self, flag, platform="slack", origin=None):
         env = {k: v for k, v in os.environ.items() if k != "KAGE_SLACK_UX"}
         if flag is not None:
             env["KAGE_SLACK_UX"] = flag
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(buf):
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(bootstrap_delivery, "_origin_platform", origin or (lambda: platform)),
+            contextlib.redirect_stdout(buf),
+        ):
             rc = bootstrap_delivery.main(self.d)
         self.assertEqual(rc, 0)
         return buf.getvalue()
@@ -179,6 +212,12 @@ class DeliveryFlagTest(unittest.TestCase):
     def test_flag_on_delivers_presented_and_archives_original(self):
         self.assertEqual(self._run("1"), PRESENTED)
         self.assertEqual((self.d / "INVENTORY.delivered.md").read_text(encoding="utf-8"), REPORT)
+
+    def test_google_chat_is_verbatim_with_the_flag_on(self):
+        self.assertEqual(self._run("1", platform="google_chat"), REPORT)
+
+    def test_a_missing_origin_is_verbatim_with_the_flag_on(self):
+        self.assertEqual(self._run("1", platform=None), REPORT)
 
     def test_presenter_failure_delivers_verbatim(self):
         boom = mock.patch.object(inventory_presenter, "present", side_effect=ValueError("boom"))

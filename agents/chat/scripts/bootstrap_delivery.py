@@ -15,7 +15,8 @@ human has connected:
 - ``.bootstrap_completed`` absent -> the report has not been delivered yet.
 
 When all three hold, the script claims delivery, prints ``INVENTORY.md``
-(verbatim, or reshaped by ``inventory_presenter`` when ``KAGE_SLACK_UX`` is on), sets the report aside, and removes the two onboarding
+(verbatim, or reshaped by ``inventory_presenter`` when ``KAGE_SLACK_UX`` is on
+and the job is bound to Slack), sets the report aside, and removes the two onboarding
 cron jobs. Otherwise it prints nothing, which the ``no_agent`` cron path treats
 as a silent run (no message).
 
@@ -44,6 +45,9 @@ DELIVERY_JOB_ID = "bootstrap-inventory-delivery"
 # of a sweep that can take many minutes over a whole fleet, and a chat message
 # is easy to lose; keeping it means a re-send is a `cat`, not a re-scan.
 DELIVERED_REPORT_NAME = "INVENTORY.delivered.md"
+
+# The only surface the reshaped report is written for; every other one gets it verbatim.
+PRESENTED_PLATFORM = "slack"
 
 
 def _data_dir() -> Path:
@@ -117,8 +121,25 @@ def _cleanup(data_dir: Path) -> None:
             sys.stderr.write(f"bootstrap_delivery: could not remove {job_id}: {e}\n")
 
 
+def _origin_platform() -> str | None:
+    """The platform the plugin bound this job's delivery to, or None if unknown.
+
+    The plugin writes the origin before ``.user_aligned``, so it is set by the
+    time a delivery can fire.
+    """
+    try:
+        from cron.jobs import get_job  # type: ignore import-not-found
+
+        job = get_job(DELIVERY_JOB_ID) or {}
+        return (job.get("origin") or {}).get("platform")
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: could not read the delivery origin: {e}\n")
+        return None
+
+
 def _presented(content: str) -> str:
-    """The report as delivered: verbatim, or reshaped when ``KAGE_SLACK_UX`` is on.
+    """The report as delivered: reshaped when ``KAGE_SLACK_UX`` is on and the
+    job is bound to Slack, verbatim otherwise.
 
     Both helpers ship beside this script in ``/opt/defaults/scripts``. Any
     failure to load or reshape delivers the report verbatim, since this runs
@@ -127,7 +148,7 @@ def _presented(content: str) -> str:
     try:
         import slack_presenter
 
-        if not slack_presenter.enabled():
+        if not slack_presenter.enabled() or _origin_platform() != PRESENTED_PLATFORM:
             return content
         import inventory_presenter
 
