@@ -3,13 +3,15 @@
 Pure functions only, like :mod:`slack_presenter`. The caller is
 ``session_kv_server.relay_cron_report``. With ``KAGE_SLACK_UX`` on it finds the
 ledger issue the report ends with (:func:`ledger_ref`), fetches that issue, and
-posts :func:`headline_from_issue` as the channel message; when the fetch or the
-parse fails it posts :func:`headline_fallback` instead. The relay's send path
-(``hermes send``) takes text and no blocks, and the Slack adapter converts
-standard markdown to mrkdwn on the way out, so the output here is markdown:
-``**bold**``, ``[label](url)`` and emoji shortcodes. That conversion is also
-why this does not call :func:`slack_presenter.fallback_text`, whose output is
-mrkdwn already: its ``*headline*`` would reach Slack as italics.
+posts :func:`blocks_from_issue` as the channel message, mock 08's Block Kit with
+its buttons, or :func:`headline_from_issue` as text where Slack refuses the
+blocks; when the fetch or the parse fails it posts :func:`headline_fallback`.
+The text goes out through ``hermes send``, and the Slack adapter converts
+standard markdown to mrkdwn on the way, so the text here is markdown:
+``**bold**`` and ``[label](url)``. That conversion is also why the text does
+not call :func:`slack_presenter.fallback_text`, whose output is mrkdwn
+already: its ``*headline*`` would reach Slack as italics. The rows are
+:func:`slack_presenter.severity_row` in both, which reads the same either way.
 
 The audit SOPs relay one line ending in ``— <issue_url>``. The counts and the
 findings come from the issue itself, whose title is fleet-audit's
@@ -24,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from slack_presenter import ELLIPSIS, HEADLINE_MAX, SEVERITY_MARKERS, _clip, _plain
+from slack_presenter import ELLIPSIS, HEADLINE_MAX, _clip, _plain, blocks_report, fallback_text, severity_row
 
 ISSUE_URL = r"https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/issues/(?P<number>\d+)"
 #: The ledger link: the report's last URL, after the SOPs' dash or a "Ledger:"
@@ -56,6 +58,13 @@ ROW_TEXT_MAX = HEADLINE_MAX
 LEDGER_LINK = "[Ledger issue #{number} ↗]({url})"
 ALL_FINDINGS = ": all {count} findings"
 CLEAN_HEAD = "**{name}: clean.**"
+
+#: The Block Kit report (mock 08): the choice button names the top finding,
+#: the link button the ledger, the fold every finding.
+ACTION_ID_PREFIX = "kage_audit"
+LOOK_AT = "look at: {finding}"
+LEDGER_BUTTON = "Ledger issue #{number} ↗"
+FOLD_TITLE = "all {count} findings"
 
 
 class LedgerRef(NamedTuple):
@@ -117,11 +126,16 @@ def _severity_findings(body: str) -> list[tuple[str, str]]:
     return found
 
 
-def headline_from_issue(issue: dict, ref: LedgerRef, report: str = "") -> str | None:
-    """The channel message built from the fetched ledger issue, or None when it does not parse.
+class AuditReport(NamedTuple):
+    name: str
+    count: int
+    critical: int
+    note: str
+    findings: list[tuple[str, str]]
 
-    ``report`` is the relayed line, read only for its "<n> new" count.
-    """
+
+def _parse_issue(issue: dict, report: str) -> AuditReport | None:
+    """The ledger issue's counts and findings, or None when it does not parse or disagrees with itself."""
     title = LEDGER_TITLE.match(str(issue.get("title") or "").strip())
     if not title:
         return None
@@ -130,18 +144,65 @@ def headline_from_issue(issue: dict, ref: LedgerRef, report: str = "") -> str | 
     if _new_count(report) > count:
         return None  # a stale or wrong ledger: the report has more new findings than it lists
     findings = _severity_findings(str(issue.get("body") or ""))
-    link = LEDGER_LINK.format(number=ref.number, url=ref.url)
-    if count == 0:
-        if critical or findings:
-            return None
-        return f"{CLEAN_HEAD.format(name=name)} {link}"
+    if count == 0 and (critical or findings):
+        return None
+    return AuditReport(name, count, critical, _new_phrase(report).strip(), findings)
 
-    head = f"**{name}: {_findings_phrase(count)}, {critical} critical.**" + _new_phrase(report)
-    rows = [
-        f"{SEVERITY_MARKERS[severity]} **{severity}**  {_balanced_clip(text, ROW_TEXT_MAX)}"
-        for severity, text in findings[:TOP_FINDINGS]
-    ]
-    return "\n".join([head, *rows, link + ALL_FINDINGS.format(count=count)])
+
+def _head(parsed: AuditReport) -> str:
+    return f"{parsed.name}: {_findings_phrase(parsed.count)}, {parsed.critical} critical."
+
+
+def _rows(findings: list[tuple[str, str]]) -> list[dict]:
+    return [{"severity": severity, "text": _balanced_clip(text, ROW_TEXT_MAX)} for severity, text in findings]
+
+
+def headline_from_issue(issue: dict, ref: LedgerRef, report: str = "") -> str | None:
+    """The channel message built from the fetched ledger issue, or None when it does not parse.
+
+    ``report`` is the relayed line, read only for its "<n> new" count.
+    """
+    parsed = _parse_issue(issue, report)
+    if parsed is None:
+        return None
+    link = LEDGER_LINK.format(number=ref.number, url=ref.url)
+    if parsed.count == 0:
+        return f"{CLEAN_HEAD.format(name=parsed.name)} {link}"
+    head = f"**{_head(parsed)}**" + (f" {parsed.note}" if parsed.note else "")
+    rows = [severity_row(row["severity"], row["text"]) for row in _rows(parsed.findings[:TOP_FINDINGS])]
+    return "\n".join([head, *rows, link + ALL_FINDINGS.format(count=parsed.count)])
+
+
+def blocks_from_issue(
+    issue: dict, ref: LedgerRef, report: str = "", fold_in_place: bool = True
+) -> tuple[list[dict], str] | None:
+    """Mock 08's ``(blocks, text)`` built from the fetched ledger issue, or None.
+
+    None when the issue does not parse, and for a clean run, which stays the
+    one line :func:`headline_from_issue` gives. ``text`` is the message's
+    mrkdwn ``text`` field. With ``fold_in_place`` False the fold is left out,
+    for a caller whose container Slack refused, which then posts the report
+    in the thread instead.
+    """
+    parsed = _parse_issue(issue, report)
+    if parsed is None or parsed.count == 0:
+        return None
+    top = _rows(parsed.findings[:TOP_FINDINGS])
+    choices = [LOOK_AT.format(finding=_plain(top[0]["text"]))] if top else []
+    links = [(LEDGER_BUTTON.format(number=ref.number), ref.url)]
+    head = _head(parsed)
+    blocks = blocks_report(
+        head,
+        note=parsed.note,
+        rows=top,
+        choices=choices,
+        links=links,
+        fold_title=FOLD_TITLE.format(count=parsed.count),
+        fold_rows=_rows(parsed.findings),
+        action_id_prefix=ACTION_ID_PREFIX,
+        fold_in_place=fold_in_place,
+    )
+    return blocks, fallback_text(head, rows=top, links=links)
 
 
 def _fallback_line(line: str) -> str:

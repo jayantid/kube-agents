@@ -3371,7 +3371,7 @@ class TestSlackAuditHeadline(unittest.TestCase):
 
     def _post(
         self, composed=COMPOSED, platforms=("slack",), turn_ok=True, fold_ok=True, job_id="rbac",
-        issue=ISSUE, managed=True, fleet_audit=True,
+        issue=ISSUE, managed=True, fleet_audit=True, blocks_post=None,
     ):
         answers = {"slack": self.SLACK_THREAD, "google_chat": self.GCHAT_THREAD}
 
@@ -3386,11 +3386,12 @@ class TestSlackAuditHeadline(unittest.TestCase):
              patch.object(session_kv_server, "_is_fleet_audit_job", return_value=fleet_audit) as is_audit, \
              patch.object(session_kv_server, "_is_managed_github_repo", return_value=managed), \
              patch.object(session_kv_server, "_fetch_ledger_issue", return_value=issue) as fetch, \
+             patch.object(session_kv_server.slack_blocks_post, "post", side_effect=blocks_post) as poster, \
              patch.object(session_kv_server, "_send_to_chat", side_effect=send) as sender:
             response = self.client.post(
                 "/v1/cron-reports", json={"job_id": job_id, "report": "raw audit"}
             )
-        self.is_audit, self.fetch = is_audit, fetch
+        self.is_audit, self.fetch, self.posts = is_audit, fetch, poster.call_args_list
         return response, sender.call_args_list
 
     def _stored(self):
@@ -3541,6 +3542,81 @@ class TestSlackAuditHeadline(unittest.TestCase):
         self.assertEqual(second[0][2:], (self.HOME, self.SLACK_THREAD))
         self.assertEqual(second[1], ("slack", self.COMPOSED, self.HOME, self.SLACK_THREAD))
 
+
+    BLOCKS_TS = "1712345999.000200"
+
+    def _blocks_on(self):
+        os.environ["KAGE_SLACK_UX"] = "1"
+        os.environ["SLACK_RELAY_URL"] = "http://127.0.0.1:8765"
+
+    @staticmethod
+    def _types(blocks):
+        return [block["type"] for block in blocks]
+
+    def test_flag_off_with_a_relay_posts_no_blocks(self):
+        os.environ["SLACK_RELAY_URL"] = "http://127.0.0.1:8765"
+        _, calls = self._post(blocks_post=lambda *a: self.BLOCKS_TS)
+        self.assertEqual(self.posts, [])
+        self.assertEqual([c.args for c in calls], [("slack", self.COMPOSED, "", "")])
+
+    def test_flag_on_with_a_relay_posts_the_report_as_blocks_folded_in_place(self):
+        self._blocks_on()
+        response, calls = self._post(blocks_post=lambda *a: self.BLOCKS_TS)
+        self.assertEqual(response.json()["status"], "delivered")
+        self.assertEqual(calls, [])  # the fold holds the findings, so nothing goes in the thread
+        (post,) = self.posts
+        channel, text, blocks, thread_ts = post.args
+        self.assertEqual((channel, thread_ts), (self.HOME, ""))
+        self.assertTrue(text.startswith("*Security &amp; RBAC Posture audit: 7 findings, 2 critical.*"))
+        self.assertEqual(self._types(blocks), ["rich_text", "divider", "rich_text", "divider", "actions", "container"])
+        actions = blocks[4]["elements"]
+        self.assertEqual(actions[0]["action_id"], "kage_audit.choice.0")
+        self.assertEqual(actions[0]["style"], "primary")
+        self.assertEqual(actions[-1]["url"], self.LEDGER)
+        self.assertEqual(self._stored(), [(self.HOME, self.BLOCKS_TS, self.COMPOSED)])
+
+    def test_refused_blocks_retry_without_the_fold_and_thread_the_report(self):
+        self._blocks_on()
+        answers = iter([session_kv_server.slack_blocks_post.Refused("invalid_blocks"), self.BLOCKS_TS])
+
+        def post(*args):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        response, calls = self._post(blocks_post=post)
+        self.assertEqual(response.json()["status"], "delivered")
+        self.assertEqual(len(self.posts), 2)
+        self.assertIn("container", self._types(self.posts[0].args[2]))
+        self.assertNotIn("container", self._types(self.posts[1].args[2]))
+        self.assertEqual([c.args for c in calls], [("slack", self.COMPOSED, self.HOME, self.BLOCKS_TS)])
+
+    def test_blocks_refused_twice_fall_back_to_the_text_headline(self):
+        self._blocks_on()
+        refused = session_kv_server.slack_blocks_post.Refused("invalid_blocks")
+        _, calls = self._post(blocks_post=refused)
+        self.assertEqual(len(self.posts), 2)
+        self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
+        self.assertEqual(calls[1].args, ("slack", self.COMPOSED, self.HOME, self.SLACK_THREAD))
+
+    def test_a_relay_failure_posts_the_text_headline_without_retrying(self):
+        self._blocks_on()
+        _, calls = self._post(blocks_post=OSError("connection refused"))
+        self.assertEqual(len(self.posts), 1)
+        self.assertTrue(calls[0].args[1].startswith("**Security & RBAC Posture audit: 7 findings"))
+
+    def test_an_unreadable_ledger_posts_text_and_no_blocks(self):
+        self._blocks_on()
+        _, calls = self._post(composed=self.ONE_LINE, issue=None, blocks_post=lambda *a: self.BLOCKS_TS)
+        self.assertEqual(self.posts, [])
+        self.assertTrue(calls[0].args[1].startswith("**Security & RBAC posture audit: 2 new"))
+
+    def test_a_second_blocks_report_goes_into_the_existing_thread(self):
+        self._blocks_on()
+        self._post(job_id="rbac-3", blocks_post=lambda *a: self.BLOCKS_TS)
+        self._post(job_id="rbac-3", blocks_post=lambda *a: self.BLOCKS_TS)
+        self.assertEqual((self.posts[0].args[0], self.posts[0].args[3]), (self.HOME, self.BLOCKS_TS))
 
 class TestCronReportLabelSanitisation(unittest.TestCase):
     """`job_id`, `profile` and `title` are caller-supplied, not server-written.

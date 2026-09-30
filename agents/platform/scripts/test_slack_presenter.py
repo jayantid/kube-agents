@@ -153,7 +153,7 @@ class BlocksAnswerTest(unittest.TestCase):
         )
         self.assertEqual(
             blocks[1]["text"]["text"],
-            ":red_circle: *seeded-a*: OOM\n• seeded-b: ok\n• plain",
+            "`critical` *seeded-a*: OOM\n• seeded-b: ok\n• plain",
         )
 
     def test_rows_split_at_section_limit(self):
@@ -245,7 +245,7 @@ class FallbackTextTest(unittest.TestCase):
         self.assertEqual(
             text,
             "*Two findings.*\n"
-            ":large_yellow_circle: seeded-a: OOM\n"
+            "`warning` seeded-a: OOM\n"
             "<https://p|Open PR>\n"
             "Reply with one of: Yes · No\n"
             "*Why*\nbecause",
@@ -281,6 +281,98 @@ class LinkAckTest(unittest.TestCase):
         asyncio.run(sp.ack_link_click(ack, body, {"action_id": "kage.link.0"}))
         ack.assert_awaited_once_with()
         self.assertEqual(body.mock_calls, [])
+
+
+class BlocksReportTest(unittest.TestCase):
+    ROWS = [
+        {"severity": "critical", "text": "seeded-b and -c admit privileged pods"},
+        {"severity": "critical", "text": "default SA is `cluster-admin` on seeded-c"},
+    ]
+
+    def _report(self, **kwargs):
+        args = dict(
+            headline="Security & RBAC audit: 7 findings, 2 critical.",
+            note="2 are new since the last run.",
+            rows=self.ROWS,
+            choices=["look at: seeded-b and -c admit privileged pods"],
+            links=[("Ledger issue #231 ↗", "https://l/231")],
+            fold_title="all 7 findings",
+            fold_rows=self.ROWS + [{"severity": "major", "text": "Workload Identity off"}],
+            action_id_prefix="kage_audit",
+        )
+        args.update(kwargs)
+        return sp.blocks_report(**args)
+
+    def test_mock_08_shape(self):
+        blocks = self._report()
+        self.assertEqual(
+            [b["type"] for b in blocks], ["rich_text", "divider", "rich_text", "divider", "actions", "container"]
+        )
+        self.assertEqual(
+            blocks[0]["elements"][0]["elements"],
+            [
+                {"type": "text", "text": "Security & RBAC audit: 7 findings, 2 critical.", "style": {"bold": True}},
+                {"type": "text", "text": " 2 are new since the last run."},
+            ],
+        )
+
+    def test_group_is_headed_by_its_count_and_rows_lead_with_a_code_tag(self):
+        header, first, second = self._report()[2]["elements"]
+        self.assertEqual(header["elements"], [{"type": "text", "text": "2 critical", "style": {"bold": True}}])
+        self.assertEqual(
+            first["elements"],
+            [
+                {"type": "text", "text": "critical", "style": {"code": True}},
+                {"type": "text", "text": " "},
+                {"type": "text", "text": "seeded-b and -c admit privileged pods"},
+            ],
+        )
+        self.assertIn({"type": "text", "text": "cluster-admin", "style": {"code": True}}, second["elements"])
+        self.assertNotIn("•", str(first) + str(second))
+
+    def test_primary_choice_first_then_the_link(self):
+        buttons = self._report()[4]["elements"]
+        self.assertEqual([b["action_id"] for b in buttons], ["kage_audit.choice.0", "kage_audit.link.0"])
+        self.assertEqual(buttons[0]["style"], "primary")
+        self.assertEqual(buttons[0]["value"], "look at: seeded-b and -c admit privileged pods")
+        self.assertEqual(buttons[1]["url"], "https://l/231")
+        self.assertNotIn("style", buttons[1])
+        self.assertTrue(sp.CHOICE_ACTION_ID_PATTERN.search(buttons[0]["action_id"]))
+        self.assertTrue(sp.LINK_ACTION_ID_PATTERN.search(buttons[1]["action_id"]))
+
+    def test_fold_is_a_collapsed_container(self):
+        fold = self._report()[-1]
+        self.assertEqual(fold["title"], {"type": "plain_text", "text": "all 7 findings"})
+        self.assertTrue(fold["is_collapsible"])
+        self.assertTrue(fold["default_collapsed"])
+        self.assertEqual(len(fold["child_blocks"][0]["elements"]), 3)
+
+    def test_fold_left_out_when_not_in_place(self):
+        self.assertNotIn("container", [b["type"] for b in self._report(fold_in_place=False)])
+
+    def test_fold_rows_are_bounded(self):
+        fold = self._report(fold_rows=[{"text": "x"}] * (sp.FOLD_ROWS_MAX + 5))[-1]
+        self.assertEqual(len(fold["child_blocks"][0]["elements"]), sp.FOLD_ROWS_MAX)
+
+    def test_empty_parts_are_omitted(self):
+        self.assertEqual(
+            [b["type"] for b in sp.blocks_report("h")], ["rich_text"]
+        )
+
+    def test_group_header_counts(self):
+        self.assertEqual(sp.group_header([{"severity": "critical", "text": "a"}, {"severity": "major", "text": "b"}]),
+                         "1 critical, 1 major")
+        self.assertEqual(sp.group_header(["a", "b"]), "2 findings")
+        self.assertEqual(sp.group_header([{"severity": "High", "text": "a"}, "b"]), "1 high, 1 finding")
+
+
+class SeverityRowTest(unittest.TestCase):
+    def test_tag_then_text(self):
+        self.assertEqual(sp.severity_row("critical", "x"), "`critical` x")
+        self.assertFalse(hasattr(sp, "SEVERITY_MARKERS"))
+
+    def test_any_severity_is_tagged_and_cannot_break_the_code_span(self):
+        self.assertEqual(sp.fallback_text("h", rows=[{"text": "t", "severity": "cri`tical"}]), "*h*\n`critical` t")
 
 
 if __name__ == "__main__":

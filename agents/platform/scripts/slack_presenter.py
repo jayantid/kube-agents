@@ -12,13 +12,20 @@ Everything a caller changes on screen is gated on :func:`enabled`, the
 ``KAGE_SLACK_UX`` environment variable, off by default. With it off, callers
 take their upstream path unchanged; this module only answers questions.
 
-Layout (:func:`blocks_answer`): a bold headline, optional rows with a severity
-marker, url link buttons, choice buttons whose value is the label, and the
-"why" fold. No Block Kit container that folds content in place has been
-verified against the dev app, so the fold renders as a context line pointing at
-the thread and the caller posts :func:`fold_reply` there. :func:`fallback_text`
-is the same layout as plain mrkdwn, for the message's ``text`` field and for
-send paths that take no blocks.
+Layout (:func:`blocks_answer`): a bold headline, optional rows led by their
+severity as inline code, url link buttons, choice buttons whose value is the
+label, and the "why" fold, as a context line pointing at the thread where the
+caller posts :func:`fold_reply`. :func:`fallback_text` is the same layout as
+plain mrkdwn, for the message's ``text`` field and for send paths that take no
+blocks.
+
+Reports (:func:`blocks_report`, mocks 08 and 15): a headline, the top findings
+as one group between dividers headed by their count ("2 critical"), the choice
+buttons then the link buttons, and the rest in Slack's collapsible
+``container`` block, which Slack opens and closes itself. Block Kit has no
+bordered box a message can draw, so the dividers stand in for mock 08's border.
+Where Slack refuses the container, ``fold_in_place=False`` leaves it out and
+the caller posts the rest in the thread.
 
 Reactions (:func:`arrival_reaction`, :func:`settle_reaction`): the first
 reaction says what kind of ask arrived, chosen by keyword before any model
@@ -132,19 +139,9 @@ CHOICE_ACTION_ID_PATTERN = re.compile(r"\.choice\.\d+$")
 #: ``agent_session_stopped``; a click is the clicker typing ``/stop``.
 STOP_ACTION_ID = "kage_stop"
 
-#: Row severity markers. Unknown or absent severity gets no marker.
-SEVERITY_MARKERS = {
-    "critical": ":red_circle:",
-    "error": ":red_circle:",
-    "high": ":red_circle:",
-    "major": ":large_yellow_circle:",
-    "warning": ":large_yellow_circle:",
-    "medium": ":large_yellow_circle:",
-    "minor": ":white_circle:",
-    "low": ":white_circle:",
-    "ok": ":large_green_circle:",
-    "info": ":large_blue_circle:",
-}
+#: A row's severity, as inline code ahead of its text: "`critical` text".
+SEVERITY_TAG = "`{severity}` {text}"
+BACKTICK = "`"
 
 #: What the context line says when the fold went to the thread.
 FOLD_POINTER = "{title}: in the thread"
@@ -152,6 +149,18 @@ DEFAULT_FOLD_TITLE = "Why"
 CHOICES_LEAD = "Reply with one of: "
 CHOICE_SEPARATOR = " · "
 BULLET = "• "
+
+#: A report's group header: the shown rows counted per severity, most first
+#: seen first ("2 critical", "1 critical, 1 major"); rows with no severity are
+#: counted as findings.
+GROUP_COUNT = "{count} {severity}"
+GROUP_SEPARATOR = ", "
+UNTAGGED = "finding"
+UNTAGGED_PLURAL = "findings"
+#: Bounds on a report's fold: rows shown in it, and characters per row.
+FOLD_ROWS_MAX = 50
+ROW_TEXT_MAX = 300
+PRIMARY_STYLE = "primary"
 
 CODE_FENCE = "```"
 HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
@@ -336,14 +345,24 @@ def _actions(buttons: Sequence[dict]) -> list[dict]:
     ]
 
 
-def _row_line(row: Any) -> str:
+def _row_parts(row: Any) -> tuple[str, str]:
+    """``(severity, text)`` from a ``{"text", "severity"?}`` mapping or a plain string."""
     if isinstance(row, Mapping):
         text, severity = str(row.get("text") or ""), row.get("severity")
     else:
         text, severity = str(row), None
-    marker = SEVERITY_MARKERS.get(str(severity or "").lower())
+    return str(severity or "").replace(BACKTICK, "").strip().lower(), text
+
+
+def severity_row(severity: str, text: str) -> str:
+    """``text`` led by ``severity`` as inline code; the same in markdown and mrkdwn."""
+    return SEVERITY_TAG.format(severity=severity, text=text)
+
+
+def _row_line(row: Any) -> str:
+    severity, text = _row_parts(row)
     line = to_mrkdwn(text)
-    return f"{marker} {line}" if marker else f"{BULLET}{line}"
+    return severity_row(severity, line) if severity else f"{BULLET}{line}"
 
 
 def _sections(lines: Sequence[str]) -> list[dict]:
@@ -399,6 +418,114 @@ def blocks_answer(
         for i, label in enumerate(str(c) for c in choices or () if str(c).strip())
     ]
     blocks.extend(_actions(choice_buttons))
+    return blocks
+
+
+RICH_SPAN = re.compile(r"`(?P<code>[^`]+)`|\*\*(?P<bold>.+?)\*\*|\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\)")
+
+
+def _rich_elements(markdown: str) -> list[dict]:
+    """One line of markdown as rich_text elements: code spans, bold and links kept, the rest text."""
+    elements: list[dict] = []
+    at = 0
+    for span in RICH_SPAN.finditer(markdown):
+        if span.start() > at:
+            elements.append({"type": "text", "text": markdown[at : span.start()]})
+        if span.group("code") is not None:
+            elements.append({"type": "text", "text": span.group("code"), "style": {"code": True}})
+        elif span.group("bold") is not None:
+            elements.append({"type": "text", "text": span.group("bold"), "style": {"bold": True}})
+        else:
+            elements.append({"type": "link", "url": span.group("url"), "text": span.group("label")})
+        at = span.end()
+    if at < len(markdown):
+        elements.append({"type": "text", "text": markdown[at:]})
+    return elements
+
+
+def _rich_row(row: Any) -> dict:
+    """A report row: its severity as inline code, then its text, with no bullet."""
+    severity, text = _row_parts(row)
+    elements = _rich_elements(_clip(text.strip(), ROW_TEXT_MAX))
+    if severity:
+        elements = [{"type": "text", "text": severity, "style": {"code": True}}, {"type": "text", "text": " "}, *elements]
+    return {"type": "rich_text_section", "elements": elements}
+
+
+def group_header(rows: Sequence[Any]) -> str:
+    """The shown rows counted per severity, in the order first seen: "2 critical", "1 critical, 1 major"."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        severity, _ = _row_parts(row)
+        counts[severity] = counts.get(severity, 0) + 1
+    parts = []
+    for severity, count in counts.items():
+        if not severity:
+            severity = UNTAGGED if count == 1 else UNTAGGED_PLURAL
+        parts.append(GROUP_COUNT.format(count=count, severity=severity))
+    return GROUP_SEPARATOR.join(parts)
+
+
+def blocks_report(
+    headline: str,
+    note: str = "",
+    rows: Sequence[Any] = (),
+    choices: Iterable[str] = (),
+    links: Iterable[Any] = (),
+    fold_title: str | None = None,
+    fold_rows: Sequence[Any] = (),
+    action_id_prefix: str = "kage",
+    fold_in_place: bool = True,
+    fold_first: bool = False,
+) -> list[dict]:
+    """Block Kit for a report: headline, the top rows as one bordered group, buttons, the fold.
+
+    ``headline`` is bold and ``note`` follows it plain, both one line. ``rows``
+    and ``fold_rows`` are ``{"text": <markdown>, "severity"?: str}`` mappings or
+    plain strings; ``rows`` sit between two dividers under their
+    :func:`group_header`. The first choice is the primary button and the links
+    follow the choices. ``fold_rows`` go in a collapsed container titled
+    ``fold_title``, or nowhere when ``fold_in_place`` is False, for the caller
+    to post in the thread; ``fold_first`` puts it above the buttons, as mock
+    15 does. Any part left empty is omitted.
+    """
+    blocks: list[dict] = []
+    head: list[dict] = []
+    title = _clip(_plain(headline or ""), HEADLINE_MAX)
+    if title:
+        head.append({"type": "text", "text": title, "style": {"bold": True}})
+    if note and note.strip():
+        head.append({"type": "text", "text": " " + _plain(note)})
+    if head:
+        blocks.append({"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": head}]})
+    if rows:
+        header = {"type": "rich_text_section", "elements": [{"type": "text", "text": group_header(rows), "style": {"bold": True}}]}
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "rich_text", "elements": [header, *(_rich_row(row) for row in rows)]})
+        blocks.append({"type": "divider"})
+    choice_buttons = [
+        _button(label, f"{action_id_prefix}.{CHOICE_ACTION}.{i}", value=label)
+        for i, label in enumerate(str(c) for c in choices or () if str(c).strip())
+    ]
+    if choice_buttons:
+        choice_buttons[0]["style"] = PRIMARY_STYLE
+    link_buttons = [
+        _button(label, f"{action_id_prefix}.{LINK_ACTION}.{i}", url=url)
+        for i, (label, url) in enumerate(_link_pairs(links))
+    ]
+    fold: list[dict] = []
+    if fold_in_place and fold_rows:
+        fold.append({
+            "type": "container",
+            "title": {"type": "plain_text", "text": _clip(_plain(fold_title or DEFAULT_FOLD_TITLE), BUTTON_TEXT_MAX)},
+            "is_collapsible": True,
+            "default_collapsed": True,
+            "child_blocks": [
+                {"type": "rich_text", "elements": [_rich_row(row) for row in list(fold_rows)[:FOLD_ROWS_MAX]]}
+            ],
+        })
+    actions = _actions(choice_buttons + link_buttons)
+    blocks.extend(fold + actions if fold_first else actions + fold)
     return blocks
 
 

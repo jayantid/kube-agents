@@ -79,8 +79,8 @@ class HeadlineFromIssueTest(unittest.TestCase):
         self.assertEqual(
             sar.headline_from_issue(ISSUE, REF, REPORT),
             "**Security & RBAC Posture audit: 7 findings, 2 critical.** 2 are new since the last run.\n"
-            ":red_circle: **critical**  seeded-b, seeded-c: `cluster-admin` bound to the default service account\n"
-            ":red_circle: **critical**  seeded-c: a ClusterRole grants `*` on secrets\n"
+            "`critical` seeded-b, seeded-c: `cluster-admin` bound to the default service account\n"
+            "`critical` seeded-c: a ClusterRole grants `*` on secrets\n"
             f"[Ledger issue #231 ↗]({LEDGER}): all 7 findings",
         )
 
@@ -89,8 +89,8 @@ class HeadlineFromIssueTest(unittest.TestCase):
             "### Minor (4)", "### Minor (4)\n\n" + finding("minor one", "m-0")
         )
         rows = sar.headline_from_issue(dict(ISSUE, body=body), REF).splitlines()[1:3]
-        self.assertEqual(rows[0], ":large_yellow_circle: **major**  seeded-a: Workload Identity is off on one node pool")
-        self.assertTrue(rows[1].startswith(":white_circle: **minor**  minor one"))
+        self.assertEqual(rows[0], "`major` seeded-a: Workload Identity is off on one node pool")
+        self.assertTrue(rows[1].startswith("`minor` minor one"))
 
     def test_no_new_count_leaves_the_headline_bare(self):
         first = sar.headline_from_issue(ISSUE, REF, "").splitlines()[0]
@@ -148,7 +148,7 @@ class HeadlineFromIssueTest(unittest.TestCase):
         body = "### Critical (1)\n\n" + finding("word " * 60, "w")
         row = sar.headline_from_issue(dict(ISSUE, body=body), REF).splitlines()[1]
         self.assertTrue(row.endswith("…"))
-        self.assertLessEqual(len(row), len(":red_circle: **critical**  ") + sar.ROW_TEXT_MAX)
+        self.assertLessEqual(len(row), len("`critical` ") + sar.ROW_TEXT_MAX)
 
     def test_repro_a_a_clipped_row_closes_its_code_span(self):
         title = (
@@ -159,7 +159,7 @@ class HeadlineFromIssueTest(unittest.TestCase):
         row = sar.headline_from_issue(dict(ISSUE, body=body), REF).splitlines()[1]
         self.assertTrue(row.endswith("`…"), row)
         self.assertEqual(row.count("`") % 2, 0)
-        self.assertLessEqual(len(row), len(":red_circle: **critical**  ") + sar.ROW_TEXT_MAX)
+        self.assertLessEqual(len(row), len("`critical` ") + sar.ROW_TEXT_MAX)
 
 
 class HeadlineFallbackTest(unittest.TestCase):
@@ -187,6 +187,47 @@ class HasMoreTest(unittest.TestCase):
 
     def test_several_lines_do(self):
         self.assertTrue(sar.has_more(f"Audit\n\n- a finding\n{LEDGER}"))
+
+
+class BlocksFromIssueTest(unittest.TestCase):
+    def test_mock_08(self):
+        blocks, text = sar.blocks_from_issue(ISSUE, REF, REPORT)
+        self.assertEqual(
+            [b["type"] for b in blocks], ["rich_text", "divider", "rich_text", "divider", "actions", "container"]
+        )
+        head = blocks[0]["elements"][0]["elements"]
+        self.assertEqual(head[0]["text"], "Security & RBAC Posture audit: 7 findings, 2 critical.")
+        self.assertEqual(head[1]["text"], " 2 are new since the last run.")
+        header = blocks[2]["elements"][0]["elements"][0]["text"]
+        self.assertEqual(header, "2 critical")
+        choice, link = blocks[4]["elements"]
+        self.assertEqual(choice["text"]["text"], "look at: seeded-b, seeded-c: cluster-admin bound to the default service…")
+        self.assertEqual(choice["action_id"], "kage_audit.choice.0")
+        self.assertEqual(choice["style"], "primary")
+        self.assertEqual((link["text"]["text"], link["url"]), ("Ledger issue #231 ↗", LEDGER))
+        self.assertEqual(blocks[5]["title"]["text"], "all 7 findings")
+        self.assertEqual(len(blocks[5]["child_blocks"][0]["elements"]), 4)
+        self.assertEqual(
+            text,
+            "*Security &amp; RBAC Posture audit: 7 findings, 2 critical.*\n"
+            "`critical` seeded-b, seeded-c: `cluster-admin` bound to the default service account\n"
+            "`critical` seeded-c: a ClusterRole grants `*` on secrets\n"
+            f"<{LEDGER}|Ledger issue #231 ↗>",
+        )
+
+    def test_choice_label_comes_from_the_finding(self):
+        body = BODY.replace("seeded-b, seeded-c: `cluster-admin` bound to the default service account", "privileged pods")
+        blocks, _ = sar.blocks_from_issue(dict(ISSUE, body=body), REF, REPORT)
+        self.assertEqual(blocks[4]["elements"][0]["text"]["text"], "look at: privileged pods")
+
+    def test_without_the_fold(self):
+        blocks, _ = sar.blocks_from_issue(ISSUE, REF, REPORT, fold_in_place=False)
+        self.assertEqual(blocks[-1]["type"], "actions")
+
+    def test_clean_and_unparsed_runs_have_no_blocks(self):
+        clean = {"title": "[audit] Cost Audit — 0 findings (0 critical)", "body": "Nothing."}
+        self.assertIsNone(sar.blocks_from_issue(clean, REF, "Cost audit: clean — " + LEDGER))
+        self.assertIsNone(sar.blocks_from_issue({"title": "something else"}, REF, REPORT))
 
 
 if __name__ == "__main__":

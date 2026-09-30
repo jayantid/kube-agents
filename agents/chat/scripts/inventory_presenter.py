@@ -5,8 +5,15 @@ reaches Slack as text: the only Block Kit it carries is what the adapter's
 markdown renderer draws, so there are no buttons and no collapsible container.
 ``present`` gives mock 15's text fallback instead: the first posture sentence
 as a bold headline, the top two findings and every critical one a row each,
-and the remaining findings listed under a "more worth a look" line. The
-roll-up and closing lines are kept as written.
+led by its severity as inline code, and the remaining findings listed under a
+"more worth a look" line. The roll-up and closing lines are kept as written.
+
+``blocks`` is the same report as mock 15's Block Kit, which
+``bootstrap_delivery`` posts itself when it can: the top rows as
+:func:`slack_presenter.blocks_report`'s group, the rest folded, a primary
+"start with" button naming the top finding and a "show all N" button, both
+answered as the clicker's turn. The roll-up and closing lines are left out;
+"show all" is how the full list is asked for.
 
 The report is model-written to the format in
 ``agents/platform/governance/inventory_prioritize_sop.md`` (Step 6). A report
@@ -14,6 +21,8 @@ that does not parse to that shape is returned unchanged.
 """
 
 import re
+
+from slack_presenter import BUTTON_TEXT_MAX, _clip, _plain, blocks_report, fallback_text, severity_row
 
 TOP_COUNT = 2
 TOP_COUNT_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
@@ -45,9 +54,16 @@ SENTENCE_END = re.compile(r"(?<!\b[a-z]\.[a-z]\.)(?<!\bvs\.)(?<=[.!?])\s+")
 SEVERITY_LABEL = re.compile(r"^(critical|major|minor)\s*:\s*", re.IGNORECASE)
 #: "[critical]" or "(critical)" anywhere in the headline.
 SEVERITY_TAG = re.compile(r"\s*[\[(](critical|major|minor)[\])]\s*", re.IGNORECASE)
-# Unicode rather than Slack shortcodes: the delivery target is the chat the user
-# first spoke in, which can be Google Chat.
-SEVERITY_MARKERS = {"critical": "\U0001f534", "major": "\U0001f7e0", "minor": "\U0001f7e1"}
+
+#: The Block Kit report (mock 15).
+ACTION_ID_PREFIX = "kage_inventory"
+START_WITH = "start with: {finding}"
+SHOW_ALL = "show all {count}"
+FOLD_TITLE = "{count} more worth a look"
+#: The total: the posture's own "<n> findings", else the listed items plus the
+#: roll-up's "<n> more".
+POSTURE_TOTAL = re.compile(r"\b(\d+)\s+findings\b", re.IGNORECASE)
+ROLLUP_MORE = re.compile(r"\b(\d+)\s+more\b", re.IGNORECASE)
 
 
 def _paragraphs(lines: list[str]) -> list[str]:
@@ -128,34 +144,88 @@ def _parse(report: str) -> tuple[str, list[tuple[str | None, str]], list[str]] |
 
 
 def _row(severity: str | None, headline: str, bold: bool = True) -> str:
-    """One finding on one line, led by its severity when the headline was labelled."""
+    """One finding on one line, led by its severity as inline code when the headline was labelled."""
     if severity:
-        return f"{SEVERITY_MARKERS[severity]} {BOLD_MARK}{severity}{BOLD_MARK}  {headline}"
+        return severity_row(severity, headline)
     return f"{BOLD_MARK}{headline}{BOLD_MARK}" if bold else headline
+
+
+class _Shape:
+    """A parsed report split the way mock 15 shows it."""
+
+    def __init__(self, posture: str, items: list[tuple[str | None, str]], tail: list[str]):
+        sentences = SENTENCE_END.split(posture.replace(BOLD_MARK, ""), maxsplit=1)
+        self.headline = sentences[0]
+        self.note = sentences[1] if len(sentences) > 1 else ""
+        self.top = [item for i, item in enumerate(items) if i < TOP_COUNT or item[0] == CRITICAL]
+        self.rest = [item for i, item in enumerate(items) if not (i < TOP_COUNT or item[0] == CRITICAL)]
+        self.lead = ""
+        if self.rest:
+            urgent = any(severity in URGENT_SEVERITIES for severity, _ in self.top)
+            template = LEAD_TEMPLATE if urgent else NEUTRAL_LEAD_TEMPLATE
+            self.lead = template.format(count=TOP_COUNT_WORDS.get(len(self.top), str(len(self.top))))
+        self.tail = tail
+        total = POSTURE_TOTAL.search(posture)
+        more = next((m for m in (ROLLUP_MORE.search(p) for p in tail) if m), None)
+        self.total: int | None = None
+        if total:
+            self.total = int(total.group(1))
+        elif more:
+            self.total = len(items) + int(more.group(1))
+
+
+def _shape(report: str) -> _Shape | None:
+    parsed = _parse(report)
+    return None if parsed is None else _Shape(*parsed)
 
 
 def present(report: str) -> str:
     """The report as headline, top findings and the rest; unchanged if it does not parse."""
-    parsed = _parse(report)
-    if parsed is None:
+    shape = _shape(report)
+    if shape is None:
         return report
-    posture, items, tail = parsed
-
-    sentences = SENTENCE_END.split(posture.replace(BOLD_MARK, ""), maxsplit=1)
-    headline = f"{BOLD_MARK}{sentences[0]}{BOLD_MARK}"
-    if len(sentences) > 1:
-        headline += f" {sentences[1]}"
-
-    top = [item for i, item in enumerate(items) if i < TOP_COUNT or item[0] == CRITICAL]
-    rest = [item for i, item in enumerate(items) if not (i < TOP_COUNT or item[0] == CRITICAL)]
-    rows = []
-    if rest:
-        urgent = any(severity in URGENT_SEVERITIES for severity, _ in top)
-        template = LEAD_TEMPLATE if urgent else NEUTRAL_LEAD_TEMPLATE
-        rows.append(template.format(count=TOP_COUNT_WORDS.get(len(top), str(len(top)))))
-    rows += [_row(severity, h) for severity, h in top]
+    headline = f"{BOLD_MARK}{shape.headline}{BOLD_MARK}"
+    if shape.note:
+        headline += f" {shape.note}"
+    rows = [shape.lead] if shape.lead else []
+    rows += [_row(severity, h) for severity, h in shape.top]
     blocks = [headline, "\n".join(rows)]
-    if rest:
-        rest_rows = [REST_BULLET + _row(severity, h, bold=False) for severity, h in rest]
-        blocks.append("\n".join([REST_TEMPLATE.format(count=len(rest))] + rest_rows))
-    return PARAGRAPH_BREAK.join(blocks + tail) + "\n"
+    if shape.rest:
+        rest_rows = [REST_BULLET + _row(severity, h, bold=False) for severity, h in shape.rest]
+        blocks.append("\n".join([REST_TEMPLATE.format(count=len(shape.rest))] + rest_rows))
+    return PARAGRAPH_BREAK.join(blocks + shape.tail) + "\n"
+
+
+def _rows(items: list[tuple[str | None, str]]) -> list[dict]:
+    return [{"severity": severity, "text": headline} for severity, headline in items]
+
+
+def blocks(report: str, fold_in_place: bool = True) -> tuple[list[dict], str, str] | None:
+    """Mock 15's ``(blocks, text, rest)``, or None when the report does not parse.
+
+    ``text`` is the message's mrkdwn ``text`` field. ``rest`` is the folded
+    findings as mrkdwn, empty when there are none or they are folded in
+    place; with ``fold_in_place`` False the caller posts it in the thread.
+    """
+    shape = _shape(report)
+    if shape is None:
+        return None
+    note = " ".join(part for part in (shape.note, shape.lead) if part)
+    top = _rows(shape.top)
+    choices = [START_WITH.format(finding=_clip(_plain(shape.top[0][1]), BUTTON_TEXT_MAX))] if shape.top else []
+    if shape.total and shape.rest:
+        choices.append(SHOW_ALL.format(count=shape.total))
+    fold_title = FOLD_TITLE.format(count=len(shape.rest))
+    built = blocks_report(
+        shape.headline,
+        note=note,
+        rows=top,
+        choices=choices,
+        fold_title=fold_title,
+        fold_rows=_rows(shape.rest),
+        action_id_prefix=ACTION_ID_PREFIX,
+        fold_in_place=fold_in_place,
+        fold_first=True,
+    )
+    rest = fallback_text(fold_title, rows=_rows(shape.rest)) if shape.rest and not fold_in_place else ""
+    return built, fallback_text(shape.headline, rows=top), rest
