@@ -941,10 +941,11 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         self.announced = []
         self.posts_question = True
         self.settled = []
+        self.questions_settled = []
         test = self
 
-        async def needs_you(adapter, sub, payload):
-            test.asked.append((sub["task_id"], payload))
+        async def needs_you(adapter, sub, payload, event_id=0):
+            test.asked.append((sub["task_id"], payload, event_id))
             if isinstance(test.posts_question, Exception):
                 raise test.posts_question
             return test.posts_question
@@ -956,8 +957,16 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         async def settle_delegated(adapter, sub, kind, board=None):
             test.settled.append((sub["task_id"], kind))
 
+        async def settle_question(adapter, sub):
+            test.questions_settled.append(sub["task_id"])
+
         reactions = SimpleNamespace(enabled=lambda: test.flag, settle_delegated=settle_delegated)
-        moments = SimpleNamespace(enabled=lambda: test.flag, needs_you=needs_you, pr_opened=pr_opened)
+        moments = SimpleNamespace(
+            enabled=lambda: test.flag,
+            needs_you=needs_you,
+            pr_opened=pr_opened,
+            settle_question=settle_question,
+        )
         self.modules = {
             "gateway": SimpleNamespace(slack_ux_reactions=reactions, slack_ux_moments=moments),
             "gateway.slack_ux_reactions": reactions,
@@ -985,7 +994,7 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
         adapter = _Adapter()
         payload = {"kind": "needs_input", "reason": "Which cluster?"}
         self.assertIsNone(await self._blocked(adapter, payload))
-        self.assertEqual(self.asked, [("t_e0c1", payload)])
+        self.assertEqual(self.asked, [("t_e0c1", payload, 3)])
         self.assertEqual(adapter.sent, [])
         self.assertEqual(self.settled, [("t_e0c1", "blocked")])
         self.assertFalse(getattr(self.watcher, kanban_notifier.HELD_ATTR, {}), "the line was also held")
@@ -998,6 +1007,22 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(await self._blocked(adapter, {"kind": "capability", "reason": "no GPU"}))
                 held = getattr(self.watcher, kanban_notifier.HELD_ATTR)
                 self.assertIn(3, held[sub_key(SLACK_SUB)], "the blocked line was not held for the wake")
+
+    async def test_every_event_after_the_block_settles_the_question(self):
+        await self._blocked(_Adapter(), {"kind": "needs_input", "reason": "Which cluster?"})
+        self.assertEqual(self.questions_settled, [])
+        await self._notes_then_report(_Adapter())
+        self.assertEqual(self.questions_settled, ["t_e0c1"] * 3)
+
+    async def test_a_failed_settle_still_delivers(self):
+        async def settle_question(adapter, sub):
+            raise RuntimeError("boom")
+
+        self.modules["gateway.slack_ux_moments"].settle_question = settle_question
+        adapter = _Adapter()
+        result = await self._notes_then_report(adapter)
+        self.assertTrue(result.success)
+        self.assertEqual(len(adapter.sent), 2)
 
     async def test_other_terminal_kinds_never_ask(self):
         await self._notes_then_report(_Adapter())
@@ -1034,7 +1059,7 @@ class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
             await self._notes_then_report(without)
             await self._blocked(without, payload)
         self.assertEqual((with_module.sent, with_module.edits), (without.sent, without.edits))
-        self.assertEqual((self.asked, self.announced), ([], []))
+        self.assertEqual((self.asked, self.announced, self.questions_settled), ([], [], []))
 
 
 if __name__ == "__main__":

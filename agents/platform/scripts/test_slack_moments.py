@@ -49,6 +49,19 @@ class OpenedPrTest(unittest.TestCase):
     def test_the_verb_must_be_on_the_line_with_the_url(self):
         self.assertIsNone(m.opened_pr(f"Opened the file.\n{PR}"))
 
+    def test_the_verb_must_come_before_the_url(self):
+        self.assertIsNone(m.opened_pr(f"regression came from {PR}, opened by bob last week"))
+        self.assertIsNone(m.opened_pr(f"Opened the runbook; {PR} explains it"))
+
+    def test_a_pr_or_pull_request_between_the_verb_and_the_url(self):
+        for lead in ("Opened PR", "created a pull request:", "Raised a new PR", "filed the PR"):
+            self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+        self.assertEqual(m.opened_pr(f"Opened <{PR}|PR #412>")[0], PR)
+
+    def test_the_opened_pr_is_found_after_a_cited_one(self):
+        other = "https://github.com/acme/x/pull/300"
+        self.assertEqual(m.opened_pr(f"Following up {other}, opened {PR}")[0], PR)
+
     def test_an_issue_url_is_not_a_pr(self):
         self.assertIsNone(m.opened_pr("Opened https://github.com/acme/fleet-config/issues/9"))
 
@@ -95,6 +108,13 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(_contexts(blocks), [m.WAITING])
         self.assertEqual(text, "*Which namespace should I scale?*")
 
+    def test_no_buttons_keeps_the_options_in_the_text(self):
+        reason = "Which checkout-gateway did you mean?\n- seeded-reliability\n- seeded-debug"
+        blocks, text = m.needs_you(reason, buttons=False)
+        self.assertEqual(_buttons(blocks), [])
+        self.assertEqual(_contexts(blocks), ["- seeded-reliability\n- seeded-debug", m.WAITING])
+        self.assertIn("seeded-debug", text)
+
     def test_one_option_or_too_many_stay_in_the_text(self):
         for count in (1, p.BUTTONS_PER_ROW + 1):
             options = [f"- option {n}" for n in range(count)]
@@ -127,6 +147,19 @@ class NeedsYouTest(unittest.TestCase):
     def test_an_empty_reason_is_no_question(self):
         self.assertIsNone(m.needs_you(""))
         self.assertIsNone(m.needs_you("  \n "))
+
+    def test_settled_drops_the_choices_and_the_waiting_line_only(self):
+        blocks, _ = m.needs_you("Which cluster?\nTwo run it.\n- seeded-a\n- seeded-b")
+        settled = m.needs_you_settled(blocks)
+        self.assertEqual(_buttons(settled), [])
+        self.assertEqual(settled, [b for b in blocks if b["type"] != "actions"][:-1])
+        self.assertEqual(_contexts(settled), ["Two run it."])
+
+    def test_settled_keeps_a_link_beside_the_choices(self):
+        link = {"type": "button", "action_id": "kage.link.0", "url": "https://example.com"}
+        choice = {"type": "button", "action_id": "kage_needs.choice.0"}
+        settled = m.needs_you_settled([{"type": "actions", "elements": [choice, link]}])
+        self.assertEqual(settled, [{"type": "actions", "elements": [link]}])
 
 
 if __name__ == "__main__":

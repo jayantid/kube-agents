@@ -323,6 +323,14 @@ class RuntimeTest(unittest.TestCase):
         turns = [entry[1]["text"] for entry in adapter.log if entry[0] == "message"]
         self.assertEqual(turns, ["Leave it"])
 
+    def test_answered_reports_a_clicked_message_only(self):
+        self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS))
+        self._answer(_Adapter(authorized=False), *_choice())
+        self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS), "an unlisted click answered it")
+        self._answer(_Adapter(), *_choice())
+        self.assertTrue(runtime.answered(CHANNEL, MESSAGE_TS))
+        self.assertFalse(runtime.answered("C0OTHER", MESSAGE_TS))
+
     def test_label_is_escaped_in_what_slack_shows_but_not_in_the_turn(self):
         adapter = _Adapter()
         self._answer(adapter, *_choice(value="<!channel> & go"))

@@ -367,10 +367,21 @@ def _slack_moments(quiet: Any) -> Any:
 
 async def _needs_you(moments: Any, adapter: Any, sub: dict, ev: Any) -> bool:
     try:
-        return bool(await moments.needs_you(adapter, sub, getattr(ev, "payload", None)))
+        return bool(await moments.needs_you(
+            adapter, sub, getattr(ev, "payload", None), int(getattr(ev, "id", 0) or 0),
+        ))
     except Exception as exc:  # noqa: BLE001 — fall back to the blocked line
         logger.debug("kanban progress: the question for %s failed: %s", sub.get("task_id"), exc)
         return False
+
+
+async def _settle_question(moments: Any, adapter: Any, sub: dict, kind: str) -> None:
+    if moments is None or kind == NEEDS_YOU_KIND:
+        return
+    try:
+        await moments.settle_question(adapter, sub)
+    except Exception as exc:  # noqa: BLE001 — cosmetic; the card has moved on
+        logger.debug("kanban progress: settling the question for %s failed: %s", sub.get("task_id"), exc)
 
 
 async def _pr_opened(moments: Any, adapter: Any, sub: dict, text: str, result: Any) -> None:
@@ -447,7 +458,7 @@ async def deliver(
     rolling message as the fallback when the plan cannot be posted; ``title``
     is the card's, for the row. See ``gateway/slack_ux_status.py``. A card
     blocked on ``needs_input`` posts its question instead of the blocked line,
-    and a note or report saying a PR was opened is followed by that PR as a
+    and loses that question's buttons at its next event; a note or report saying a PR was opened is followed by that PR as a
     message of its own. See ``gateway/slack_ux_moments.py``.
     """
     chat_id = sub["chat_id"]
@@ -476,6 +487,7 @@ async def deliver(
                 )
         tracked.pop(key, None)
         moments = _slack_moments(quiet)
+        await _settle_question(moments, adapter, sub, kind)
         if kind == NEEDS_YOU_KIND and moments is not None and await _needs_you(moments, adapter, sub, ev):
             await _settle_reaction(adapter, sub, kind, board)
             return None
@@ -492,8 +504,10 @@ async def deliver(
 
     line = rolling_line(kind, getattr(ev, "payload", None)) or message
     quiet = _slack_quiet(sub)
+    moments = _slack_moments(quiet)
+    await _settle_question(moments, adapter, sub, kind)
     result = await _roll(adapter, sub, metadata, header, title, line, _slack_plan(quiet), event_id, tracked)
-    await _pr_opened(_slack_moments(quiet), adapter, sub, line, result)
+    await _pr_opened(moments, adapter, sub, line, result)
     return result
 
 

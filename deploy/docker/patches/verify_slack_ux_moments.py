@@ -5,15 +5,19 @@ Run by ``deploy/docker/Dockerfile`` against ``/opt/hermes`` once
 ``slack_moments.py`` staged beside this script (``/opt/defaults/scripts`` is
 not populated yet at that point in the build).
 
-Two things are checked:
+Three things are checked:
 
 1. ``gateway/kanban_progress_lines.py`` imports the module, since nothing else
    reaches it and an import that drifted would read as flag off.
-2. The module, loaded by path and driven with a stub adapter: flag off it is
+2. ``gateway/kanban_watchers_notifier.py`` passes its wake text through
+   ``wake_text`` (``apply_slack_ux_moments.py``).
+3. The module, loaded by path and driven with a stub adapter: flag off it is
    inert; flag on, an opened PR posts once with its two url buttons, a PR
    that is only cited posts nothing, and a ``needs_input`` block posts its
    question with a choice per listed option while any other block posts
-   nothing.
+   nothing. The wake for that question's ``blocked`` event carries the note
+   and a wake for another event does not; the question loses its buttons when
+   settled; and a card with no thread gets the question without buttons.
 
 A refused post raises nothing and logs a warning, so the build is where a
 broken layout is caught.
@@ -30,6 +34,8 @@ from pathlib import Path
 RUNTIME = "gateway/slack_ux_moments.py"
 CALLER = "gateway/kanban_progress_lines.py"
 CALLER_IMPORT = "from gateway import slack_ux_moments"
+NOTIFIER = "gateway/kanban_watchers_notifier.py"
+NOTIFIER_IMPORT = "from gateway.slack_ux_moments import wake_text as _kage_moments_wake_text"
 FLAG_ENV = "KAGE_SLACK_UX"
 
 CHANNEL = "C0KAGE"
@@ -39,6 +45,9 @@ OPENED = f"Opened PR {PR} raising the limit to 512Mi"
 CITED = f"{PR} already covers this"
 QUESTION = "Which checkout-gateway did you mean?\nTwo clusters run one.\n- seeded-reliability\n- seeded-debug"
 CHOICES = ["seeded-reliability", "seeded-debug"]
+BLOCKED = "blocked"
+BLOCKED_ID = 7
+WAKE = "Task t_verify is blocked."
 
 
 def _fail(detail: str) -> SystemExit:
@@ -46,20 +55,30 @@ def _fail(detail: str) -> SystemExit:
 
 
 class _StubClient:
-    def __init__(self, posts: list) -> None:
-        self.posts = posts
+    def __init__(self, adapter: _StubAdapter) -> None:
+        self.adapter = adapter
 
     async def chat_postMessage(self, **kwargs):
-        self.posts.append(kwargs)
+        self.adapter.posts.append(kwargs)
         return {"ts": "1700000000.000300"}
+
+    async def chat_update(self, **kwargs):
+        self.adapter.updates.append(kwargs)
 
 
 class _StubAdapter:
     def __init__(self) -> None:
         self.posts: list = []
+        self.updates: list = []
 
     def _get_client(self, chat_id, team_id=None):
-        return _StubClient(self.posts)
+        return _StubClient(self)
+
+
+class _Event:
+    def __init__(self, event_id: int, kind: str) -> None:
+        self.id = event_id
+        self.kind = kind
 
 
 def _buttons(blocks: list) -> list:
@@ -70,6 +89,9 @@ def check_caller(root: Path) -> None:
     path = root / CALLER
     if not path.is_file() or CALLER_IMPORT not in path.read_text():
         raise _fail(f"{CALLER} does not import slack_ux_moments")
+    path = root / NOTIFIER
+    if not path.is_file() or NOTIFIER_IMPORT not in path.read_text():
+        raise _fail(f"{NOTIFIER} does not pass its wake text through slack_ux_moments")
 
 
 def _load_runtime(root: Path):
@@ -103,12 +125,27 @@ async def _drive(module) -> None:
 
     adapter = _StubAdapter()
     await module.needs_you(adapter, sub, {"kind": "capability", "reason": QUESTION})
-    await module.needs_you(adapter, sub, {"kind": "needs_input", "reason": QUESTION})
+    if module.wake_text(sub, [_Event(BLOCKED_ID, BLOCKED)], {BLOCKED}, WAKE) != WAKE:
+        raise _fail("the wake changed before any question was posted")
+    await module.needs_you(adapter, sub, {"kind": "needs_input", "reason": QUESTION}, BLOCKED_ID)
     if len(adapter.posts) != 1:
         raise _fail(f"the question posted {len(adapter.posts)} times, expected once")
     labels = [b["text"]["text"] for b in _buttons(adapter.posts[0]["blocks"])]
     if labels != CHOICES:
         raise _fail(f"the question's buttons were {labels!r}")
+    noted = module.wake_text(sub, [_Event(BLOCKED_ID, BLOCKED)], {BLOCKED}, WAKE)
+    if noted != f"{WAKE}\n\n{module.WAKE_NOTE}":
+        raise _fail("the wake for the posted question does not carry the note")
+    if module.wake_text(sub, [_Event(BLOCKED_ID + 1, BLOCKED)], {BLOCKED}, WAKE) != WAKE:
+        raise _fail("the wake for another blocked event carries the note")
+    await module.settle_question(adapter, sub)
+    if len(adapter.updates) != 1 or _buttons(adapter.updates[0]["blocks"]):
+        raise _fail(f"settling the question sent {adapter.updates!r}")
+
+    adapter = _StubAdapter()
+    await module.needs_you(adapter, {**sub, "thread_id": ""}, {"kind": "needs_input", "reason": QUESTION})
+    if len(adapter.posts) != 1 or _buttons(adapter.posts[0]["blocks"]):
+        raise _fail("a question with no thread to answer in got buttons")
     os.environ.pop(FLAG_ENV, None)
 
 
@@ -116,8 +153,9 @@ def main(root: Path = Path("/opt/hermes")) -> None:
     check_caller(root)
     asyncio.run(_drive(_load_runtime(root)))
     print(
-        "slack_ux_moments verify: reached from kanban_progress_lines; "
-        "posts an opened PR once and a needs_input question with its choices"
+        "slack_ux_moments verify: reached from kanban_progress_lines and the wake; "
+        "posts an opened PR once and a needs_input question with its choices, "
+        "notes the question in its wake and settles it"
     )
 
 

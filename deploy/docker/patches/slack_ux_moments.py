@@ -2,8 +2,10 @@
 
 Installed into the image at ``/opt/hermes/gateway/slack_ux_moments.py``.
 ``gateway/kanban_progress_lines.py`` calls it for a Slack card when
-``KAGE_SLACK_UX`` is on; with the flag off nothing reaches it. What the
-messages look like is ``agents/platform/scripts/slack_moments.py``.
+``KAGE_SLACK_UX`` is on, and ``apply_slack_ux_moments.py`` has the notifier's
+wake text pass through :func:`wake_text`; with the flag off nothing reaches it
+and the wake text comes back unchanged. What the messages look like is
+``agents/platform/scripts/slack_moments.py``.
 
 Upstream, and why it changes
 ----------------------------
@@ -11,17 +13,27 @@ Upstream, and why it changes
 or its report, so the link sits on a plan row or inside the report, where it
 reads like any other step. With the flag on, :func:`pr_opened` also posts it
 as its own message with "Open PR" and "Files changed" buttons, once per PR per
-thread, since a note and the report often both carry it.
+thread for the life of the process (a restart forgets), since a note and the
+report often both carry it.
 
 **A question the work waits on.** A card blocked with ``kind: needs_input``
 reaches the thread as "⏸ <head> blocked: <reason>", clipped to 160
-characters, and with the flag on that line is held for the Planning Agent's
-wake to explain. With the flag on, :func:`needs_you` instead posts the whole
-reason as a question: the first line in bold, the rest below, a choice button
-per option the reason lists, and "waiting on you". The wake is untouched, so
-the Planning Agent still learns the card is blocked and still takes the
-answer, typed or clicked (``gateway/slack_ux_clicks.py``), to the card with
-``kanban_comment`` and ``kanban_unblock``. Other block kinds keep the line.
+characters, and the ``blocked`` wake has the Planning Agent explain it, so
+the thread gets the question twice, once as a paraphrase. With the flag on,
+:func:`needs_you` instead posts the whole reason as a question: the first line
+in bold, the rest below, a choice button per option the reason lists, and
+"waiting on you". Buttons need the card's thread, since a click answers in the
+thread it was clicked in; a card with no thread keeps its options as text.
+The wake still runs, since it is how the Planning Agent learns which card an
+answer belongs to, but :func:`wake_text` adds a note that the question is
+already posted, so it says nothing now and only takes the answer, typed or
+clicked (``gateway/slack_ux_clicks.py``), to the card with ``kanban_comment``
+and ``kanban_unblock``. Other block kinds keep the line.
+
+When the card moves on, :func:`settle_question` takes the buttons and
+"waiting on you" off the question, so a typed answer does not leave them live.
+A question a click already answered was rewritten by the click and is left
+alone.
 
 Fail-soft: a moment that cannot be posted is logged, and the caller falls back
 to what it did before.
@@ -32,6 +44,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import OrderedDict
+from collections.abc import Iterable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -53,11 +66,24 @@ FLAG_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 #: The block kind that asks the user something; the others are not questions.
 NEEDS_INPUT = "needs_input"
 
-#: Bound on the announced-PR map, oldest evicted first.
+#: The event kind a posted question arrives as, and the one its wake is for.
+BLOCKED_KIND = "blocked"
+
+#: Added to the ``blocked`` wake when the question is already in the thread.
+WAKE_NOTE = (
+    "The specialist's question is already posted in this thread, word for word, as its own "
+    "message with its choices. Do not restate, paraphrase or acknowledge it. If nothing else "
+    "in this notification needs saying, reply with exactly [SILENT]. When the user answers, "
+    "typed or clicked, carry the answer to the card with kanban_comment, then kanban_unblock."
+)
+
+#: Bound on each in-process map, oldest evicted first.
 ANNOUNCED_MAX = 512
 
-#: ``(channel, pr url)`` already posted.
+#: ``(channel, thread, pr url)`` already posted.
 _announced: OrderedDict[tuple, None] = OrderedDict()
+#: Subscription -> ``(event id, channel, ts, blocks, text)`` of its open question.
+_questions: OrderedDict[tuple, tuple] = OrderedDict()
 _warned_missing = False
 
 
@@ -70,24 +96,49 @@ def enabled() -> bool:
         _warned_missing = True
         logger.warning(
             "slack_ux_moments: %s is set but slack_presenter or slack_moments is not "
-            "importable; treating the flag as off", FLAG_ENV,
+            "importable; treating the flag as off",
+            FLAG_ENV,
         )
     return False
 
 
-async def _post(adapter: Any, sub: dict, blocks: list[dict], text: str) -> bool:
+def _sub_key(sub: dict) -> tuple:
+    """The subscription's identity, as upstream's ``_KanbanNotification.sub_key``."""
+    return (
+        str(sub.get("task_id") or ""),
+        str(sub.get("platform") or ""),
+        str(sub.get("chat_id") or ""),
+        str(sub.get("thread_id") or ""),
+    )
+
+
+def _remember(mapping: OrderedDict, key: tuple, value: Any) -> None:
+    mapping[key] = value
+    mapping.move_to_end(key)
+    while len(mapping) > ANNOUNCED_MAX:
+        mapping.popitem(last=False)
+
+
+async def _post(adapter: Any, sub: dict, blocks: list[dict], text: str) -> str | None:
+    """Post in the card's thread; the message's ts ("" if Slack gave none), None on failure."""
     chat_id = str(sub.get("chat_id") or "")
     if not (chat_id and hasattr(adapter, "_get_client")):
-        return False
+        return None
     try:
         client = adapter._get_client(chat_id, team_id=sub.get("team_id") or None)
-        await client.chat_postMessage(
-            channel=chat_id, thread_ts=sub.get("thread_id") or None, text=text, blocks=blocks,
+        response = await client.chat_postMessage(
+            channel=chat_id,
+            thread_ts=sub.get("thread_id") or None,
+            text=text,
+            blocks=blocks,
         )
     except Exception as exc:  # noqa: BLE001 — the caller falls back
         logger.warning("slack_ux_moments: posting in %s failed: %s", chat_id, exc)
-        return False
-    return True
+        return None
+    try:
+        return str(response.get("ts") or "")
+    except Exception:  # noqa: BLE001 — posted; only the settle needs the ts
+        return ""
 
 
 async def pr_opened(adapter: Any, sub: dict, text: str) -> bool:
@@ -96,27 +147,89 @@ async def pr_opened(adapter: Any, sub: dict, text: str) -> bool:
     if found is None:
         return False
     url, repo, number, line = found
-    key = (str(sub.get("chat_id") or ""), url)
+    key = (str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""), url)
     if key in _announced:
         return False
     blocks, fallback = _moments.pr_opened(url, repo, number, line)
-    if not await _post(adapter, sub, blocks, fallback):
+    if await _post(adapter, sub, blocks, fallback) is None:
         return False
-    _announced[key] = None
-    while len(_announced) > ANNOUNCED_MAX:
-        _announced.popitem(last=False)
+    _remember(_announced, key, None)
     return True
 
 
-async def needs_you(adapter: Any, sub: dict, payload: Any) -> bool:
+async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) -> bool:
     """Post a ``needs_input`` block's reason as a question; True when posted.
 
     False for any other block, an empty reason, or a post that failed, and the
-    caller delivers the blocked line as before.
+    caller delivers the blocked line as before. ``event_id`` is the ``blocked``
+    event's, which :func:`wake_text` matches against the wake's events.
     """
     if not isinstance(payload, dict) or payload.get("kind") != NEEDS_INPUT:
         return False
-    moment = _moments.needs_you(str(payload.get("reason") or ""))
+    moment = _moments.needs_you(
+        str(payload.get("reason") or ""), buttons=bool(sub.get("thread_id"))
+    )
     if moment is None:
         return False
-    return await _post(adapter, sub, *moment)
+    # A card blocks again only after it was unblocked, so an earlier question is answered.
+    await settle_question(adapter, sub)
+    blocks, text = moment
+    ts = await _post(adapter, sub, blocks, text)
+    if ts is None:
+        return False
+    entry = (int(event_id or 0), str(sub.get("chat_id") or ""), ts, blocks, text)
+    _remember(_questions, _sub_key(sub), entry)
+    return True
+
+
+def _clicked(channel: str, ts: str) -> bool:
+    """Whether a click in this process already answered the message."""
+    try:
+        from gateway import slack_ux_clicks
+    except ImportError:
+        return False
+    try:
+        return bool(slack_ux_clicks.answered(channel, ts))
+    except Exception:  # noqa: BLE001 — read as unanswered; the settle is cosmetic
+        return False
+
+
+async def settle_question(adapter: Any, sub: dict) -> None:
+    """Take the buttons and "waiting on you" off the card's open question, if it has one."""
+    entry = _questions.pop(_sub_key(sub), None)
+    if entry is None:
+        return
+    _event_id, channel, ts, blocks, text = entry
+    if not ts or _clicked(channel, ts):
+        return
+    try:
+        client = adapter._get_client(channel, team_id=sub.get("team_id") or None)
+        await client.chat_update(
+            channel=channel, ts=ts, text=text, blocks=_moments.needs_you_settled(blocks)
+        )
+    except Exception as exc:  # noqa: BLE001 — cosmetic; the card has moved on
+        logger.warning("slack_ux_moments: settling the question %s failed: %s", ts, exc)
+
+
+def wake_text(sub: dict, events: Iterable[Any], wake_kinds: Any, text: str) -> str:
+    """``text`` with :data:`WAKE_NOTE` added when the wake is for a question this posted.
+
+    Matched on the ``blocked`` event's id, so a notifier retry of the same
+    delivery gets the note again and a later block that posted no question
+    does not. Anything else returns ``text`` unchanged.
+    """
+    try:
+        if BLOCKED_KIND not in set(wake_kinds or ()):
+            return text
+        entry = _questions.get(_sub_key(sub))
+        if entry is None or not entry[0]:
+            return text
+        blocked = {
+            int(getattr(ev, "id", 0) or 0)
+            for ev in events or ()
+            if getattr(ev, "kind", None) == BLOCKED_KIND
+        }
+        return f"{text}\n\n{WAKE_NOTE}" if entry[0] in blocked else text
+    except Exception:
+        logger.debug("slack_ux_moments: reading the posted question failed", exc_info=True)
+        return text

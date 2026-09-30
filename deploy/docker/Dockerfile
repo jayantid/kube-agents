@@ -765,9 +765,11 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 #
 # Slack: with KAGE_SLACK_UX on, a PR a card opened and a question a card is
 # blocked on (kind needs_input) each post as a message of their own, with url
-# or choice buttons. kanban_progress_lines calls gateway/slack_ux_moments.py;
-# slack_moments.py is staged for the verifier as slack_presenter.py is. Also
-# rides this COPY and RUN. See deploy/docker/patches/slack_ux_moments.py.
+# or choice buttons. kanban_progress_lines calls gateway/slack_ux_moments.py,
+# and the notifier's wake notes a posted question so the Planning Agent does not
+# ask it again (apply_slack_ux_moments.py; the wake is unchanged with the flag
+# off). slack_moments.py is staged for the verifier as slack_presenter.py is.
+# Also rides this COPY and RUN. See deploy/docker/patches/slack_ux_moments.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
      deploy/docker/patches/apply_google_chat_attachment_notice.py \
@@ -783,6 +785,7 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/apply_slack_ux_clicks.py \
      deploy/docker/patches/verify_slack_ux_clicks.py \
      deploy/docker/patches/slack_ux_clicks.py \
+     deploy/docker/patches/apply_slack_ux_moments.py \
      deploy/docker/patches/verify_slack_ux_moments.py \
      deploy/docker/patches/slack_ux_moments.py \
      agents/platform/scripts/slack_presenter.py \
@@ -809,6 +812,8 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_clicks.py /opt/hermes && \
     grep -qF "_kage_slack_clicks.enabled()" /opt/hermes/plugins/platforms/slack/adapter.py && \
     install -m 0644 /tmp/message-surface/slack_ux_moments.py /opt/hermes/gateway/slack_ux_moments.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_moments.py /opt/hermes && \
+    grep -qF "_kage_moments_wake_text(" /opt/hermes/gateway/kanban_watchers_notifier.py && \
     cd /opt/hermes && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_code_emphasis.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_google_chat_attachment_notice.py && \
