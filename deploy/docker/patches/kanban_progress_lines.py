@@ -2,7 +2,8 @@
 
 Installed into the image at ``/opt/hermes/gateway/kanban_progress_lines.py``
 and wired into ``gateway/kanban_watchers_notifier.py`` (the notifier's
-``_EVENT_FORMATTERS`` table and ``_KanbanNotification._send_event``) by
+``_EVENT_FORMATTERS`` table, ``_KanbanNotification._send_event`` and, for
+the flag's silent kinds, the skip loop in ``_send_pings``) by
 ``deploy/docker/patches/apply_kanban_progress_lines.py``.
 
 **The problem.** A delegated card is silent from the moment it is claimed until
@@ -51,15 +52,19 @@ the rolling message is settled — the ``⏳`` becomes ``✓`` or ``⏹`` — an
 result posts as a message of its own, which is the one that should ping. With
 ``KAGE_SLACK_UX`` on, a Slack card settles to its last line only, a failure
 the creator's wake will explain is held for the wake step rather than posted,
-no line carries the board tag or ``Kanban <id>``, an opened pull request and a
-``needs_input`` question post as messages of their own
-(``gateway/slack_ux_moments.py``), and any later event takes the buttons off
-the card's open question; see :func:`deliver`.
+no line carries the board tag or ``Kanban <id>``, a card's notes go on its
+row in the thread's plan (``gateway/slack_ux_status.py``), the rolling line
+being the plan's fallback, an opened pull request and a ``needs_input``
+question post as messages of their own (``gateway/slack_ux_moments.py``), and
+any later event takes the buttons off the card's open question;
+:func:`silent_event` carries ``archived`` and ``unblocked``, which upstream
+never posts, to the plan and the question. See :func:`deliver`.
 
 Three properties of the surrounding code make this nearly free:
 
 1. Every notifier line leaves through a single ``adapter.send`` call site, so
-   the whole behaviour hangs off one anchor.
+   the whole behaviour hangs off one anchor; only the flag's silent kinds need
+   a second, in the skip loop.
 2. ``BasePlatformAdapter.edit_message`` returns ``SendResult(success=False)``
    on platforms that cannot edit, so the fallback to a fresh message needs no
    capability check and no platform name test. Nothing is gated on
@@ -86,6 +91,7 @@ lost message would become a stuttering one.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import Any, Optional, Sequence
 
 try:  # In the image the patches live under the ``gateway`` package.
@@ -169,6 +175,12 @@ MAX_TRACKED = 2048
 #: is how the thread names the specialist; see :func:`slack_line`.
 KANBAN_ID = "Kanban {task_id}"
 BOARD_TAG = "[{board}] "
+
+#: What may come before a head :func:`slack_line` trims: one glyph of this
+#: Unicode category, trailed by at most one variation selector, and a space.
+MARKER_CATEGORY = "So"
+VARIATION_SELECTOR = "\ufe0f"
+MARKER_MAX = 2
 
 #: Kinds upstream claims but has no formatter for, so ``_send_pings`` skips
 #: them before any send. With ``KAGE_SLACK_UX`` on they still move a Slack
@@ -290,6 +302,23 @@ def slack_header(header: str, board: Optional[str]) -> str:
     return header[len(tag):] if tag and header.startswith(tag) else header
 
 
+def _marker(prefix: str) -> bool:
+    """Whether ``prefix`` is nothing, or one upstream marker glyph and a space.
+
+    Upstream's markers are symbols (``✔``, ``✖``, ``⏸``, ``🛑``), a variation
+    selector at most after them; a quote, bullet or dash is the worker's own.
+    """
+    if not prefix:
+        return True
+    glyph, space = prefix[:-1], prefix[-1:]
+    return (
+        space == " "
+        and 0 < len(glyph) <= MARKER_MAX
+        and unicodedata.category(glyph[0]) == MARKER_CATEGORY
+        and all(ch == VARIATION_SELECTOR for ch in glyph[1:])
+    )
+
+
 def slack_line(message: str, header: str, board: Optional[str], task_id: str) -> str:
     """A notifier line with the board tag and ``Kanban <id>`` taken out of its head.
 
@@ -306,7 +335,7 @@ def slack_line(message: str, header: str, board: Optional[str], task_id: str) ->
     first = message.split("\n", 1)[0]
     for head in (f"{header}{card}", f"{tag}{card}"):
         at = first.find(head)
-        if at < 0 or any(ch.isalnum() for ch in first[:at]):
+        if at < 0 or not _marker(first[:at]):
             continue
         rest = message[at + len(head):]
         if agent:
