@@ -1,12 +1,12 @@
 # Slack render recipes
 
 The Block Kit each element of the Slack UX refresh posts, as tried live against the dev app in
-the render probe thread (2026-09-29). Mock 03 is the reference for the delegated-investigation loop;
-mock 08 for the report fold. Build tasks copy these blocks; anything marked fallback is what ships
-where Slack will not render the mock.
+the render probe thread (2026-09-29) and approved by the user. Mock 03 is the reference for the
+delegated-investigation loop; mock 08 for the report fold. Build tasks copy these blocks; anything
+marked fallback is what ships where Slack will not render the mock.
 
-Status of the user's verdict: pending. Each element below says what was posted, not yet what was
-approved.
+Text goes in `rich_text` blocks, not `mrkdwn` sections: rows inside one `rich_text` sit without the
+block gap Slack opens between sections.
 
 ## The ask's session
 
@@ -48,15 +48,20 @@ Nothing handles `kage_stop` yet; the click handler belongs to build-clicks.
 
 ## The ack and its one plan row
 
-One message: a normal-size section naming the target, then a single `task_card` block. A
+One message: a `rich_text` line naming the target, then a single `task_card` block. A
 `task_card` is accepted at the top level, outside a `plan`, which drops the plan's header row; a
 `plan` requires a `title`.
 
 ```json
 [
   {
-    "type": "section",
-    "text": { "type": "mrkdwn", "text": "checking checkout-gateway." }
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_section",
+        "elements": [{ "type": "text", "text": "checking checkout-gateway." }]
+      }
+    ]
   },
   {
     "type": "task_card",
@@ -109,37 +114,54 @@ stays in the thread as one line.
 
 ## The answer and its folded why
 
-The headline and the answer in one section, then a native collapsible container. Slack folds and
-unfolds it itself, so the fold needs no click handler and no `chat.update`.
+The headline and the answer in one `rich_text`, then a native collapsible container holding the
+evidence. Slack folds and unfolds it itself, so the fold needs no click handler and no
+`chat.update`.
+
+The fold's label says why the answer holds, written for each answer: "why it's not restarting",
+"why it's crashing". It is never a fixed word, and never the method ("how I checked"). Inside the
+fold, the evidence rows share one `rich_text_section`, split with `\n`.
 
 ```json
 [
   {
-    "type": "section",
-    "text": {
-      "type": "mrkdwn",
-      "text": "*Good news: it's not restarting.* Both pods have been up for 45h on seeded-a. ..."
-    }
+    "type": "rich_text",
+    "elements": [
+      {
+        "type": "rich_text_section",
+        "elements": [
+          {
+            "type": "text",
+            "text": "Good news: it's not restarting.",
+            "style": { "bold": true }
+          },
+          {
+            "type": "text",
+            "text": " Both pods have been up for 45h on seeded-a. ..."
+          }
+        ]
+      }
+    ]
   },
   {
     "type": "container",
-    "title": { "type": "plain_text", "text": "why" },
+    "title": { "type": "plain_text", "text": "why it's not restarting" },
     "is_collapsible": true,
     "default_collapsed": true,
     "child_blocks": [
       {
-        "type": "section",
-        "text": {
-          "type": "mrkdwn",
-          "text": "checkout-gateway runs only on *seeded-a* ..."
-        }
-      },
-      {
-        "type": "context",
+        "type": "rich_text",
         "elements": [
           {
-            "type": "mrkdwn",
-            "text": "checked with kubectl get pods, describe, events"
+            "type": "rich_text_section",
+            "elements": [
+              { "type": "text", "text": "checkout-gateway runs only on " },
+              { "type": "text", "text": "seeded-a", "style": { "bold": true } },
+              {
+                "type": "text",
+                "text": " (seeded-reliability). Both pods are Running with 0 restarts, started 45h ago.\nThe only crashlooping workload in the fleet is ..."
+              }
+            ]
           }
         ]
       }
@@ -154,35 +176,52 @@ rejects `collapsed`, `style` and `border`.
 
 ## The report fold (mocks 08 and 15)
 
-Headline section, the top findings as rows in one non-collapsible container (which draws the
-border round them), the action and link buttons, then the rest in a collapsed container.
+A report is its own top-level message in the channel, not a reply in a thread. It is built from
+four pieces:
+
+- the headline;
+- the critical findings;
+- the action and link buttons;
+- the rest in a collapsed container.
+
+The critical findings are not boxed in a container. They share the headline's `rich_text`, and
+each 🔴 row is its own `rich_text_section`, so every finding starts on its own line with no blank
+line between rows. A row is the `red_circle` emoji, a bold "critical", then the finding.
 
 ```json
 [
   {
-    "type": "section",
-    "text": {
-      "type": "mrkdwn",
-      "text": "*Security & RBAC audit: 7 findings, 2 critical.* 2 are new since yesterday."
-    }
-  },
-  {
-    "type": "container",
-    "title": { "type": "plain_text", "text": "2 critical" },
-    "child_blocks": [
+    "type": "rich_text",
+    "elements": [
       {
-        "type": "section",
-        "text": {
-          "type": "mrkdwn",
-          "text": "`critical`  seeded-b and -c admit privileged pods"
-        }
+        "type": "rich_text_section",
+        "elements": [
+          {
+            "type": "text",
+            "text": "Security & RBAC audit: 7 findings, 2 critical.",
+            "style": { "bold": true }
+          },
+          { "type": "text", "text": " 2 are new since yesterday." }
+        ]
       },
       {
-        "type": "section",
-        "text": {
-          "type": "mrkdwn",
-          "text": "`critical`  default service account is cluster-admin on seeded-c"
-        }
+        "type": "rich_text_section",
+        "elements": [
+          { "type": "emoji", "name": "red_circle" },
+          { "type": "text", "text": " critical", "style": { "bold": true } },
+          { "type": "text", "text": "  seeded-b and -c admit privileged pods" }
+        ]
+      },
+      {
+        "type": "rich_text_section",
+        "elements": [
+          { "type": "emoji", "name": "red_circle" },
+          { "type": "text", "text": " critical", "style": { "bold": true } },
+          {
+            "type": "text",
+            "text": "  default service account is cluster-admin on seeded-c"
+          }
+        ]
       }
     ]
   },
@@ -213,13 +252,36 @@ border round them), the action and link buttons, then the rest in a collapsed co
     "title": { "type": "plain_text", "text": "all 7 findings" },
     "is_collapsible": true,
     "default_collapsed": true,
-    "child_blocks": ["<one section per remaining finding>"]
+    "child_blocks": [
+      {
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_list",
+            "style": "bullet",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  { "type": "text", "text": "high", "style": { "bold": true } },
+                  {
+                    "type": "text",
+                    "text": "  3 namespaces have no NetworkPolicy on seeded-b"
+                  }
+                ]
+              },
+              "<one rich_text_section per remaining finding>"
+            ]
+          }
+        ]
+      }
+    ]
   }
 ]
 ```
 
-Slack has no severity pill; the severity is inline code. The prompt button falls back to text
-until build-clicks proves that a click can reach the session.
+Slack has no severity pill. A critical finding shows as 🔴 followed by a bold "critical". The
+prompt button falls back to text until build-clicks proves that a click can reach the session.
 
 ## Fallbacks
 
@@ -227,6 +289,6 @@ until build-clicks proves that a click can reach the session.
 | ------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Stop                | Slack's Stop beside Working… | our `kage_stop` button until the manifest subscribes       |
 | "step 2" counter    | right-aligned on the row     | none; the step shows in the card's title and `details`     |
-| Severity pill       | red outlined label           | inline code                                                |
+| Severity pill       | red outlined label           | 🔴 and a bold "critical", one row per finding              |
 | Prompt buttons      | send their label as a reply  | plain-text suggestions until build-clicks proves injection |
 | The ask's 👀 and ✅ | reactions on the ask         | none until the app is reinstalled with `reactions:write`   |
