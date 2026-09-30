@@ -7,9 +7,9 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
   the PR, the worker's own line below it as evidence, and "Open PR" and
   "Files changed" url buttons. :func:`opened_pr` finds it in a progress note or a report, and
   only where the line says it opened that PR, the verb in front of the url
-  with no one else as its subject, so a note citing someone else's PR
-  ("… pull/300, opened by bob", "Dependabot opened …", "dependabot[bot]
-  opened …", "Kelly opened …") is not announced as ours.
+  with the worker as its subject by the one rule in :func:`_ours`, so a note
+  citing someone else's PR ("… pull/300, opened by bob", "Dependabot opened
+  …", "`dependabot[bot]` opened …") is not announced as ours.
 * A question the work is waiting on (:func:`needs_you`): the worker's question
   in bold (plain, when bold would cost it a ``*`` or a ``__name__``), the rest
   of its reason below it, a choice button for each option
@@ -41,39 +41,38 @@ OPENED_BEFORE_URL = re.compile(
 )
 #: A negation just before the verb: "not opened", "haven't yet opened".
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
-#: Adverbs that can sit before the verb; a list, since "-ly" alone would
-#: take "Kelly opened" as ours.
-ADVERB = (
-    r"(?:successfully|finally|quickly|eventually|subsequently|immediately|promptly|"
-    r"manually|automatically|separately|additionally|accordingly|initially|lastly)"
-)
-#: Who opened it: nothing (or punctuation, a bullet, an emoji) before the verb,
-#: "I"/"we", or "and"/"then" joining it to the worker's earlier steps, with at
-#: most three of "have", "just", an adverb and the like between;
-#: "Dependabot opened <url>" is someone else's PR, and so is a bracketed
-#: login, "dependabot[bot] opened <url>", whose "]" is not punctuation here.
-OUR_SUBJECT = re.compile(
-    r"(?:^|[^\w\s'’\]]|\b(?:I|we)\b|\b(?P<joined>and|then)\b)\s*"
-    r"(?:(?:have|[’']ve|also|just|then|now|already|" + ADVERB + r")\s+){0,3}$",
-    re.IGNORECASE,
-)
-#: Where the clause before a joining "and"/"then" starts: after the last of these.
-CLAUSE_BREAK = re.compile(r"[.!?;:]")
-#: A clause's words, a mention's "@" and a hyphenated verb's "-" kept.
-CLAUSE_WORD = re.compile(r"[\w@'’-]+")
-#: Words skipped at the start of that clause: "Just fixed and opened".
-CLAUSE_FILLER = re.compile(r"also|just|now|already|then|" + ADVERB, re.IGNORECASE)
-#: The clause is the worker's own step when it starts with "I"/"we" or a
-#: past-tense verb, regular or one of these.
-OUR_CLAUSE_LEAD = re.compile(r"I|we|we[’']ve|I[’']ve", re.IGNORECASE)
-PAST_VERB = re.compile(r"[\w-]+ed", re.IGNORECASE)
-IRREGULAR_PAST = frozenset({
-    "ran", "re-ran", "reran", "made", "wrote", "rewrote", "built", "rebuilt", "found", "took",
-    "did", "put", "set", "got", "sent", "split", "kept", "began", "brought", "gave",
+#: Where a sentence ends: ".", "!" or "?" before a space and a capital, or
+#: ";"/":" before a space, with closing bold or code allowed between. A dot or
+#: colon inside a token (``values.yaml``, ``1.4.2``, ``main.py:42``, a url) is
+#: not one.
+SENTENCE_BREAK = re.compile(r"[.!?](?=[*_`]*\s+[A-Z])|[;:](?=[*_`]*\s)")
+#: A word of the sentence, a mention's "@" and a hyphenated verb's "-" kept;
+#: a bullet, markup or an emoji is no word.
+CLAUSE_WORD = re.compile(r"[\w@'’-]*\w[\w@'’-]*")
+#: Words dropped from either end of the sentence before the rule reads it.
+FILLER = frozenset({
+    "have", "just", "also", "now", "already", "successfully", "finally", "quickly", "eventually",
+    "subsequently", "immediately", "promptly", "manually", "automatically", "separately",
+    "additionally", "accordingly", "initially", "lastly",
 })
-#: After a leading "-ed" word, one of these makes that word a name doing the
-#: step, "Fred reviewed and opened", not the worker's verb.
-NAME_THEN_VERB = re.compile(r"has|had|was|[\w-]+ed", re.IGNORECASE)
+#: Joins the verb to the worker's earlier step: "Fixed it and opened".
+JOIN = frozenset({"and", "then"})
+OUR_LEAD = frozenset({"i", "we", "i've", "we've", "i’ve", "we’ve"})
+#: The worker's own earlier steps. A list rather than "-ed", which would take
+#: "Ahmed then opened" and "Fred reviewed and opened" as ours.
+OUR_VERB = frozenset({
+    "added", "adjusted", "analysed", "analyzed", "applied", "audited", "began", "bumped", "built",
+    "changed", "checked", "cleaned", "closed", "committed", "compared", "confirmed", "corrected",
+    "created", "debugged", "decreased", "deployed", "diagnosed", "did", "disabled", "documented",
+    "drafted", "edited", "enabled", "fetched", "filed", "fixed", "found", "generated", "got",
+    "identified", "implemented", "increased", "inspected", "installed", "investigated", "kept",
+    "looked", "lowered", "made", "merged", "migrated", "modified", "moved", "opened", "patched",
+    "pinned", "prepared", "pulled", "pushed", "put", "raised", "ran", "re-ran", "read", "rebased",
+    "rebuilt", "reduced", "refactored", "regenerated", "removed", "renamed", "replaced",
+    "reproduced", "reran", "restarted", "restored", "reverted", "reviewed", "rewrote", "rolled",
+    "scaled", "sent", "set", "split", "submitted", "superseded", "tested", "took", "traced",
+    "tuned", "updated", "upgraded", "validated", "verified", "wrote",
+})
 #: The worker's line under the headline, clipped: a note can be one long
 #: paragraph, and a Slack context element holds at most 3,000 characters.
 EVIDENCE_MAX = 300
@@ -120,33 +119,48 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     for line in str(text or "").splitlines():
         for match in PR_URL.finditer(line):
             verb = OPENED_BEFORE_URL.search(line[: match.start()])
-            before = line[: verb.start()] if verb else ""
-            subject = OUR_SUBJECT.search(before) if verb else None
-            if not subject or NEGATED_VERB.search(before):
+            if not verb:
                 continue
-            joined = subject.group("joined")
-            if joined and not _our_step(before[: subject.start("joined")]):
+            before = line[: verb.start()]
+            if NEGATED_VERB.search(before) or not _ours(before):
                 continue
             return match.group(0), match.group(2), match.group(3), line.strip()
     return None
 
 
-def _our_step(before_join: str) -> bool:
-    """Whether the clause before a joining "and"/"then" is the worker's own step.
+def _trimmed(words: list[str]) -> list[str]:
+    start, end = 0, len(words)
+    while start < end and (words[start] in FILLER or words[start] == "then"):
+        start += 1
+    while end > start and words[end - 1] in FILLER:
+        end -= 1
+    return words[start:end]
 
-    "Fixed and opened" and "I reviewed and opened" are; "Dependabot then
-    opened", "bob reviewed and opened" and "Kube Agents Robot then opened"
-    are not, since a clause that does not start with "I"/"we" or a past-tense
-    verb names someone else.
+
+def _ours(before: str) -> bool:
+    """Whether the verb after ``before`` is the worker's own.
+
+    One rule, read on the sentence the verb is in with :data:`FILLER` words
+    trimmed from both ends: it is ours when nothing is left ("- Opened",
+    "Done: opened", "Successfully opened"), when a comma ends it (the verb
+    opens a clause), when "I"/"we" alone is left ("I have just opened"), or
+    when it ends in "and"/"then" and starts with "I"/"we" or one of
+    :data:`OUR_VERB` ("Bumped values.yaml and opened"). Anything else names
+    someone else: "Dependabot opened", "`dependabot[bot]` opened", "Ahmed
+    then opened", "bob reviewed and opened".
     """
-    words = CLAUSE_WORD.findall(CLAUSE_BREAK.split(before_join)[-1])
-    while words and CLAUSE_FILLER.fullmatch(words[0]):
-        words.pop(0)
-    if not words or OUR_CLAUSE_LEAD.fullmatch(words[0]):
+    sentence = SENTENCE_BREAK.split(before)[-1]
+    if sentence.rstrip().endswith(","):
         return True
-    if not (PAST_VERB.fullmatch(words[0]) or words[0].lower() in IRREGULAR_PAST):
+    words = _trimmed([w.lower() for w in CLAUSE_WORD.findall(sentence)])
+    if not words or (len(words) == 1 and words[0] in OUR_LEAD):
+        return True
+    if words[-1] not in JOIN:
         return False
-    return not (len(words) > 1 and NAME_THEN_VERB.fullmatch(words[1]))
+    while words and words[-1] in JOIN:
+        words.pop()
+    words = _trimmed(words)
+    return bool(words) and (words[0] in OUR_LEAD or words[0] in OUR_VERB)
 
 
 def _escape(text: str) -> str:

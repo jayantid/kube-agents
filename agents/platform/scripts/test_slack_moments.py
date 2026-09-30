@@ -73,7 +73,10 @@ class OpenedPrTest(unittest.TestCase):
             "bob reviewed and opened", "Kube Agents Robot then opened", "Fred reviewed and opened",
             "Tests passed. Renovate rebased and opened", "the bot then opened",
             "dependabot[bot] opened", "renovate[bot] just opened", "Kelly opened", "Emily created",
-            "Kelly reviewed and opened",
+            "Kelly reviewed and opened", "`dependabot[bot]` opened", "**Dependabot** opened",
+            "Renovate (bot) opened", "<@U123> opened", "_renovate_ opened", "Ahmed then opened",
+            "Fred then opened", "Mohammed and opened", "Ted and then opened", "Done. Dependabot opened",
+            "Fred reviewed it, and opened",
         ):
             self.assertIsNone(m.opened_pr(f"{lead} {PR} to bump the base image"), lead)
 
@@ -84,6 +87,9 @@ class OpenedPrTest(unittest.TestCase):
             "I have successfully opened", "Finally opened", "Done! I’ve opened", "I have now also opened",
             "Fixed and opened", "Checked the limits, then opened", "I reviewed and opened",
             "Just fixed it and then opened", "Tests passed. Rebuilt the image and opened", "We've tested and opened",
+            "Bumped the image tag in `values.yaml` and opened", "Superseded https://github.com/acme/x/pull/300 and opened",
+            "Bumped the chart to 1.4.2 and opened", "Fixed main.py:42 and then opened", "I then opened",
+            "Then I opened", "**Done:** opened", "Checked it: opened",
         ):
             self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
 
