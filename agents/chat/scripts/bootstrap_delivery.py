@@ -15,7 +15,7 @@ human has connected:
 - ``.bootstrap_completed`` absent -> the report has not been delivered yet.
 
 When all three hold, the script claims delivery, prints ``INVENTORY.md``
-(delivered verbatim), sets the report aside, and removes the two onboarding
+(verbatim, or reshaped by ``inventory_presenter`` when ``KAGE_SLACK_UX`` is on), sets the report aside, and removes the two onboarding
 cron jobs. Otherwise it prints nothing, which the ``no_agent`` cron path treats
 as a silent run (no message).
 
@@ -117,6 +117,26 @@ def _cleanup(data_dir: Path) -> None:
             sys.stderr.write(f"bootstrap_delivery: could not remove {job_id}: {e}\n")
 
 
+def _presented(content: str) -> str:
+    """The report as delivered: verbatim, or reshaped when ``KAGE_SLACK_UX`` is on.
+
+    Both helpers ship beside this script in ``/opt/defaults/scripts``. Any
+    failure to load or reshape delivers the report verbatim, since this runs
+    after the claim and a lost report is not retried.
+    """
+    try:
+        import slack_presenter
+
+        if not slack_presenter.enabled():
+            return content
+        import inventory_presenter
+
+        return inventory_presenter.present(content)
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: delivering verbatim: {e}\n")
+        return content
+
+
 def main(data_dir: Path | None = None) -> int:
     if data_dir is None:
         data_dir = _data_dir()
@@ -137,7 +157,7 @@ def main(data_dir: Path | None = None) -> int:
     if not _claim_delivery(data_dir):
         return 0  # another run is delivering this report — stay silent
 
-    sys.stdout.write(content)
+    sys.stdout.write(_presented(content))
     sys.stdout.flush()
 
     # Cleanup runs only after the report is safely on stdout (already captured
