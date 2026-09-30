@@ -65,12 +65,26 @@ class OpenedPrTest(unittest.TestCase):
             self.assertIsNone(m.opened_pr(f"{lead} {PR}"), lead)
 
     def test_someone_else_as_the_subject_is_not_ours(self):
-        for lead in ("Dependabot opened", "alice created", "bob has opened", "Renovate just opened"):
+        for lead in (
+            "Dependabot opened", "alice created", "bob has opened", "Renovate just opened",
+            "Dependabot then opened", "Alice reviewed and opened", "@bob and opened", "bob successfully opened",
+        ):
             self.assertIsNone(m.opened_pr(f"{lead} {PR} to bump the base image"), lead)
 
     def test_our_own_subject_or_steps_still_count(self):
-        for lead in ("I opened", "We've opened", "I have just opened", "Re-ran the suite and opened PR", "- Opened", "✅ Opened", "Done: opened"):
+        for lead in (
+            "I opened", "We've opened", "I have just opened", "Re-ran the suite and opened PR", "- Opened",
+            "✅ Opened", "Done: opened", "Successfully created PR #412:", "Successfully opened",
+            "I have successfully opened", "Finally opened", "Done! I’ve opened", "I have now also opened",
+            "Fixed and opened", "Checked the limits, then opened",
+        ):
             self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+
+    def test_a_long_line_is_clipped_under_the_headline(self):
+        line = f"Opened {PR} " + "because " * 1000
+        blocks, _ = m.pr_opened(*m.opened_pr(line))
+        self.assertLessEqual(len(_contexts(blocks)[0]), m.EVIDENCE_MAX)
+        self.assertTrue(_contexts(blocks)[0].endswith(p.ELLIPSIS))
 
     def test_the_opened_pr_is_found_after_a_cited_one(self):
         other = "https://github.com/acme/x/pull/300"
@@ -124,6 +138,10 @@ class NeedsYouTest(unittest.TestCase):
     def test_option_markup_is_not_on_the_button(self):
         blocks, _ = m.needs_you("Which cluster?\n- `seeded-reliability`\n- **seeded-debug**")
         self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["seeded-reliability", "seeded-debug"])
+
+    def test_a_glob_or_dunder_option_keeps_its_characters(self):
+        blocks, _ = m.needs_you("Which pods?\n- Delete app=web-*\n- Keep `__pycache__`\n- Scale to 2*3")
+        self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["Delete app=web-*", "Keep __pycache__", "Scale to 2*3"])
 
     def test_a_list_after_the_question_is_not_choices(self):
         reason = "Should I restart it?\nI found:\n- pod a is OOMKilled\n- pod b is Pending"

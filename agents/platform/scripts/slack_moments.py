@@ -42,12 +42,27 @@ OPENED_BEFORE_URL = re.compile(
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 #: Who opened it: nothing (or punctuation, a bullet, an emoji) before the verb,
 #: "I"/"we", or "and"/"then" joining it to the worker's earlier steps, with at
-#: most two of "have", "just" and the like between; "Dependabot opened <url>"
-#: is someone else's PR.
+#: most three of "have", "just", an "-ly" adverb and the like between;
+#: "Dependabot opened <url>" is someone else's PR.
 OUR_SUBJECT = re.compile(
-    r"(?:^|[^\w\s']|\b(?:I|we|and|then)\b)\s*(?:(?:have|'ve|also|just|then|now|already)\s+){0,2}$",
+    r"(?:^|[^\w\s'’]|\b(?:I|we)\b|\b(?P<joined>and|then)\b)\s*"
+    r"(?:(?:have|[’']ve|also|just|then|now|already|\w+ly)\s+){0,3}$",
     re.IGNORECASE,
 )
+#: Someone else before a joining "and"/"then": "Dependabot then opened",
+#: "Alice reviewed and opened", "@bob and opened". A clause led by a mention or a
+#: capitalised name and "has"/"had" or a past-tense verb, or a mention or a lone
+#: capitalised name (not "I", not a past-tense verb like "Fixed") right before it.
+OTHER_BEFORE_JOIN = re.compile(
+    r"(?:(?:^|[^\w\s'’])\s*(?:@\w+|(?!I\b)[A-Z]\w*)\s+(?:has|had|\w+ed)\b[^.!?;:]*"
+    r"|@\w+\s*|(?:^|[^\w\s'’])\s*(?!I\b)[A-Z]\w*(?<!ed)\s*)$"
+)
+#: The worker's line under the headline, clipped: a note can be one long
+#: paragraph, and a Slack context element holds at most 3,000 characters.
+EVIDENCE_MAX = 300
+#: Markup a button cannot show, stripped from an option with its pair only, so
+#: a glob (``app=web-*``) or a dunder name keeps its characters.
+OPTION_MARKUP = re.compile(r"`([^`]+)`|\*\*([^*]+)\*\*")
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
@@ -82,8 +97,13 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
         for match in PR_URL.finditer(line):
             verb = OPENED_BEFORE_URL.search(line[: match.start()])
             before = line[: verb.start()] if verb else ""
-            if verb and OUR_SUBJECT.search(before) and not NEGATED_VERB.search(before):
-                return match.group(0), match.group(2), match.group(3), line.strip()
+            subject = OUR_SUBJECT.search(before) if verb else None
+            if not subject or NEGATED_VERB.search(before):
+                continue
+            joined = subject.group("joined")
+            if joined and OTHER_BEFORE_JOIN.search(before[: subject.start("joined")]):
+                continue
+            return match.group(0), match.group(2), match.group(3), line.strip()
     return None
 
 
@@ -110,11 +130,15 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
     """Blocks and fallback text for an opened PR; ``line`` is the worker's, the url shortened."""
     headline = PR_HEADLINE.format(number=number, repo=repo)
     span = re.compile(PR_REF_SPAN.format(url=re.escape(url)), re.IGNORECASE)
-    evidence = span.sub(PR_REF.format(number=number), line).strip()
+    evidence = _presenter._clip(span.sub(PR_REF.format(number=number), line).strip(), EVIDENCE_MAX)
     links = [(OPEN_PR, url), (FILES_CHANGED, url + FILES_PATH)]
     blocks = _presenter.blocks_answer(headline, links=links, action_id_prefix=PR_ACTION_PREFIX)
     first, *rest = _presenter.fallback_text(headline, links=links).split("\n")
     return _with_subline(blocks, evidence), "\n".join([_text(first, evidence), *rest])
+
+
+def _unmarked(option: str) -> str:
+    return OPTION_MARKUP.sub(lambda m: m.group(1) or m.group(2), option).strip()
 
 
 def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
@@ -124,7 +148,7 @@ def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
     while start > 1 and (not lines[start - 1].strip() or OPTION_LINE.match(lines[start - 1])):
         start -= 1
     # A button is plain text: `code` and **bold** would show their markup.
-    options = [_presenter._plain(m.group(1)) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
+    options = [_unmarked(m.group(1)) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
     if not options or not lines[start - 1].rstrip().endswith(QUESTION_END):
         return len(lines), []
     return start, options
