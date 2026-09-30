@@ -126,6 +126,11 @@ def progress_note(payload: object, limit: int = DEFAULT_NOTE_LIMIT) -> str:
 #: posting upstream's ``🔄`` line as a message of its own.
 ROLLING_KINDS = ("heartbeat", "status")
 
+#: With ``KAGE_SLACK_UX`` on, the blocked kind that may post a question, and
+#: the terminal kind whose report may announce a PR (see ``slack_ux_moments``).
+NEEDS_YOU_KIND = "blocked"
+PR_REPORT_KIND = "completed"
+
 #: Leading marker on the rolling message. ``IN_PROGRESS`` while the card runs;
 #: on a terminal event the message is re-rendered with one of the other two so
 #: a finished card never leaves an hourglass sitting in the thread.
@@ -387,6 +392,53 @@ async def _settle_plan_row(plan: Any, adapter: Any, sub: dict, kind: str) -> Non
         logger.debug("kanban progress: settling the plan row for %s failed: %s", sub.get("task_id"), exc)
 
 
+def _slack_moments(quiet: Any) -> Any:
+    """``slack_ux_moments`` when ``quiet`` says ``KAGE_SLACK_UX`` is on for this Slack card.
+
+    Imported when a delivery runs, for the reason :func:`_slack_quiet` imports
+    its module then; an image without it reads as flag off.
+    """
+    if quiet is None:
+        return None
+    try:
+        from gateway import slack_ux_moments
+    except ImportError:
+        return None
+    try:
+        return slack_ux_moments if slack_ux_moments.enabled() else None
+    except Exception as exc:  # noqa: BLE001 — presentation must not fail a delivery
+        logger.debug("kanban progress: reading slack_ux_moments failed: %s", exc)
+        return None
+
+
+async def _needs_you(moments: Any, adapter: Any, sub: dict, ev: Any) -> bool:
+    try:
+        return bool(await moments.needs_you(
+            adapter, sub, getattr(ev, "payload", None), int(getattr(ev, "id", 0) or 0),
+        ))
+    except Exception as exc:  # noqa: BLE001 — fall back to the blocked line
+        logger.debug("kanban progress: the question for %s failed: %s", sub.get("task_id"), exc)
+        return False
+
+
+async def _settle_question(moments: Any, adapter: Any, sub: dict, kind: str) -> None:
+    if moments is None or kind == NEEDS_YOU_KIND:
+        return
+    try:
+        await moments.settle_question(adapter, sub)
+    except Exception as exc:  # noqa: BLE001 — cosmetic; the card has moved on
+        logger.debug("kanban progress: settling the question for %s failed: %s", sub.get("task_id"), exc)
+
+
+async def _pr_opened(moments: Any, adapter: Any, sub: dict, text: str, result: Any) -> None:
+    if moments is None or getattr(result, "success", True) is False:
+        return
+    try:
+        await moments.pr_opened(adapter, sub, text)
+    except Exception as exc:  # noqa: BLE001 — the line or report already went out
+        logger.debug("kanban progress: the PR message for %s failed: %s", sub.get("task_id"), exc)
+
+
 def _explained_by_wake(quiet: Any, sub: dict, kind: str) -> bool:
     if quiet is None:
         return False
@@ -455,7 +507,11 @@ async def deliver(
     the plan cannot be posted; ``title`` is the card's, for the row. See
     ``gateway/slack_ux_status.py``. Every line it posts, holds or edits keeps
     the ``@assignee`` and drops the board tag and ``Kanban <id>``
-    (:func:`slack_line`).
+    (:func:`slack_line`). A card blocked on ``needs_input``
+    posts its question instead of the blocked line, and loses that question's
+    buttons at its next event; a note or report saying a PR was opened is
+    followed by that PR as a message of its own. See
+    ``gateway/slack_ux_moments.py``.
     """
     chat_id = sub["chat_id"]
     tracked = tracked_messages(watcher)
@@ -483,6 +539,11 @@ async def deliver(
                     "for %s: %s", sub.get("task_id"), exc,
                 )
         tracked.pop(key, None)
+        moments = _slack_moments(quiet)
+        await _settle_question(moments, adapter, sub, kind)
+        if kind == NEEDS_YOU_KIND and moments is not None and await _needs_you(moments, adapter, sub, ev):
+            await _settle_reaction(adapter, sub, kind, board)
+            return None
         if _explained_by_wake(quiet, sub, kind) and _hold(
             quiet, watcher, sub, kind, event_id, message, metadata,
         ):
@@ -495,10 +556,26 @@ async def deliver(
         # keeps its arrival reaction alone.
         if getattr(result, "success", True) is not False:
             await _settle_reaction(adapter, sub, kind, board)
+        if kind == PR_REPORT_KIND:
+            await _pr_opened(moments, adapter, sub, message, result)
         return result
 
     line = rolling_line(kind, getattr(ev, "payload", None)) or message
-    plan = _slack_plan(quiet)
+    moments = _slack_moments(quiet)
+    await _settle_question(moments, adapter, sub, kind)
+    result = await _roll(adapter, sub, metadata, header, title, line, _slack_plan(quiet), event_id, tracked)
+    await _pr_opened(moments, adapter, sub, line, result)
+    return result
+
+
+async def _roll(
+    adapter: Any, sub: dict, metadata: Optional[dict], header: str, title: str,
+    line: str, plan: Any, event_id: int, tracked: dict,
+) -> Any:
+    """Put one progress line on the card's plan row, or roll it into its message."""
+    chat_id = sub["chat_id"]
+    key = sub_key(sub)
+    entry = tracked.get(key)
     if plan is not None and await _plan_row(plan, adapter, sub, event_id, title, line):
         return None
     if entry and event_id and event_id <= entry["last_event_id"]:
