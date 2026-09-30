@@ -210,6 +210,9 @@ def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
 def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     """The reason's first line, the lines after it, and its options when they can be buttons."""
     lines = str(reason or "").strip().splitlines()
+    # A line of markup alone (a bare "```") has no text to head the question.
+    while lines and not _presenter._plain(lines[0]):
+        lines.pop(0)
     if not lines:
         return "", [], []
     start, options = _trailing_options(lines)

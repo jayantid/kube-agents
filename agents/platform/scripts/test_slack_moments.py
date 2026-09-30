@@ -200,6 +200,17 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(_contexts(blocks), [m.WAITING])
         self.assertEqual(text, "*Which namespace should I scale?*")
 
+    def test_a_first_line_of_markup_alone_does_not_head_the_question(self):
+        blocks, text = m.needs_you("```\nkubectl says 3 clusters\nWhich cluster?\n- alpha\n- beta")
+        self.assertEqual(blocks[0]["text"]["text"], "*kubectl says 3 clusters*")
+        self.assertEqual([b["value"] for b in _buttons(blocks)], ["alpha", "beta"])
+        self.assertEqual(_contexts(blocks), ["Which cluster?", m.WAITING])
+        self.assertIn("alpha", text)
+        blocks, _ = m.needs_you("**\nWhich cluster?")
+        self.assertEqual(blocks[0]["text"]["text"], "*Which cluster?*")
+        self.assertEqual(_contexts(blocks), [m.WAITING])
+        self.assertIsNone(m.needs_you("```\n**"))
+
     def test_no_buttons_keeps_the_options_in_the_text(self):
         reason = "Which checkout-gateway did you mean?\n- seeded-reliability\n- seeded-debug"
         blocks, text = m.needs_you(reason, buttons=False)
