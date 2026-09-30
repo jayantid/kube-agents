@@ -81,7 +81,7 @@ By default the agent follows the Hermes Slack adapter: it adds 👀 to your mess
 
 ## Proactive alerts (both channels)
 
-The harness doesn't only reply to messages. A cluster event posted to the in-pod triage endpoint (`inject_message` in [`agents/platform/scripts/session_kv_server.py`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/scripts/session_kv_server.py)) opens a thread unprompted: it posts the alert first, then runs the triage turn in the thread that alert created. The first-run inventory report arrives the same way, into the thread `bootstrap_onboarding` bound. Where an unprompted message lands:
+The harness doesn't only reply to messages. A cluster event posted to the in-pod triage endpoint (`inject_message` in [`agents/platform/scripts/session_kv_server.py`](https://github.com/gke-labs/kube-agents/blob/main/agents/platform/scripts/session_kv_server.py)) opens a thread unprompted: it posts the alert first, then runs the triage turn in the thread that alert created. The first-run inventory report arrives the same way, into the thread `bootstrap_onboarding` bound. With `KAGE_SLACK_UX=true` a report bound for Slack is also reshaped on its way out: its first sentence becomes a bold headline, the top two findings and every critical one get a row each, and the rest are listed by headline beneath them, while a report that does not parse to that shape is posted as written. Where an unprompted message lands:
 
 - **Google Chat**: to the space that owns the interaction, or the space set via `GOOGLE_CHAT_HOME_CHANNEL`.
 - **Slack**: to `SLACK_HOME_CHANNEL`.
