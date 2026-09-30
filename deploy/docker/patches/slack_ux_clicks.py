@@ -131,10 +131,12 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
     """``blocks`` with the answered buttons dropped, and ``note`` as a context line after them.
 
     An actions block left with no buttons is dropped; one that still holds a
-    link keeps it.
+    link keeps it. So is the "waiting on you" line, now that it is answered.
     """
     out: list[dict] = []
     for block in blocks or ():
+        if isinstance(block, dict) and block.get("block_id") == _presenter.WAITING_BLOCK_ID:
+            continue
         if isinstance(block, dict) and block.get("type") == "actions":
             elements = block.get("elements") or []
             kept = [e for e in elements if not answered(str((e or {}).get("action_id") or ""))]

@@ -128,6 +128,8 @@ LINK_ACTION = "link"
 CHOICE_ACTION = "choice"
 LINK_ACTION_ID_PATTERN = re.compile(r"\.link\.\d+$")
 CHOICE_ACTION_ID_PATTERN = re.compile(r"\.choice\.\d+$")
+#: The block that says a message waits on an answer; a choice click drops it.
+WAITING_BLOCK_ID = "kage_waiting"
 
 #: Row severity markers. Unknown or absent severity gets no marker.
 SEVERITY_MARKERS = {

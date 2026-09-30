@@ -925,5 +925,117 @@ class SlackPlanHookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.rows, self.settled), ([], []))
 
 
+class SlackMomentsHookTest(unittest.IsolatedAsyncioTestCase):
+    """KAGE_SLACK_UX on a Slack card: a question and an opened PR get messages of their own.
+
+    ``gateway.slack_ux_moments`` is faked: the real one is covered by
+    ``test_slack_ux_moments.py``; this pins where deliver() calls it and what
+    it falls back to.
+    """
+
+    PR_NOTE = "Opened https://github.com/acme/fleet/pull/7 raising the limit."
+
+    def setUp(self):
+        self.flag = True
+        self.asked = []
+        self.announced = []
+        self.posts_question = True
+        self.settled = []
+        test = self
+
+        async def needs_you(adapter, sub, payload):
+            test.asked.append((sub["task_id"], payload))
+            if isinstance(test.posts_question, Exception):
+                raise test.posts_question
+            return test.posts_question
+
+        async def pr_opened(adapter, sub, text):
+            test.announced.append((sub["task_id"], text, len(adapter.sent)))
+            return True
+
+        async def settle_delegated(adapter, sub, kind, board=None):
+            test.settled.append((sub["task_id"], kind))
+
+        reactions = SimpleNamespace(enabled=lambda: test.flag, settle_delegated=settle_delegated)
+        moments = SimpleNamespace(enabled=lambda: test.flag, needs_you=needs_you, pr_opened=pr_opened)
+        self.modules = {
+            "gateway": SimpleNamespace(slack_ux_reactions=reactions, slack_ux_moments=moments),
+            "gateway.slack_ux_reactions": reactions,
+            "gateway.slack_ux_moments": moments,
+        }
+        patcher = mock.patch.dict(sys.modules, self.modules)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        wake = mock.patch("kanban_notifier.resolve_wake_kinds", return_value=("blocked",))
+        wake.start()
+        self.addCleanup(wake.stop)
+
+    async def _blocked(self, adapter, payload, sub=SLACK_SUB):
+        self.watcher = SimpleNamespace()
+        ev = SimpleNamespace(id=3, kind="blocked", payload=payload)
+        return await deliver(self.watcher, adapter, sub, "blocked", ev, "⏸ t_e0c1 blocked: which?", None, HEADER)
+
+    async def _notes_then_report(self, adapter, report="Both pods are up.", sub=SLACK_SUB):
+        watcher = SimpleNamespace()
+        for event_id, note in ((1, "Checking seeded-a."), (2, self.PR_NOTE)):
+            await deliver(watcher, adapter, sub, "heartbeat", _beat(event_id, note), "", None, HEADER)
+        return await deliver(watcher, adapter, sub, "completed", _terminal(3), report, None, HEADER)
+
+    async def test_a_needs_input_block_posts_the_question_instead_of_the_line(self):
+        adapter = _Adapter()
+        payload = {"kind": "needs_input", "reason": "Which cluster?"}
+        self.assertIsNone(await self._blocked(adapter, payload))
+        self.assertEqual(self.asked, [("t_e0c1", payload)])
+        self.assertEqual(adapter.sent, [])
+        self.assertEqual(self.settled, [("t_e0c1", "blocked")])
+        self.assertFalse(getattr(self.watcher, kanban_notifier.HELD_ATTR, {}), "the line was also held")
+
+    async def test_a_block_with_no_question_keeps_the_blocked_path(self):
+        for posts in (False, RuntimeError("boom")):
+            with self.subTest(posts=posts):
+                self.posts_question = posts
+                adapter = _Adapter()
+                self.assertIsNone(await self._blocked(adapter, {"kind": "capability", "reason": "no GPU"}))
+                held = getattr(self.watcher, kanban_notifier.HELD_ATTR)
+                self.assertIn(3, held[sub_key(SLACK_SUB)], "the blocked line was not held for the wake")
+
+    async def test_other_terminal_kinds_never_ask(self):
+        await self._notes_then_report(_Adapter())
+        self.assertEqual(self.asked, [])
+
+    async def test_an_opened_pr_follows_the_note_and_the_report(self):
+        adapter = _Adapter()
+        await self._notes_then_report(adapter, report=f"Done. {self.PR_NOTE}")
+        self.assertEqual(
+            [(text, sent) for _task, text, sent in self.announced],
+            [("Checking seeded-a.", 1), (self.PR_NOTE, 1), (f"Done. {self.PR_NOTE}", 2)],
+        )
+
+    async def test_a_failed_send_announces_nothing(self):
+        class _Refusing(_Adapter):
+            async def send(self, chat_id, content, metadata=None):
+                return _Result(False, error="channel_not_found")
+
+        await self._notes_then_report(_Refusing())
+        self.assertEqual(self.announced, [])
+
+    async def test_other_platforms_never_reach_the_moments(self):
+        await self._notes_then_report(_Adapter(), sub=SUB)
+        await self._blocked(_Adapter(), {"kind": "needs_input", "reason": "Which?"}, sub=SUB)
+        self.assertEqual((self.asked, self.announced), ([], []))
+
+    async def test_flag_off_posts_exactly_what_it_did_before(self):
+        self.flag = False
+        payload = {"kind": "needs_input", "reason": "Which cluster?"}
+        with_module, without = _Adapter(), _Adapter()
+        await self._notes_then_report(with_module)
+        await self._blocked(with_module, payload)
+        with mock.patch.dict(sys.modules, {name: None for name in self.modules}):
+            await self._notes_then_report(without)
+            await self._blocked(without, payload)
+        self.assertEqual((with_module.sent, with_module.edits), (without.sent, without.edits))
+        self.assertEqual((self.asked, self.announced), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()

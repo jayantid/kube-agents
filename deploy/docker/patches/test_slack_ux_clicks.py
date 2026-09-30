@@ -425,6 +425,12 @@ class AnsweredBlocksTest(unittest.TestCase):
         self.assertEqual(out[-1], {"type": "context", "elements": [{"type": "mrkdwn", "text": "note"}]})
         self.assertEqual(blocks[1]["elements"][1]["action_id"], "kage.choice.0")  # input untouched
 
+    def test_the_waiting_line_goes_with_the_buttons(self):
+        waiting = {"type": "context", "block_id": runtime._presenter.WAITING_BLOCK_ID, "elements": []}
+        out = runtime.answered_blocks([*_message()["blocks"], waiting], runtime._answered_by, "note")
+        self.assertNotIn(waiting, out)
+        self.assertEqual(out[-1]["elements"][0]["text"], "note")
+
 
 if __name__ == "__main__":
     unittest.main()

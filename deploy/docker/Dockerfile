@@ -762,6 +762,12 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # same authorization as a typed message. Registered after the plugin action
 # handlers by gateway/slack_ux_clicks.py; with the flag off nothing is
 # registered. Also rides this COPY and RUN. See deploy/docker/patches/slack_ux_clicks.py.
+#
+# Slack: with KAGE_SLACK_UX on, a PR a card opened and a question a card is
+# blocked on (kind needs_input) each post as a message of their own, with url
+# or choice buttons. kanban_progress_lines calls gateway/slack_ux_moments.py;
+# slack_moments.py is staged for the verifier as slack_presenter.py is. Also
+# rides this COPY and RUN. See deploy/docker/patches/slack_ux_moments.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
      deploy/docker/patches/apply_google_chat_attachment_notice.py \
@@ -777,8 +783,11 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/apply_slack_ux_clicks.py \
      deploy/docker/patches/verify_slack_ux_clicks.py \
      deploy/docker/patches/slack_ux_clicks.py \
+     deploy/docker/patches/verify_slack_ux_moments.py \
+     deploy/docker/patches/slack_ux_moments.py \
      agents/platform/scripts/slack_presenter.py \
      agents/platform/scripts/slack_status.py \
+     agents/platform/scripts/slack_moments.py \
      deploy/docker/patches/patchlib.py \
      /tmp/message-surface/
 RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis.py /opt/hermes && \
@@ -799,6 +808,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     install -m 0644 /tmp/message-surface/slack_ux_clicks.py /opt/hermes/gateway/slack_ux_clicks.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_clicks.py /opt/hermes && \
     grep -qF "_kage_slack_clicks.enabled()" /opt/hermes/plugins/platforms/slack/adapter.py && \
+    install -m 0644 /tmp/message-surface/slack_ux_moments.py /opt/hermes/gateway/slack_ux_moments.py && \
     cd /opt/hermes && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_code_emphasis.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_google_chat_attachment_notice.py && \
@@ -806,6 +816,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_reactions.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_status.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_clicks.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_moments.py && \
     rm -rf /tmp/message-surface
 
 # Perf: hide worker-only kanban tools from orchestrator profiles. Upstream gates
