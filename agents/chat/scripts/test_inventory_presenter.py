@@ -38,11 +38,11 @@ The full inventory is available — just ask.
 PRESENTED = """**I scanned 3 clusters and 41 workloads.** Posture is mostly healthy.
 
 Two worth fixing first:
-\U0001f534 **critical**  seeded-b and seeded-c admit privileged pods
+`critical` seeded-b and seeded-c admit privileged pods
 **Default service account is cluster-admin on seeded-c**
 
 **2 more worth a look:**
-- \U0001f7e0 **major**  Workload Identity is off on seeded-a
+- `major` Workload Identity is off on seeded-a
 - payments-api has no PodDisruptionBudget
 
 Also found: 18 more items, tracked in the findings queue — ask for the full list.
@@ -59,7 +59,7 @@ class PresentTest(unittest.TestCase):
         report = "# Scan\n\nAll quiet. One thing stands out.\n\n1. **A (minor)**\n   Fix it.\n2. **B**\n   Fix that.\n"
         self.assertEqual(
             inventory_presenter.present(report),
-            "**All quiet.** One thing stands out.\n\n\U0001f7e1 **minor**  A\n**B**\n",
+            "**All quiet.** One thing stands out.\n\n`minor` A\n**B**\n",
         )
 
     def test_one_item_of_three_top_reads_one(self):
@@ -83,7 +83,7 @@ class PresentTest(unittest.TestCase):
             inventory_presenter.present(report),
             "**Posture.**\n\n"
             "Two worth fixing first:\n"
-            "\U0001f534 **critical**  seeded-b and seeded-c admit privileged pods.\n"
+            "`critical` seeded-b and seeded-c admit privileged pods.\n"
             "**seeded-c: the default service account is cluster-admin.**\n\n"
             "**1 more worth a look:**\n- No PDB on payments-api\n",
         )
@@ -112,7 +112,7 @@ class PresentTest(unittest.TestCase):
         report = "Posture.\n\n" + "".join(f"{i}. **[critical] problem {i}**\n   x\n" for i in range(1, 4))
         report += "4. **other**\n   y\n"
         out = inventory_presenter.present(report)
-        rows = "\n".join(f"\U0001f534 **critical**  problem {i}" for i in range(1, 4))
+        rows = "\n".join(f"`critical` problem {i}" for i in range(1, 4))
         self.assertIn("Three worth fixing first:\n" + rows, out)
         self.assertIn("**1 more worth a look:**\n- other", out)
         self.assertNotIn("[critical]", out)
@@ -150,6 +150,49 @@ class PresentTest(unittest.TestCase):
             with self.subTest(report=report):
                 self.assertEqual(inventory_presenter.present(report), report)
 
+
+
+class BlocksTest(unittest.TestCase):
+    def _types(self, blocks):
+        return [block["type"] for block in blocks]
+
+    def test_mock_15_shape(self):
+        blocks, text, rest = inventory_presenter.blocks(REPORT)
+        self.assertEqual(self._types(blocks), ["rich_text", "divider", "rich_text", "divider", "container", "actions"])
+        head = blocks[0]["elements"][0]["elements"]
+        self.assertEqual(head[0], {"type": "text", "text": "I scanned 3 clusters and 41 workloads.", "style": {"bold": True}})
+        self.assertEqual(head[1]["text"], " Posture is mostly healthy. Two worth fixing first:")
+        group = blocks[2]["elements"]
+        self.assertEqual(group[0]["elements"][0]["text"], "1 critical, 1 finding")
+        self.assertEqual(group[1]["elements"][0], {"type": "text", "text": "critical", "style": {"code": True}})
+        self.assertEqual(blocks[4]["title"]["text"], "2 more worth a look")
+        buttons = blocks[5]["elements"]
+        self.assertEqual([b["action_id"] for b in buttons], ["kage_inventory.choice.0", "kage_inventory.choice.1"])
+        self.assertEqual(buttons[0]["style"], "primary")
+        self.assertEqual(buttons[0]["text"]["text"], "start with: seeded-b and seeded-c admit privileged pods")
+        # Four listed plus the roll-up's "18 more".
+        self.assertEqual(buttons[1]["text"]["text"], "show all 22")
+        self.assertTrue(text.startswith("*I scanned 3 clusters and 41 workloads.*\n`critical` seeded-b"))
+        self.assertEqual(rest, "")
+
+    def test_the_posture_total_wins(self):
+        report = REPORT.replace("41 workloads.", "41 workloads, 23 findings.")
+        blocks, _, _ = inventory_presenter.blocks(report)
+        self.assertEqual(blocks[-1]["elements"][1]["text"]["text"], "show all 23")
+
+    def test_without_the_fold_the_rest_is_returned_for_the_thread(self):
+        blocks, _, rest = inventory_presenter.blocks(REPORT, fold_in_place=False)
+        self.assertNotIn("container", self._types(blocks))
+        self.assertEqual(rest, "*2 more worth a look*\n`major` Workload Identity is off on seeded-a\n• payments-api has no PodDisruptionBudget")
+
+    def test_no_rest_has_no_fold_and_no_show_all(self):
+        report = "# Scan\n\nAll quiet. One thing stands out.\n\n1. **A (minor)**\n   Fix it.\n2. **B**\n   Fix that.\n"
+        blocks, _, _ = inventory_presenter.blocks(report)
+        self.assertNotIn("container", self._types(blocks))
+        self.assertEqual([b["text"]["text"] for b in blocks[-1]["elements"]], ["start with: A"])
+
+    def test_unparseable_is_none(self):
+        self.assertIsNone(inventory_presenter.blocks("# Report\n\n| Cluster | ... |\n"))
 
 class OriginPlatformTest(unittest.TestCase):
     def _with_jobs(self, get_job):
@@ -213,6 +256,9 @@ class DeliveryFlagTest(unittest.TestCase):
         self.assertEqual(self._run("1"), PRESENTED)
         self.assertEqual((self.d / "INVENTORY.delivered.md").read_text(encoding="utf-8"), REPORT)
 
+    def test_flag_on_without_a_relay_prints_the_text(self):
+        self.assertEqual(self._run("1"), PRESENTED)
+
     def test_google_chat_is_verbatim_with_the_flag_on(self):
         self.assertEqual(self._run("1", platform="google_chat"), REPORT)
 
@@ -223,6 +269,88 @@ class DeliveryFlagTest(unittest.TestCase):
         boom = mock.patch.object(inventory_presenter, "present", side_effect=ValueError("boom"))
         with boom, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self._run("1"), REPORT)
+
+
+
+class BlocksDeliveryTest(unittest.TestCase):
+    ORIGIN = {"platform": "slack", "chat_id": "C1", "thread_id": "1.5"}
+
+    def setUp(self):
+        import slack_blocks_post
+
+        self.sbp = slack_blocks_post
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = Path(self._tmp.name)
+        (self.d / "INVENTORY.md").write_text(REPORT, encoding="utf-8")
+        (self.d / ".user_aligned").touch()
+
+    def _run(self, post, flag="1", origin=ORIGIN):
+        env = {k: v for k, v in os.environ.items() if k != "KAGE_SLACK_UX"}
+        env.update({"KAGE_SLACK_UX": flag, "SLACK_RELAY_URL": "http://127.0.0.1:8765"})
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(bootstrap_delivery, "_origin", lambda: dict(origin)),
+            mock.patch.object(self.sbp, "post", side_effect=post) as poster,
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(bootstrap_delivery.main(self.d), 0)
+        self.posts = poster.call_args_list
+        return out.getvalue()
+
+    def test_posts_blocks_into_the_origin_and_prints_nothing(self):
+        self.assertEqual(self._run(lambda *a: "9.9"), "")
+        (post,) = self.posts
+        channel, text, blocks, thread_ts = post.args
+        self.assertEqual((channel, thread_ts), ("C1", "1.5"))
+        self.assertIn("container", [b["type"] for b in blocks])
+        self.assertTrue((self.d / ".bootstrap_completed").exists())
+        self.assertEqual((self.d / "INVENTORY.delivered.md").read_text(encoding="utf-8"), REPORT)
+
+    def test_flag_off_is_byte_identical(self):
+        self.assertEqual(self._run(lambda *a: "9.9", flag="0"), REPORT)
+        self.assertEqual(self.posts, [])
+
+    def test_refused_blocks_retry_without_the_fold_and_thread_the_rest(self):
+        answers = iter([self.sbp.Refused("invalid_blocks"), "9.9", "9.10"])
+
+        def post(*args):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        self.assertEqual(self._run(post, origin={"platform": "slack", "chat_id": "C1"}), "")
+        self.assertEqual(len(self.posts), 3)
+        self.assertNotIn("container", [b["type"] for b in self.posts[1].args[2]])
+        channel, rest, blocks, thread_ts = self.posts[2].args
+        self.assertEqual((channel, blocks, thread_ts), ("C1", None, "9.9"))
+        self.assertTrue(rest.startswith("*2 more worth a look*"))
+
+    def test_refused_twice_prints_the_text(self):
+        self.assertEqual(self._run(self.sbp.Refused("invalid_blocks")), PRESENTED)
+        self.assertEqual(len(self.posts), 2)
+
+    def test_a_relay_failure_prints_the_text(self):
+        self.assertEqual(self._run(OSError("connection refused")), PRESENTED)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_refused_blocks_with_no_fold_are_not_retried(self):
+        quiet = "# Scan\n\nAll quiet. One thing stands out.\n\n1. **A (minor)**\n   Fix it.\n2. **B**\n   Fix that.\n"
+        (self.d / "INVENTORY.md").write_text(quiet, encoding="utf-8")
+        self.assertEqual(self._run(self.sbp.Refused("invalid_blocks")), inventory_presenter.present(quiet))
+        self.assertEqual(len(self.posts), 1)
+
+    def test_a_post_that_may_have_landed_still_prints_the_text(self):
+        # The first inventory is sent once, so a second copy beats none.
+        self.assertEqual(self._run(TimeoutError("timed out")), PRESENTED)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_no_chat_id_prints_the_text(self):
+        self.assertEqual(self._run(lambda *a: "9.9", origin={"platform": "slack"}), PRESENTED)
+        self.assertEqual(self.posts, [])
 
 
 if __name__ == "__main__":

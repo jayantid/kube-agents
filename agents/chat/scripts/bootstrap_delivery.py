@@ -20,6 +20,12 @@ and the job is bound to Slack), sets the report aside, and removes the two onboa
 cron jobs. Otherwise it prints nothing, which the ``no_agent`` cron path treats
 as a silent run (no message).
 
+With the flag on, a Slack origin and the credential proxy's Slack relay in the
+environment, the report goes out as mock 15's Block Kit instead, posted here
+through ``slack_blocks_post`` because the scheduler's delivery takes text only.
+Then nothing is printed. Slack refusing the blocks is retried once without the
+fold, whose findings then go in the thread; anything else prints the text.
+
 The claim is what makes "exactly once" true rather than merely likely.
 ``.bootstrap_completed`` is created with ``O_CREAT | O_EXCL`` *before* anything
 reaches stdout, so of two runs racing on the same report — a scheduled tick and
@@ -121,8 +127,9 @@ def _cleanup(data_dir: Path) -> None:
             sys.stderr.write(f"bootstrap_delivery: could not remove {job_id}: {e}\n")
 
 
-def _origin_platform() -> str | None:
-    """The platform the plugin bound this job's delivery to, or None if unknown.
+def _origin() -> dict:
+    """The origin the plugin bound this job's delivery to: ``platform``,
+    ``chat_id`` and ``thread_id``; empty if unknown.
 
     The plugin writes the origin before ``.user_aligned``, so it is set by the
     time a delivery can fire.
@@ -131,10 +138,15 @@ def _origin_platform() -> str | None:
         from cron.jobs import get_job  # type: ignore import-not-found
 
         job = get_job(DELIVERY_JOB_ID) or {}
-        return (job.get("origin") or {}).get("platform")
+        return job.get("origin") or {}
     except Exception as e:
         sys.stderr.write(f"bootstrap_delivery: could not read the delivery origin: {e}\n")
-        return None
+        return {}
+
+
+def _origin_platform() -> str | None:
+    """The platform the plugin bound this job's delivery to, or None if unknown."""
+    return _origin().get("platform")
 
 
 def _presented(content: str) -> str:
@@ -158,6 +170,58 @@ def _presented(content: str) -> str:
         return content
 
 
+def _posted_as_blocks(content: str) -> bool:
+    """Whether the report was posted to Slack as Block Kit; False posts nothing.
+
+    False, and the caller prints the text, unless the flag is on, the origin is
+    Slack with a chat id, the relay is configured and the report parses. Any
+    failure is False too, including one that may have posted (a timeout once
+    the request was sent): this report is sent once per install, and a second
+    copy of it is a smaller loss than none.
+    """
+    try:
+        import slack_presenter
+
+        if not slack_presenter.enabled():
+            return False
+        origin = _origin()
+        channel = str(origin.get("chat_id") or "")
+        if origin.get("platform") != PRESENTED_PLATFORM or not channel:
+            return False
+        import inventory_presenter
+        import slack_blocks_post
+
+        if not slack_blocks_post.configured():
+            return False
+        thread_ts = str(origin.get("thread_id") or "")
+        for fold_in_place in (True, False):
+            built = inventory_presenter.blocks(content, fold_in_place)
+            if built is None:
+                return False
+            blocks, text, rest = built
+            try:
+                ts = slack_blocks_post.post(channel, text, blocks, thread_ts)
+            except slack_blocks_post.Refused as e:
+                sys.stderr.write(f"bootstrap_delivery: Slack refused the report blocks ({e})\n")
+                if not slack_presenter.has_fold(blocks):
+                    return False
+                continue
+            if rest:
+                _post_rest(slack_blocks_post, channel, rest, thread_ts or ts)
+            return True
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: posting the report as text: {e}\n")
+    return False
+
+
+def _post_rest(poster, channel: str, rest: str, thread_ts: str) -> None:
+    """The folded findings in the report's thread; the report has landed, so a failure is logged."""
+    try:
+        poster.post(channel, rest, None, thread_ts)
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: the rest of the findings were not posted: {e}\n")
+
+
 def main(data_dir: Path | None = None) -> int:
     if data_dir is None:
         data_dir = _data_dir()
@@ -178,11 +242,12 @@ def main(data_dir: Path | None = None) -> int:
     if not _claim_delivery(data_dir):
         return 0  # another run is delivering this report — stay silent
 
-    sys.stdout.write(_presented(content))
-    sys.stdout.flush()
+    if not _posted_as_blocks(content):
+        sys.stdout.write(_presented(content))
+        sys.stdout.flush()
 
-    # Cleanup runs only after the report is safely on stdout (already captured
-    # by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
+    # Cleanup runs only after the report is posted or safely on stdout (already
+    # captured by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
     _cleanup(data_dir)
     return 0
 

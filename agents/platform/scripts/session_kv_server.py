@@ -14,7 +14,8 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, NamedTuple, Optional, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
 import logging
@@ -22,6 +23,9 @@ import logging
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from agent_common_server import _run_env, CONFIG_PATH, DOTENV_PATH
 import findings_queue
+import slack_audit_report
+import slack_blocks_post
+import slack_presenter
 
 # Configure logging
 logging.basicConfig(
@@ -1993,6 +1997,29 @@ CRON_REPORT_MAX_CHARS = int(os.getenv("CRON_REPORT_MAX_CHARS", "12000") or "1200
 # ("Security & RBAC Posture Audit") many times over.
 CRON_REPORT_MAX_LABEL_CHARS = 200
 
+# How long a Slack audit headline waits for its ledger issue before posting the
+# fallback. The relay turn can take 300 s of the caller's 360 s, and the forge
+# hop's own bound is 90 s, so this one is short. It bounds the fetch alone: the
+# managed-repository read before it can fall back to `kubectl get configmap`
+# (`GITOPS_STATE_READ_TIMEOUT_SECONDS`) when the state file is not mounted, so
+# the worst case before the Slack send is the two together.
+AUDIT_LEDGER_FETCH_TIMEOUT_S = 20
+# Each Block Kit post of that headline, which can run twice (once more without
+# the fold when Slack refuses it), adds to the same budget. It is the relay's
+# own bound on one Slack call, because giving up sooner on a post the relay is
+# still making falls back to text and can leave two headlines in the channel.
+AUDIT_BLOCKS_POST_TIMEOUT_S = slack_blocks_post.POST_TIMEOUT_S
+
+# Only a fleet-audit job's report gets the audit headline. The job is looked up
+# in its profile's cron roster under the agent home: the default profile's
+# roster is the home itself, a named profile's is under `profiles/<name>`.
+FLEET_AUDIT_SKILL = "fleet-audit"
+DEFAULT_PROFILE = "default"
+PROFILES_DIR = "profiles"
+CRON_ROSTER = ("cron", "jobs.json")
+# A profile name is one path segment; anything else is never a roster.
+_PROFILE_SEGMENT_RE = re.compile(r"\A(?!\.{1,2}\Z)[\w.-]+\Z")
+
 # Newlines and the tokens that could open a role or forge a fence. Labels get a
 # stricter scrub than the report body does: the body is reproduced into the
 # user's channel, so `_defang_report` deliberately leaves markdown-shaped text
@@ -2393,6 +2420,164 @@ def _unrelayed_notice(profile: str, job_id: str) -> str:
     )
 
 
+class AuditPost(NamedTuple):
+    """Where :func:`_post_audit_blocks` left the report: its thread, whether the fold is in place, and the thread's rest."""
+
+    thread_id: str
+    folded: bool
+    rest: str
+
+
+class AuditHeadline(NamedTuple):
+    """The text headline, and the ledger issue it was built from (None when unreadable)."""
+
+    text: str
+    issue: dict | None
+    ref: slack_audit_report.LedgerRef
+
+
+def _slack_audit_headline(
+    platform: str, message: str, unrelayed: bool, chat_id: str, profile: str, job_id: str
+) -> AuditHeadline | None:
+    """With ``KAGE_SLACK_UX`` on, the headline a fleet-audit report leads with in Slack.
+
+    None, and the leg posts `message` as it always has, unless every condition
+    holds: the flag is on, the leg is Slack, the Chat Agent composed the message
+    (an unrelayed report keeps its notice in the channel), a chat id is known,
+    since the full report goes into the headline's thread and a reply cannot be
+    addressed without one, the job runs the fleet-audit skill, and the message
+    ends with an issue URL in a managed repository, which is where fleet-audit
+    keeps its ledger. The headline is built from that issue; when it cannot be
+    read, it is the report's own line in bold with the ledger link. The issue
+    rides along for :func:`_post_audit_blocks`.
+    """
+    if platform != "slack" or unrelayed or not slack_presenter.enabled():
+        return None
+    if not (chat_id or _slack_home_channel()):
+        return None
+    if not _is_fleet_audit_job(profile, job_id):
+        return None
+    ref = slack_audit_report.ledger_ref(message)
+    if ref is None or not _is_managed_github_repo(ref.repo):
+        return None
+    issue = _fetch_ledger_issue(ref)
+    headline = slack_audit_report.headline_from_issue(issue, ref, message) if issue else None
+    return AuditHeadline(headline or slack_audit_report.headline_fallback(message, ref), issue, ref)
+
+
+def _is_fleet_audit_job(profile: str, job_id: str) -> bool:
+    """Whether `job_id` in `profile`'s cron roster runs fleet-audit; False when it cannot be read."""
+    if not _PROFILE_SEGMENT_RE.match(profile):
+        return False
+    try:
+        from gitops_workspace import agent_home
+
+        base = agent_home() if profile == DEFAULT_PROFILE else os.path.join(agent_home(), PROFILES_DIR, profile)
+        with open(os.path.join(base, *CRON_ROSTER), encoding="utf-8") as handle:
+            store = json.load(handle)
+    except Exception as exc:
+        logger.warning(f"Audit headline skipped: {profile} cron roster unreadable: {exc}")
+        return False
+    jobs = store.get("jobs") if isinstance(store, dict) else store
+    for job in jobs if isinstance(jobs, list) else []:
+        if isinstance(job, dict) and str(job.get("id") or "") == job_id:
+            # Hermes accepts a list, a single string, or the legacy `skill` field.
+            skills = job.get("skills") or job.get("skill") or []
+            return FLEET_AUDIT_SKILL in ([skills] if isinstance(skills, str) else skills)
+    return False
+
+
+def _is_managed_github_repo(repo: str) -> bool:
+    """Whether `repo` is a managed GitHub repository; False when the list cannot be read."""
+    try:
+        from gitops_workspace import get_managed_github_repos
+
+        managed = {slug.lower() for slug in get_managed_github_repos()}
+    except Exception as exc:
+        logger.warning(f"Audit headline skipped: managed repositories unreadable: {exc}")
+        return False
+    return repo.lower() in managed
+
+
+def _fetch_ledger_issue(ref: slack_audit_report.LedgerRef) -> dict | None:
+    """The ledger issue, read through the forge broker; None on any failure.
+
+    Read-only and bounded by `AUDIT_LEDGER_FETCH_TIMEOUT_S`; a call still
+    running then finishes in its own thread and is ignored. A failure costs the
+    headline its counts and rows, never the report.
+    """
+    executor = None
+    try:
+        import forge
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        call = executor.submit(forge.call, "issue-view", {"number": ref.number}, ref.repo)
+        issue = call.result(timeout=AUDIT_LEDGER_FETCH_TIMEOUT_S).get("issue")
+    except Exception as exc:
+        logger.warning(f"Audit headline: could not read {ref.url}: {exc!r}")
+        return None
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False)
+    return issue if isinstance(issue, dict) else None
+
+
+def _post_audit_fold(profile: str, job_id: str, message: str, chat_id: str, thread_id: str) -> None:
+    """Post the full composed report under its Slack headline; a failure is logged, not raised.
+
+    The headline has already landed, so the leg counts as delivered either way,
+    and the incident row still stores the full report for the thread's replies.
+    """
+    if not _send_to_chat("slack", message, chat_id or _slack_home_channel(), thread_id):
+        logger.error(f"Relay for {profile}/{job_id}: Slack headline posted but not the full report under it")
+
+
+def _post_audit_blocks(
+    profile: str, job_id: str, headline: AuditHeadline, message: str, chat_id: str, thread_id: str
+) -> AuditPost | None:
+    """Post mock 08's Block Kit report; where it landed, or None to post text instead.
+
+    None, before anything is posted, when there are no blocks to build (no
+    issue, a clean run, an issue that does not parse) or no Slack relay in the
+    environment; after Slack refused the blocks without and with the fold; and
+    after a relay failure. Slack refusing the fold is retried once without it,
+    and ``rest`` then carries its findings for the thread. A failure that may
+    have posted (a timeout once the request was sent) still falls back to text:
+    a leg with no thread id fails the route, and ``report_to_chat``'s caller
+    then returns the whole report for relay again, so declining to re-post
+    here would trade a possible second copy for a certain one.
+    """
+    if headline.issue is None or not slack_blocks_post.configured():
+        return None
+    threaded = bool(chat_id and thread_id)
+    for fold_in_place in (True, False):
+        built = slack_audit_report.blocks_from_issue(headline.issue, headline.ref, message, fold_in_place)
+        if built is None:
+            return None
+        blocks, text, rest = built
+        try:
+            ts = slack_blocks_post.post(
+                chat_id or _slack_home_channel(),
+                text,
+                blocks,
+                thread_id if threaded else "",
+                timeout=AUDIT_BLOCKS_POST_TIMEOUT_S,
+            )
+        except slack_blocks_post.Refused as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: Slack refused the report blocks ({exc})")
+            if not slack_presenter.has_fold(blocks):
+                return None
+            continue
+        except slack_blocks_post.NotSent as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: report blocks not sent, posting text: {exc}")
+            return None
+        except Exception as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: report blocks may have posted, posting text: {exc!r}")
+            return None
+        return AuditPost(thread_id if threaded else ts, fold_in_place, rest)
+    return None
+
+
 def relay_cron_report(
     session_id: str,
     profile: str,
@@ -2569,7 +2754,26 @@ def relay_cron_report(
     threads: Dict[str, str] = {}
     for platform in platforms:
         leg_chat_id, leg_thread_id = known_threads.get(platform, ("", ""))
-        new_thread_id = _send_to_chat(platform, message, leg_chat_id, leg_thread_id)
+        try:
+            headline = _slack_audit_headline(platform, message, unrelayed, leg_chat_id, profile, job_id)
+        except Exception as exc:
+            logger.warning(f"Relay for {profile}/{job_id}: audit headline skipped: {exc!r}")
+            headline = None
+        posted = None
+        # A truncated report keeps its notice, which the blocks have no place for.
+        if headline and not truncation_notice:
+            posted = _post_audit_blocks(profile, job_id, headline, message, leg_chat_id, leg_thread_id)
+        rest = ""
+        if posted is not None:
+            new_thread_id, folded, rest = posted.thread_id or None, posted.folded, posted.rest
+        else:
+            leg_message = truncation_notice + headline.text if headline else message
+            new_thread_id, folded = _send_to_chat(platform, leg_message, leg_chat_id, leg_thread_id), False
+        if new_thread_id and headline and not folded:
+            if slack_audit_report.has_more(message):
+                _post_audit_fold(profile, job_id, message, leg_chat_id, new_thread_id)
+            elif rest:
+                _post_audit_fold(profile, job_id, rest, leg_chat_id, new_thread_id)
         if new_thread_id:
             threads[platform] = new_thread_id
         else:
