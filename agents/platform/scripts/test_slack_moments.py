@@ -59,6 +59,8 @@ class OpenedPrTest(unittest.TestCase):
         self.assertEqual(m.opened_pr(f"Opened <{PR}|PR #412>")[0], PR)
         self.assertEqual(m.opened_pr(f"Opened [PR #412]({PR})")[0], PR)
         self.assertEqual(m.opened_pr(f"Opened PR #412: {PR}")[0], PR)
+        for lead in ("I opened PR #412 (", "Opened PR #412 — ", "Opened PR #412 - ", "Opened pull request #412 ("):
+            self.assertEqual(m.opened_pr(f"{lead}{PR}) to raise the limit")[0], PR, lead)
 
     def test_a_negated_verb_is_not_an_opened_pr(self):
         for lead in ("I have not opened", "Never opened", "I haven't yet opened a PR:", "didn't create"):
@@ -70,6 +72,8 @@ class OpenedPrTest(unittest.TestCase):
             "Dependabot then opened", "Alice reviewed and opened", "@bob and opened", "bob successfully opened",
             "bob reviewed and opened", "Kube Agents Robot then opened", "Fred reviewed and opened",
             "Tests passed. Renovate rebased and opened", "the bot then opened",
+            "dependabot[bot] opened", "renovate[bot] just opened", "Kelly opened", "Emily created",
+            "Kelly reviewed and opened",
         ):
             self.assertIsNone(m.opened_pr(f"{lead} {PR} to bump the base image"), lead)
 
@@ -118,6 +122,19 @@ class PrOpenedTest(unittest.TestCase):
         for line in (f"Opened <{PR}|PR #412> raising it", f"Opened [PR #412]({PR}) raising it"):
             blocks, _ = m.pr_opened(PR, "fleet-config", "412", line)
             self.assertEqual(_contexts(blocks), ["Opened PR #412 raising it"], line)
+
+    def test_a_tail_after_the_number_goes_with_the_url(self):
+        for tail in ("/files", "?diff=split", "#discussion_r1", "/files#diff-1"):
+            blocks, _ = m.pr_opened(PR, "fleet-config", "412", f"Opened {PR}{tail} for review.")
+            self.assertEqual(_contexts(blocks), ["Opened PR #412 for review."], tail)
+        blocks, _ = m.pr_opened(PR, "fleet-config", "412", f"Opened [PR #412]({PR}/files) for review.")
+        self.assertEqual(_contexts(blocks), ["Opened PR #412 for review."])
+
+    def test_a_number_before_the_url_is_not_repeated(self):
+        for line in (f"I opened PR #412 ({PR}) to raise it", f"I opened PR #412 — {PR} to raise it",
+                     f"I opened PR #412: {PR} to raise it"):
+            blocks, _ = m.pr_opened(PR, "fleet-config", "412", line)
+            self.assertEqual(_contexts(blocks), ["I opened PR #412 to raise it"], line)
 
     def test_the_workers_line_cannot_mention_anyone(self):
         blocks, text = m.pr_opened(PR, "fleet-config", "412", f"Opened {PR} <!channel>")

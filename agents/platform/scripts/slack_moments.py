@@ -8,8 +8,8 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
   "Files changed" url buttons. :func:`opened_pr` finds it in a progress note or a report, and
   only where the line says it opened that PR, the verb in front of the url
   with no one else as its subject, so a note citing someone else's PR
-  ("… pull/300, opened by bob", "Dependabot opened …") is not announced as
-  ours.
+  ("… pull/300, opened by bob", "Dependabot opened …", "dependabot[bot]
+  opened …", "Kelly opened …") is not announced as ours.
 * A question the work is waiting on (:func:`needs_you`): the worker's question
   in bold (plain, when bold would cost it a ``*`` or a ``__name__``), the rest
   of its reason below it, a choice button for each option
@@ -33,21 +33,28 @@ import slack_presenter as _presenter
 PR_URL = re.compile(r"https?://[^\s/<>|]+/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: What must sit right before the url for a line to announce the PR as ours:
 #: the verb, then optionally "a"/"the", "new", "PR"/"pull request" with its
-#: number, a colon, and the opening of a ``[label](`` or ``<`` link.
+#: number, a colon, dash or "(", and the opening of a ``[label](`` or ``<`` link.
 OPENED_BEFORE_URL = re.compile(
     r"\b(?:opened|created|raised|filed|submitted)\s+(?:(?:an?|the)\s+)?(?:new\s+)?"
-    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*:?\s*)?(?:\[[^\]]*\]\(|<)?$",
+    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?\s*)?(?:\[[^\]]*\]\(|<)?$",
     re.IGNORECASE,
 )
 #: A negation just before the verb: "not opened", "haven't yet opened".
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+#: Adverbs that can sit before the verb; a list, since "-ly" alone would
+#: take "Kelly opened" as ours.
+ADVERB = (
+    r"(?:successfully|finally|quickly|eventually|subsequently|immediately|promptly|"
+    r"manually|automatically|separately|additionally|accordingly|initially|lastly)"
+)
 #: Who opened it: nothing (or punctuation, a bullet, an emoji) before the verb,
 #: "I"/"we", or "and"/"then" joining it to the worker's earlier steps, with at
-#: most three of "have", "just", an "-ly" adverb and the like between;
-#: "Dependabot opened <url>" is someone else's PR.
+#: most three of "have", "just", an adverb and the like between;
+#: "Dependabot opened <url>" is someone else's PR, and so is a bracketed
+#: login, "dependabot[bot] opened <url>", whose "]" is not punctuation here.
 OUR_SUBJECT = re.compile(
-    r"(?:^|[^\w\s'’]|\b(?:I|we)\b|\b(?P<joined>and|then)\b)\s*"
-    r"(?:(?:have|[’']ve|also|just|then|now|already|\w+ly)\s+){0,3}$",
+    r"(?:^|[^\w\s'’\]]|\b(?:I|we)\b|\b(?P<joined>and|then)\b)\s*"
+    r"(?:(?:have|[’']ve|also|just|then|now|already|" + ADVERB + r")\s+){0,3}$",
     re.IGNORECASE,
 )
 #: Where the clause before a joining "and"/"then" starts: after the last of these.
@@ -55,7 +62,7 @@ CLAUSE_BREAK = re.compile(r"[.!?;:]")
 #: A clause's words, a mention's "@" and a hyphenated verb's "-" kept.
 CLAUSE_WORD = re.compile(r"[\w@'’-]+")
 #: Words skipped at the start of that clause: "Just fixed and opened".
-CLAUSE_FILLER = re.compile(r"also|just|now|already|then|\w+ly", re.IGNORECASE)
+CLAUSE_FILLER = re.compile(r"also|just|now|already|then|" + ADVERB, re.IGNORECASE)
 #: The clause is the worker's own step when it starts with "I"/"we" or a
 #: past-tense verb, regular or one of these.
 OUR_CLAUSE_LEAD = re.compile(r"I|we|we[’']ve|I[’']ve", re.IGNORECASE)
@@ -80,10 +87,13 @@ HEADLINE_MARKUP = re.compile(
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
-#: The url in the worker's line, with a "PR" already in front of it, so
-#: "Opened PR <url>" reads "Opened PR #412" rather than "Opened PR PR #412".
-#: A Slack ``<url|label>`` or markdown ``[label](url)`` link around it goes too.
-PR_REF_SPAN = r"(?:\bPR\s+)?(?:<{url}(?:\|[^>]*)?>|\[[^\]]*\]\({url}\)|{url})"
+#: The url in the worker's line, with a "PR" or "PR #412:" already in front of
+#: it, so "Opened PR <url>" reads "Opened PR #412" rather than "Opened PR PR
+#: #412". A Slack ``<url|label>``, markdown ``[label](url)`` or ``(url)``
+#: around it goes too, and so does a tail after the number (``/files``).
+PR_URL_TAIL = r"(?:[/?#][^\s<>|()\[\]]*)?"
+PR_REF_URL = r"(?:<{url}{tail}(?:\|[^>]*)?>|\[[^\]]*\]\({url}{tail}\)|{url}{tail})"
+PR_REF_SPAN = r"(?:\bPR\s+(?:#{number}\s*[:—–-]?\s*)?)?(?:\(\s*{ref}\s*\)|{ref})"
 OPEN_PR = "Open PR ↗"
 FILES_CHANGED = "Files changed ↗"
 FILES_PATH = "/files"
@@ -161,7 +171,8 @@ def _text(headline_text: str, subline: str) -> str:
 def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], str]:
     """Blocks and fallback text for an opened PR; ``line`` is the worker's, the url shortened."""
     headline = PR_HEADLINE.format(number=number, repo=repo)
-    span = re.compile(PR_REF_SPAN.format(url=re.escape(url)), re.IGNORECASE)
+    ref = PR_REF_URL.format(url=re.escape(url), tail=PR_URL_TAIL)
+    span = re.compile(PR_REF_SPAN.format(number=number, ref=ref), re.IGNORECASE)
     evidence = _presenter._clip(span.sub(PR_REF.format(number=number), line).strip(), EVIDENCE_MAX)
     links = [(OPEN_PR, url), (FILES_CHANGED, url + FILES_PATH)]
     blocks = _presenter.blocks_answer(headline, links=links, action_id_prefix=PR_ACTION_PREFIX)
