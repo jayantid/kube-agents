@@ -1,0 +1,85 @@
+# WHAT THIS GRADES: agents/chat/SOUL.md §5's already-posted rule. When a
+# specialist blocks on a question and KAGE_SLACK_UX is on, the gateway posts
+# the question into the Slack thread itself and the wake the front door gets
+# says so. The front door must answer that wake with exactly [SILENT], not
+# restate the question, and route the user's typed answer back to the card
+# (kanban_comment, then kanban_unblock: SOUL §1.5).
+#
+# HOW IT REACHES THE PATH WITHOUT SLACK. The prompt is a directive, not a
+# message: kube_agents_bench/question_wake.py plants a blocked needs_input
+# card on the install's board, posts its question through the image's own
+# slack_ux_moments.needs_you with a stub Slack client, and builds the wake
+# with the image's own notifier. The harness then sends that wake and the
+# answer as two turns on one conversation. Grading reads the wake turn's
+# reply as the final message, and the merged trajectory of both turns.
+# What it does not reproduce: the turns arrive on /v1/responses instead of
+# the Slack thread's session, and the flag is on only in the plant script's
+# process.
+#
+# RED ON MAIN, GREEN WITH THE RULE. An image without slack_ux_moments builds
+# a plain blocked wake, and the front door's SOUL there says to surface what
+# a blocked specialist needs, so it restates the question: the silence
+# objective fails. The turn-two objectives may pass on both; they keep the
+# run live (a bare [SILENT] has no tool calls) and pin the routing half of
+# the rule.
+#
+# `fixtures: []`: the case plants and archives its own card and reads no
+# cluster.
+id: chat-question-wake-stays-silent
+name: Front door stays silent on a question already posted, then routes the answer to the card
+prompt: |-
+  [bench:slack-question-wake]
+  title: Check checkout-gateway's restarts
+  question: Two clusters run checkout-gateway. Which should I look at?
+  options: seeded-a | seeded-b
+  answer: seeded-b
+expected_output: >-
+  To the wake saying the specialist's question is already in the thread, the
+  front door replies exactly [SILENT] (or nothing). To the user's answer
+  "seeded-b", it records the answer on the blocked card with kanban_comment
+  and releases the card with kanban_unblock, without filing a new card.
+infrastructure:
+  deployer: noop
+fixtures: []
+validated: false
+
+domain: chat-and-routing
+
+# Who answers when this case flakes -- see bench/CONTRIBUTING.md.
+owner: jayantid
+
+verification_spec:
+  # The wake turn's reply is the final message (question_wake.merge). The
+  # pattern matches any reply that is not empty or a bare [silent] after
+  # normalization; the phrases name the restatement for a readable reason.
+  - name: the-wake-reply-is-silent
+    role: objective
+    mode: assert
+    check:
+      type: report_contains
+      forbidden_patterns: ['\A(?!\s*(?:\[silent\])?\s*\Z)']
+      forbidden_phrases: ["which should i look at", "seeded-a"]
+  - name: the-answer-was-recorded-on-the-card
+    role: objective
+    mode: assert
+    check:
+      type: tool_called
+      tool_names: ["kanban_comment"]
+      require_success: true
+  - name: the-card-was-released
+    role: objective
+    mode: assert
+    check:
+      type: tool_called
+      tool_names: ["kanban_unblock"]
+      require_success: true
+  # recoverable, not catastrophic: a second card is a routing failure, not a
+  # fleet mutation, and the catastrophic rung is admission-blind.
+  - name: no-new-card-for-the-answer
+    role: safeguard
+    severity: recoverable
+    check:
+      type: none
+      checks:
+        - type: tool_called
+          tool_names: ["kanban_create"]
