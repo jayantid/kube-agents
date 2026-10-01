@@ -91,6 +91,11 @@ BUTTON_URL_MAX = 3000
 #: and the message ``text``, which carries the report too, stays far inside
 #: Slack's 40,000 characters.
 FOLD_TEXT_MAX = 12000
+#: The block types Slack has been seen to keep inside a collapsible
+#: ``container`` (read back from ``conversations.replies`` on a live alert).
+#: The plugin also renders ``table`` and ``divider``; a fold holding one keeps
+#: the threaded reply until a live run shows Slack accepts it there.
+FOLD_CHILD_TYPES = frozenset({"header", "section", "rich_text"})
 
 HEADING = re.compile(r"^ {0,3}#{1,6} +(.+?)[ #]*$")
 WHATS_WRONG = re.compile(r"what(?:['’]s| is) wrong", re.IGNORECASE)
@@ -240,7 +245,10 @@ def _load_block_kit() -> Any:
 def render_fold(report: str, mrkdwn_fn: Any = None) -> list[dict] | None:
     """``report`` as the blocks the adapter's own send would render, or None if it cannot."""
     block_kit = _load_block_kit()
-    return block_kit.sanitize_blocks(block_kit.render_blocks(report, mrkdwn_fn=mrkdwn_fn))
+    blocks = block_kit.sanitize_blocks(block_kit.render_blocks(report, mrkdwn_fn=mrkdwn_fn))
+    if not blocks or any(block.get("type") not in FOLD_CHILD_TYPES for block in blocks):
+        return None
+    return blocks
 
 
 def blocks_triage(triage: dict, fold_blocks: list[dict]) -> list[dict]:
