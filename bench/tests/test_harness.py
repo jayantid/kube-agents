@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import shlex
 import subprocess
 import threading
 import time
@@ -3145,10 +3146,13 @@ _REPLAY_CARD = "t_5e1ec7ed"
 _REPLAY_WAKE = f"[kanban] Task {_REPLAY_CARD} blocked; needs attention."
 
 
+_REPLAY_SETTLED = {"status": "ready", "comments": [{"author": "default", "body": "seeded-b"}]}
+
+
 def _replay_shell(scripts: list[str], plant_reply: str | None = None):
     """A stand-in for ``_agent_shell`` answering the plant and archive scripts."""
     planted = json.dumps({"card": _REPLAY_CARD, "wake": _REPLAY_WAKE, "posted": 1, "error": None})
-    archived = json.dumps({"archived": True, "error": None})
+    archived = json.dumps({"archived": True, "cards": [_REPLAY_CARD], **_REPLAY_SETTLED, "error": None})
 
     def shell(script: str, timeout: float) -> str:
         scripts.append(script)
@@ -3159,6 +3163,10 @@ def _replay_shell(scripts: list[str], plant_reply: str | None = None):
         return f"{card_wake.REPLAY_PRESENT}\n{archived}"
 
     return shell
+
+
+def _archived(scripts: list[str]) -> bool:
+    return any(shlex.quote(card_wake._ARCHIVE_SCRIPT) in s for s in scripts)
 
 
 def _answer_turn() -> bytes:
@@ -3187,7 +3195,8 @@ def test_a_question_wake_sends_the_wake_then_the_answer_on_one_conversation(
     snap = transcript.get()
     assert snap.final_message == "[SILENT]"
     assert result.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
-    assert any(card_wake.archive_command(_REPLAY_CARD) == s for s in scripts)
+    assert result.metadata["question_wake"]["settled"] == _REPLAY_SETTLED
+    assert _archived(scripts)
 
 
 def test_the_next_run_gets_a_fresh_conversation_after_a_question_wake(
@@ -3215,6 +3224,20 @@ def test_a_question_wake_that_cannot_be_planted_is_infrastructure(
     assert stub_agent.requests == []
 
 
+def test_a_question_wake_whose_plant_failed_in_the_image_is_an_error_not_infrastructure(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    broken = f'{card_wake.REPLAY_PRESENT}\n{{"error": "RuntimeError: posted nothing"}}'
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell([], plant_reply=broken))
+
+    result = KubeAgentsHarness().run(_REPLAY_PROMPT)
+
+    assert result.has_errors()
+    assert not result.errors[0].startswith(harness.INFRA_FAILURE_MARKER)
+    assert "posted nothing" in result.errors[0]
+    assert stub_agent.requests == []
+
+
 def test_a_question_wake_archives_its_card_when_the_wake_turn_errors(
     monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
 ) -> None:
@@ -3226,7 +3249,7 @@ def test_a_question_wake_archives_its_card_when_the_wake_turn_errors(
 
     assert result.has_errors()
     assert len(stub_agent.requests) == 1
-    assert card_wake.archive_command(_REPLAY_CARD) in scripts
+    assert _archived(scripts)
 
 
 def test_a_question_wake_missing_its_answer_errors_without_planting(
@@ -3270,7 +3293,8 @@ def test_a_failure_wake_is_the_runs_only_turn_and_its_reply_is_graded(
     assert [s["name"] for s in result.trajectory] == ["kanban_show"]
     assert transcript.get().final_message == "I couldn't restart checkout-gateway on seeded-a."
     assert result.metadata["failure_wake"]["card"] == _REPLAY_CARD
-    assert card_wake.archive_command(_REPLAY_CARD) in scripts
+    assert result.metadata["failure_wake"]["settled"] == _REPLAY_SETTLED
+    assert _archived(scripts)
 
 
 def test_a_failure_wake_needs_the_api_transport(

@@ -41,7 +41,10 @@ Environment:
         ``API_SERVER_MODEL_NAME`` and the one LiteLLM actually serves).
     AGENT_CONVERSATION_ID: Pins the ``conversation`` field. Unset (the default)
         generates a fresh id per invocation so each task's trajectory is
-        isolated on this stateful endpoint.
+        isolated on this stateful endpoint. A card-wake replay (a prompt
+        opening with one of :mod:`card_wake`'s directives) pins its own id
+        for its turns, plants its card with a ``kubectl exec`` first, and is
+        refused under ``AGENT_TRANSPORT=inject``.
     AGENT_HTTP_TIMEOUT: Per-request timeout in seconds (default ``600``).
     AGENT_DELEGATION_TIMEOUT: Total seconds to wait for delegated work across
         all status turns (default ``1800``). ``0`` disables waiting, restoring
@@ -1619,9 +1622,10 @@ class KubeAgentsHarness(AgentHarness):
     ) -> AgentResult:
         """Send a planted card's wake and, for a question, the user's answer, on one conversation.
 
-        See :mod:`kube_agents_bench.card_wake`. A plant that fails is
-        infrastructure, not an answer: no agent saw anything. The card is
-        archived whatever the turns did, so a parked card does not outlive
+        See :mod:`kube_agents_bench.card_wake`. No agent sees anything when the
+        plant fails: a script that never ran to completion is infrastructure,
+        and one that ran and failed in the image is an error. The card is read
+        and archived whatever the turns did, so a parked card does not outlive
         the run.
         """
         failure = isinstance(replay, card_wake.Failure)
@@ -1635,19 +1639,24 @@ class KubeAgentsHarness(AgentHarness):
             planted = card_wake.plant(_agent_shell, replay, _EXEC_TIMEOUT)
         except card_wake.ReplayUnavailable as exc:
             return _infra_failure(str(exc))
+        except card_wake.ReplayBroken as exc:
+            return AgentResult.errored(str(exc))
         pinned = _PINNED_RUN_ID.set(_run_id())
+        answer_turn = None
         try:
             wake_turn = self._execute(planted.wake, workspace_path)
-            if wake_turn.errors:
-                return wake_turn
-            if failure:
-                return card_wake.tag(planted, wake_turn)
-            answer_turn = self._execute(replay.answer, workspace_path)
+            if not wake_turn.errors and not failure:
+                answer_turn = self._execute(replay.answer, workspace_path)
         finally:
             _PINNED_RUN_ID.reset(pinned)
-            if not card_wake.archive(_agent_shell, planted.card, _EXEC_TIMEOUT):
+            settled = card_wake.archive(_agent_shell, planted.key, _EXEC_TIMEOUT)
+            if settled is None:
                 _log.warning("card wake: card %s was not archived", planted.card)
-        return card_wake.merge(planted, wake_turn, answer_turn)
+        if wake_turn.errors:
+            return wake_turn
+        if answer_turn is None:
+            return card_wake.tag(planted, wake_turn, settled)
+        return card_wake.merge(planted, wake_turn, answer_turn, settled)
 
     def _execute_inject(self, prompt: str) -> AgentResult:
         """The inject transport: send the prompt through the gateway's front door.
