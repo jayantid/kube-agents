@@ -104,6 +104,20 @@ class RecordTest(unittest.TestCase):
         record["changes"].append({**slack_manifest.expected_change(record["manifests"]), "note": "Adds canvases."})
         self.assertEqual(slack_manifest.record_problems(record), [])
 
+    def test_a_revert_to_an_earlier_manifest_is_accepted(self):
+        record = copy.deepcopy(RECORD)
+        record["manifests"]["agent"] = with_scope(record["manifests"]["agent"], "canvases:write")
+        record["changes"].append({**slack_manifest.expected_change(record["manifests"]), "note": "Adds canvases."})
+        record["manifests"] = copy.deepcopy(RECORD["manifests"])
+        record["changes"].append({**slack_manifest.expected_change(record["manifests"]), "note": "Drops canvases."})
+        self.assertEqual(slack_manifest.record_problems(record), [])
+
+    def test_an_entry_repeating_the_one_before_is_refused(self):
+        record = copy.deepcopy(RECORD)
+        record["changes"].append({**record["changes"][-1], "note": "Nothing changed."})
+        problems = slack_manifest.record_problems(record)
+        self.assertIn(f"changes[{len(record['changes']) - 1}] repeats the digest of the entry before it", problems)
+
     def test_losing_a_required_setting_is_refused(self):
         record = copy.deepcopy(RECORD)
         record["manifests"]["none"]["settings"]["interactivity"]["is_enabled"] = False
@@ -154,6 +168,37 @@ class CompareTest(unittest.TestCase):
         del installed["features"]["assistant_view"]
         _, report = slack_manifest.compare(raw_from(installed), RECORD)
         self.assertIn("  + features.assistant_view", report)
+
+    def test_every_experience_is_compared_and_labelled(self):
+        installed = {experience: raw_from(manifest) for experience, manifest in RECORD["manifests"].items()}
+        status, report = slack_manifest.compare(installed, RECORD)
+        self.assertEqual((status, report), (slack_manifest.EXIT_SAME, ""))
+        older = copy.deepcopy(RECORD["manifests"]["agent"])
+        older["oauth_config"]["scopes"]["bot"].remove("reactions:write")
+        installed["agent"] = raw_from(older)
+        status, report = slack_manifest.compare(installed, RECORD)
+        self.assertEqual(status, slack_manifest.EXIT_DIFFERENT)
+        self.assertIn("The 'agent' experience's manifest differs", report)
+        self.assertNotIn("'assistant'", report)
+        self.assertIn("  + oauth_config.scopes.bot: reactions:write", report)
+
+    def test_the_full_set_finds_the_running_version_by_its_digest(self):
+        record = copy.deepcopy(RECORD)
+        older = copy.deepcopy(record["manifests"])
+        older["agent"]["oauth_config"]["scopes"]["bot"].remove("reactions:write")
+        record["changes"][0]["digest"] = slack_manifest.digest(older)
+        installed = {experience: raw_from(manifest) for experience, manifest in older.items()}
+        _, report = slack_manifest.compare(installed, record)
+        self.assertIn("What changed since the running version:", report)
+        self.assertNotIn(record["changes"][0]["note"], report)
+
+    def test_a_set_without_the_default_experience_is_refused(self):
+        with self.assertRaises(ValueError):
+            slack_manifest.compare({"agent": raw_from(RECORD["manifests"]["agent"])}, RECORD)
+        with self.assertRaises(ValueError):
+            slack_manifest.compare(
+                {"assistant": raw_from(RECORD["manifests"]["assistant"]), "extra": {}}, RECORD
+            )
 
     def test_the_cli_exit_codes(self):
         record_path = str(slack_manifest.RECORD)

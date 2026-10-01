@@ -39,6 +39,10 @@ import slack_manifest
 MANIFEST = "hermes_cli/slack_cli.py"
 FLAG = "KAGE_SLACK_UX"
 FLAG_STATES = (None, "1")
+# The name and description the emitted manifests are built with; normalizing
+# drops both, so any value compares the same.
+BOT_NAME = "Hermes"
+BOT_DESCRIPTION = "manifest verify"
 
 
 def _fail(detail: str) -> SystemExit:
@@ -68,7 +72,7 @@ def emitted(module) -> dict:
             results.append({
                 experience: slack_manifest.normalize(
                     module._build_full_manifest(
-                        "Hermes", "manifest verify", messaging_experience=experience
+                        BOT_NAME, BOT_DESCRIPTION, messaging_experience=experience
                     )
                 )
                 for experience in slack_manifest.EXPERIENCES
