@@ -6,7 +6,8 @@ posts ``chat.postMessage`` itself, through the credential proxy's Slack relay at
 the same authentication. With no relay configured nothing is posted and the
 caller keeps its text path. It does not read ``KAGE_SLACK_UX``; gating on the
 flag is the caller's job. ``bootstrap_delivery`` posts the first inventory
-report through it.
+report through it, and ``session_kv_server``'s cron relay the fleet-audit
+report.
 
 :func:`post` returns the message ts. It raises :class:`Refused` when Slack
 itself rejected the call, over the blocks or over anything else

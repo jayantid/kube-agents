@@ -1,8 +1,8 @@
 """Slack presentation for a fleet-audit report: a headline, the top findings, the ledger link.
 
-Pure functions only, like :mod:`slack_presenter`. Its intended caller is
-``session_kv_server.relay_cron_report``, which would find the ledger issue the
-report ends with (:func:`ledger_ref`), fetch it, and post
+Pure functions only, like :mod:`slack_presenter`. Its caller is
+``session_kv_server.relay_cron_report``, which finds the ledger issue the
+report ends with (:func:`ledger_ref`), fetches it, and posts
 :func:`blocks_from_issue`, or :func:`headline_from_issue` as text where Slack
 refuses the blocks, falling back to :func:`headline_fallback` when the fetch or
 the parse fails. The caller must fetch only issues in repositories it manages:
