@@ -6,7 +6,7 @@ with ``no_agent: true``. Its stdout is delivered verbatim by the cron
 scheduler to the job's configured target (``deliver: origin`` — the chat the
 user first spoke in, bound by the ``bootstrap_onboarding`` plugin).
 
-Delivery happens exactly once, and only when discovery has finished AND a
+Delivery is claimed exactly once, and only when discovery has finished AND a
 human has connected:
 
 - ``INVENTORY.md`` present  -> the background scan has produced the report.
@@ -15,11 +15,22 @@ human has connected:
 - ``.bootstrap_completed`` absent -> the report has not been delivered yet.
 
 When all three hold, the script claims delivery, prints ``INVENTORY.md``
-(delivered verbatim), sets the report aside, and removes the two onboarding
+(verbatim, or reshaped by ``inventory_presenter`` when ``KAGE_SLACK_UX`` is on
+and the job is bound to Slack), sets the report aside, and removes the two onboarding
 cron jobs. Otherwise it prints nothing, which the ``no_agent`` cron path treats
 as a silent run (no message).
 
-The claim is what makes "exactly once" true rather than merely likely.
+With the flag on, a Slack origin and the credential proxy's Slack relay in the
+environment, the report goes out as Block Kit instead (the headline, the top
+rows, the rest folded, and "start with" and "show all" buttons), posted here
+through ``slack_blocks_post`` because the scheduler's delivery takes text only.
+Then nothing is printed. Slack refusing the blocks themselves is retried once
+without the fold, whose findings then go in the thread, and printed if Slack
+refuses that post or it never reaches Slack; any other failure prints the text. A failure after the request was
+sent may have posted, so that path can send the report twice; see
+``_posted_as_blocks``.
+
+The claim is what makes "one delivery run per report" true rather than merely likely.
 ``.bootstrap_completed`` is created with ``O_CREAT | O_EXCL`` *before* anything
 reaches stdout, so of two runs racing on the same report — a scheduled tick and
 the plugin's ``trigger_job``, say — exactly one can win the create and emit;
@@ -29,7 +40,8 @@ sent the entire onboarding report twice.
 
 Because the prioritization stage writes a finished, presentation-ready
 ``INVENTORY.md``, no LLM is involved in delivery: what that stage produced is
-exactly what the user sees. The sweep's complete findings are a different file
+what the user sees, verbatim or, on Slack with the flag on, laid out again by
+``inventory_presenter`` without a model call. The sweep's complete findings are a different file
 (``INVENTORY.raw.md``) and are never delivered from here.
 """
 
@@ -44,6 +56,15 @@ DELIVERY_JOB_ID = "bootstrap-inventory-delivery"
 # of a sweep that can take many minutes over a whole fleet, and a chat message
 # is easy to lose; keeping it means a re-send is a `cat`, not a re-scan.
 DELIVERED_REPORT_NAME = "INVENTORY.delivered.md"
+
+# The only surface the reshaped report is written for; every other one gets it verbatim.
+PRESENTED_PLATFORM = "slack"
+
+# The delivery job's ``origin`` and the keys the plugin writes into it.
+ORIGIN_KEY = "origin"
+PLATFORM_KEY = "platform"
+CHAT_ID_KEY = "chat_id"
+THREAD_ID_KEY = "thread_id"
 
 
 def _data_dir() -> Path:
@@ -83,7 +104,7 @@ def _claim_delivery(data_dir: Path) -> bool:
 
 
 def _cleanup(data_dir: Path) -> None:
-    """Tidy up after the report has been emitted to stdout.
+    """Tidy up after the report has been posted as blocks or emitted to stdout.
 
     Onboarding is already marked complete by the delivery claim, so everything
     here is best-effort: a cleanup hiccup must never turn a delivered report
@@ -117,6 +138,115 @@ def _cleanup(data_dir: Path) -> None:
             sys.stderr.write(f"bootstrap_delivery: could not remove {job_id}: {e}\n")
 
 
+def _origin() -> dict:
+    """The origin the plugin bound this job's delivery to: ``platform``,
+    ``chat_id`` and ``thread_id``; empty if unknown.
+
+    The plugin writes the origin before ``.user_aligned``, so it is set by the
+    time a delivery can fire.
+    """
+    try:
+        from cron.jobs import get_job  # type: ignore import-not-found
+
+        job = get_job(DELIVERY_JOB_ID) or {}
+        return job.get(ORIGIN_KEY) or {}
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: could not read the delivery origin: {e}\n")
+        return {}
+
+
+def _origin_platform() -> str | None:
+    """The platform the plugin bound this job's delivery to, or None if unknown."""
+    return _origin().get(PLATFORM_KEY)
+
+
+def _presented(content: str) -> str:
+    """The report as delivered: reshaped when ``KAGE_SLACK_UX`` is on and the
+    job is bound to Slack, verbatim otherwise.
+
+    Both helpers ship beside this script in ``/opt/defaults/scripts``. Any
+    failure to load or reshape delivers the report verbatim, since this runs
+    after the claim and a lost report is not retried.
+    """
+    try:
+        import slack_presenter
+
+        if not slack_presenter.enabled() or _origin_platform() != PRESENTED_PLATFORM:
+            return content
+        import inventory_presenter
+
+        return inventory_presenter.present(content)
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: delivering verbatim: {e}\n")
+        return content
+
+
+def _posted_as_blocks(content: str) -> bool:
+    """Whether the report was posted to Slack as Block Kit; False posts nothing.
+
+    False, and the caller prints the text, unless the flag is on, the origin is
+    Slack with a chat id, the relay is configured and the report parses. Any
+    failure is False too, including one that may have posted (a timeout once
+    the request was sent): this report is sent once per install, and a second
+    copy of it is a smaller loss than none.
+    """
+    try:
+        import slack_presenter
+
+        if not slack_presenter.enabled():
+            return False
+        origin = _origin()
+        channel = str(origin.get(CHAT_ID_KEY) or "")
+        if origin.get(PLATFORM_KEY) != PRESENTED_PLATFORM or not channel:
+            return False
+        import inventory_presenter
+        import slack_blocks_post
+
+        if not slack_blocks_post.configured():
+            return False
+        thread_ts = str(origin.get(THREAD_ID_KEY) or "")
+        for fold_in_place in (True, False):
+            built = inventory_presenter.blocks(content, fold_in_place)
+            if built is None:
+                return False
+            blocks, text, rest = built
+            try:
+                ts = slack_blocks_post.post(channel, text, blocks, thread_ts)
+            except slack_blocks_post.Refused as e:
+                sys.stderr.write(f"bootstrap_delivery: Slack refused the report blocks ({e})\n")
+                # Only a refusal of the blocks themselves can pass with fewer;
+                # anything else (a bad channel, a missing scope) refuses again.
+                if not (slack_blocks_post.blocks_refused(e) and slack_presenter.has_fold(blocks)):
+                    return False
+                continue
+            if rest and not _post_rest(slack_blocks_post, channel, rest, thread_ts or ts):
+                sys.stdout.write(inventory_presenter.present_rest(content))
+                sys.stdout.flush()
+            return True
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: posting the report as text: {e}\n")
+    return False
+
+
+def _post_rest(poster, channel: str, rest: str, thread_ts: str) -> bool:
+    """Post the folded findings in the report's thread; False if they provably did not post.
+
+    The report has landed by then, so on a refusal, or a request that never
+    reached Slack, the caller prints the rest for the scheduler to deliver
+    instead of losing it. Any other failure may have posted, and is True: the
+    report above already carries these findings' count, so a missing thread
+    post costs less than a second copy of it.
+    """
+    try:
+        poster.post(channel, rest, None, thread_ts)
+    except (poster.Refused, poster.NotSent) as e:
+        sys.stderr.write(f"bootstrap_delivery: the rest of the findings were not posted: {e}\n")
+        return False
+    except Exception as e:
+        sys.stderr.write(f"bootstrap_delivery: the rest of the findings may not have posted: {e}\n")
+    return True
+
+
 def main(data_dir: Path | None = None) -> int:
     if data_dir is None:
         data_dir = _data_dir()
@@ -137,11 +267,12 @@ def main(data_dir: Path | None = None) -> int:
     if not _claim_delivery(data_dir):
         return 0  # another run is delivering this report — stay silent
 
-    sys.stdout.write(content)
-    sys.stdout.flush()
+    if not _posted_as_blocks(content):
+        sys.stdout.write(_presented(content))
+        sys.stdout.flush()
 
-    # Cleanup runs only after the report is safely on stdout (already captured
-    # by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
+    # Cleanup runs only after the report is posted or safely on stdout (already
+    # captured by the scheduler), so removing INVENTORY.md here cannot truncate delivery.
     _cleanup(data_dir)
     return 0
 
