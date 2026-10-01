@@ -120,7 +120,7 @@ def check_adapter(root: Path) -> None:
         raise _fail(f"{path} does not exist")
     tree = ast.parse(path.read_text())
     for name in HOOKS:
-        node = _method(tree, name)
+        node = _method(_adapter_class(tree), name)
         if not isinstance(node, ast.AsyncFunctionDef):
             raise _fail(f"{ADAPTER_CLASS}.{name}() is no longer async")
         body = node.body
@@ -158,9 +158,10 @@ def _adapter_class(tree: ast.Module) -> ast.ClassDef:
     return adapter
 
 
-def _method(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    """``name`` as defined on the adapter class, not a same-named def elsewhere in the module."""
-    for node in _adapter_class(tree).body:
+def _method(adapter: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    # The adapter class's own definition: one elsewhere in the module, or on a
+    # mixin, is not what the runtime calls through the adapter.
+    for node in adapter.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise _fail(f"{ADAPTER_CLASS} has no def {name}() for the runtime to call")
@@ -168,7 +169,8 @@ def _method(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionD
 
 def _check_members(tree: ast.Module) -> None:
     """The adapter members ``slack_ux_reactions`` calls, in the shape it calls them."""
-    react = _method(tree, UPSTREAM_HELPER)
+    adapter = _adapter_class(tree)
+    react = _method(adapter, UPSTREAM_HELPER)
     if not isinstance(react, ast.AsyncFunctionDef):
         raise _fail(f"{UPSTREAM_HELPER}() is no longer async")
     positional = tuple(a.arg for a in react.args.posonlyargs + react.args.args)
@@ -176,7 +178,7 @@ def _check_members(tree: ast.Module) -> None:
         raise _fail(
             f"{UPSTREAM_HELPER}() is not (self, {', '.join(REACT_POSITIONAL)}, *, {REACT_KEYWORD}): {positional}"
         )
-    target = _method(tree, TARGET_HELPER)
+    target = _method(adapter, TARGET_HELPER)
     if isinstance(target, ast.AsyncFunctionDef) or len(target.args.args) != 2:
         raise _fail(f"{TARGET_HELPER}() is not a plain (self, event) method")
     # Every value it can return, both arms of a conditional included: the
@@ -198,7 +200,6 @@ def _check_members(tree: ast.Module) -> None:
         raise _fail(f"{TARGET_HELPER}() does not return only ({', '.join(TARGET_RETURN)}) or None: {shapes}")
     # Every assignment in the adapter class, not one anywhere in the module:
     # the runtime calls .discard() on the attribute the adapter holds.
-    adapter = _adapter_class(tree)
     kinds = []
     for node in ast.walk(adapter):
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -259,6 +260,16 @@ def check_board_read(module, root: Path) -> None:
             conn.close()
         expected.add((kb.DEFAULT_BOARD, child))
         card(SECOND_BOARD, "open on the second board")
+        _, asking = card(kb.DEFAULT_BOARD, "blocked on the user")
+        _, parked = card(kb.DEFAULT_BOARD, "gave up")
+        conn = kc.connect(board=kb.DEFAULT_BOARD)
+        try:
+            kb.block_task(conn, asking, reason="which cluster?")
+            kb.block_task(conn, parked, reason="first stop")
+            # The dispatcher's give-up writes this event; reached here directly.
+            kb._append_event(conn, parked, "gave_up", {"failures": 2})
+        finally:
+            conn.close()
         card(kb.DEFAULT_BOARD, "finished", done=True)
         card(kb.DEFAULT_BOARD, "another thread", thread=OTHER_THREAD)
         card(SECOND_BOARD, "another platform", platform=OTHER_PLATFORM)
@@ -271,6 +282,9 @@ def check_board_read(module, root: Path) -> None:
         made_by = read[(kb.DEFAULT_BOARD, child)].creator
         if made_by != creator or read[(kb.DEFAULT_BOARD, fresh)].creator is not None:
             raise _fail(f"the kanban read does not see which card created a card: {made_by!r}")
+        stops = (read[(kb.DEFAULT_BOARD, asking)], read[(kb.DEFAULT_BOARD, parked)])
+        if [(c.status, c.gave_up) for c in stops] != [("blocked", False), ("blocked", True)]:
+            raise _fail(f"the kanban read does not tell a give-up from a block on the user: {stops!r}")
     finally:
         for name, value in saved.items():
             if value is None:
@@ -341,7 +355,8 @@ async def _drive(module) -> None:
 
     # A delegated answer: nothing at completion; the notifier's terminal event settles it.
     adapter = _StubAdapter()
-    boards[:] = [{}, {(module.DEFAULT_BOARD, CARD): module._Card("running")}]
+    # The third read is the settle's look for follow-up cards: none.
+    boards[:] = [{}, {(module.DEFAULT_BOARD, CARD): module._Card("running")}, {}]
     await module.on_processing_start(adapter, _event("is seeded-a healthy?"))
     await module.on_processing_complete(adapter, _event("is seeded-a healthy?"), success)
     if adapter.calls != [(CHANNEL, ASK_TS, "eyes", TEAM, False)]:
