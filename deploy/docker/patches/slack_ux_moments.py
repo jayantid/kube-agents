@@ -187,7 +187,7 @@ async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) ->
     key = _sub_key(sub)
     earlier = _questions.get(key)
     if earlier is not None:
-        # Its settle failed; the new question takes the slot, so keep this one for a retry.
+        # Still open: its settle failed or never ran. The new question takes the slot, so keep this one for a retry.
         _remember(_unsettled, (key, earlier[2]), earlier)
     blocks, text = moment
     ts = await _post(adapter, sub, blocks, text)
