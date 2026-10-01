@@ -180,14 +180,16 @@ so: an API call that needs the new scope fails with `missing_scope` inside the a
 the app never subscribed to is never delivered, so the feature that needed it simply does not
 appear.
 
-When Slack is enabled and the run moves the agent's image, `upgrade.sh` reads the manifest the
-running image prints and compares it with the one the target release ships. `--plan` with
-`--image-tag` compares too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a
-`--plan` without `--image-tag` do not: a dry run never contacts the install, and the others leave
-the agent's image where it is. If the two differ, the run prints the scopes, events,
-features and settings that are added, removed or changed, the release's note for each manifest
-change since the version you run, and these steps, and repeats the steps after the upgrade
-completes:
+When Slack is enabled and the run moves the agent's image, `upgrade.sh` reads the manifests the
+running image prints and compares them with the ones the target release ships. It reads all three
+variants (the default, `--agent-view` and `--no-assistant`), because nothing records which one
+your app was created from, and labels each one that differs. A plan that moves the image compares
+too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a plan that keeps the
+installed tag do not: a dry run never contacts the install, and the others leave the agent's image
+where it is. If a manifest differs, the run prints the scopes, events, features and settings that
+are added, removed or changed, the release's note for each manifest change since the version you
+run, and these steps, and a run that upgrades repeats the steps when it completes. Slash commands
+are not compared: the list depends on the plugins an install loads, not on the release.
 
 1. Print the new manifest from the upgraded agent:
 
@@ -196,8 +198,9 @@ completes:
      -- hermes slack manifest
    ```
 
-   Add `--name` and `--description` with your app's own, which the printed manifest otherwise
-   resets to Hermes defaults, and `--agent-view` if your app uses Slack's agent view.
+   Add the flag your app was created with, `--agent-view` or `--no-assistant`. The printed
+   manifest resets the app's name, description and long description to Hermes defaults; add
+   `--name`, `--description` and `--long-description` to keep your own.
 
 2. In the [Slack App Console](https://api.slack.com/apps), open your app's **Features → App
    Manifest**, replace the JSON with that output, and save.

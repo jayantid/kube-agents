@@ -18,9 +18,13 @@ shown. Two callers read it:
   emits must equal ``manifests``, and the last ``changes`` entry must carry its
   digests. A pull request that changes the manifest (an ``apply_slack_*.py``
   patch, or a Hermes pin whose ``slack_cli.py`` moved) therefore fails the build
-  until it updates the record and writes the note.
-- ``upgrade.sh``, through ``compare``: the running image's manifest against the
-  record in the checkout being upgraded to.
+  until it updates the record with the new digests. The build sees one tree, not
+  its history, so appending an entry rather than rewriting the last one is held
+  by review; ``changes`` is append-only by convention.
+- ``upgrade.sh``, through ``compare``: the running image's manifests, one per
+  experience, against the record in the checkout being upgraded to. The app was
+  created from one of them and nothing records which, so every experience that
+  differs is reported, labelled.
 
 Normalizing drops what does not need the app re-applied: metadata, display
 information (the name and description are the operator's), the bot user's
@@ -36,6 +40,11 @@ Usage::
 
     hermes slack manifest | slack_manifest.py normalize
     hermes slack manifest | slack_manifest.py compare slack_manifest.json
+    echo '{"assistant": {...}, "agent": {...}, "none": {...}}' |
+        slack_manifest.py compare slack_manifest.json
+
+``compare`` reads either one manifest, taken as the default experience, or an
+object holding a manifest per experience name.
 """
 
 from __future__ import annotations
@@ -52,7 +61,7 @@ RECORD = Path(__file__).with_name("slack_manifest.json")
 EXPERIENCES = ("assistant", "agent", "none")
 
 #: What ``hermes slack manifest`` prints with no flag, and so what ``compare``
-#: assumes the running image was asked for.
+#: takes a bare manifest on stdin to be.
 DEFAULT_EXPERIENCE = "assistant"
 
 DROPPED_TOP_LEVEL = ("_metadata", "display_information")
@@ -140,9 +149,11 @@ def record_problems(record: dict) -> list[str]:
             problems.append(f"changes[{index}] has no note")
         if not change.get("digest") or not change.get("assistant_digest"):
             problems.append(f"changes[{index}] lacks digest or assistant_digest")
-    digests = [change.get("digest") for change in changes]
-    if len(set(digests)) != len(digests):
-        problems.append("changes repeats a digest")
+    # A revert may return to an earlier manifest, so a digest can recur; two
+    # adjacent entries with one digest record no change at all.
+    for index in range(1, len(changes)):
+        if changes[index].get("digest") == changes[index - 1].get("digest"):
+            problems.append(f"changes[{index}] repeats the digest of the entry before it")
     for key, value in expected_change(manifests).items():
         if changes[-1].get(key) != value:
             problems.append(
@@ -168,25 +179,42 @@ def differences(installed: dict, target: dict) -> list[str]:
 
 
 def compare(installed_raw: dict, record: dict) -> tuple[int, str]:
-    """Diff the running manifest against the record's, with the notes since it."""
-    installed = normalize(installed_raw)
-    lines = differences(installed, record["manifests"][DEFAULT_EXPERIENCE])
-    if not lines:
+    """Diff the running manifests against the record's, with the notes since them.
+
+    ``installed_raw`` is one manifest (the default experience) or a dict of them
+    keyed by experience. The running version is looked up by the digest of all
+    three when all three are given, else by the default experience's alone.
+    """
+    if any(key in installed_raw for key in EXPERIENCES):
+        unknown = sorted(set(installed_raw) - set(EXPERIENCES))
+        if unknown or DEFAULT_EXPERIENCE not in installed_raw:
+            raise ValueError(
+                f"stdin must hold {DEFAULT_EXPERIENCE!r} and no key outside "
+                f"{', '.join(EXPERIENCES)}"
+            )
+        raws = installed_raw
+    else:
+        raws = {DEFAULT_EXPERIENCE: installed_raw}
+    installed = {experience: normalize(raw) for experience, raw in raws.items()}
+    report = []
+    for experience in EXPERIENCES:
+        if experience not in installed:
+            continue
+        lines = differences(installed[experience], record["manifests"][experience])
+        if lines:
+            report.append(
+                f"The {experience!r} experience's manifest differs from the running one "
+                "(+ added, - removed, ~ changed):"
+            )
+            report.extend(f"  {line}" for line in lines)
+    if not report:
         return EXIT_SAME, ""
     changes = record["changes"]
-    installed_digest = digest(installed)
-    seen = [
-        index
-        for index, change in enumerate(changes)
-        if change.get("assistant_digest") == installed_digest
-    ]
-    report = [
-        (
-            "The target version's Slack app manifest differs from the running one "
-            f"(the {DEFAULT_EXPERIENCE!r} experience; + added, - removed, ~ changed):"
-        ),
-        *(f"  {line}" for line in lines),
-    ]
+    if sorted(installed) == sorted(EXPERIENCES):
+        key, installed_digest = "digest", digest(installed)
+    else:
+        key, installed_digest = "assistant_digest", digest(installed[DEFAULT_EXPERIENCE])
+    seen = [index for index, change in enumerate(changes) if change.get(key) == installed_digest]
     if seen:
         notes = changes[seen[-1] + 1 :]
         report.append("What changed since the running version:")

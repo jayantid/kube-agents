@@ -71,9 +71,9 @@ readonly SLACK_MANIFEST_TOOL="deploy/docker/patches/slack_manifest.py"
 readonly SLACK_MANIFEST_RECORD="deploy/docker/patches/slack_manifest.json"
 # slack_manifest.py compare's exit status when the two manifests differ.
 readonly SLACK_MANIFEST_DIFFERS=1
-# Bounds the exec that reads the running manifest: a wedged pod must not hold
-# up an upgrade over a check that is advisory.
-readonly SLACK_MANIFEST_READ_TIMEOUT="60s"
+# How often read_slack_manifest checks on its exec; the two must agree.
+readonly SLACK_MANIFEST_POLL_INTERVAL="0.1"
+readonly SLACK_MANIFEST_POLLS_PER_SECOND=10
 
 # Default CLI Configuration
 PARAM_UPGRADE_MODE="full"
@@ -453,6 +453,11 @@ SANDBOX_ROLLOUT_TIMEOUT="180s"
 # Set by check_slack_manifest when the target's Slack manifest differs from the
 # running one, so the end of the run can repeat the re-apply steps.
 SLACK_MANIFEST_CHANGED="false"
+
+# Bounds each exec that reads a running manifest: a wedged pod must not hold up
+# an upgrade over a check that is advisory. kubectl's --request-timeout does
+# not bound an exec stream, so read_slack_manifest kills it after this long.
+SLACK_MANIFEST_READ_TIMEOUT_SECONDS=60
 
 backfill_sandbox_ssh_key() {
   local namespace="$1"
@@ -1343,18 +1348,29 @@ check_slack_manifest() {
     print_info "These sources carry no Slack manifest record, so the Slack app's manifest is not compared."
     return 0
   fi
-  local installed=""
-  # `trap - ERR` for the bash 3.2 reason write_tfvars_from_state gives.
-  if ! installed="$(trap - ERR; kubectl exec "deployment/${PLATFORM_AGENT_DEPLOYMENT}" \
-    -c "$PLATFORM_AGENT_CONTAINER" -n "$namespace" --request-timeout="$SLACK_MANIFEST_READ_TIMEOUT" \
-    -- hermes slack manifest 2>/dev/null)"; then
+  # The app was created from one of the three experiences and nothing records
+  # which, so all three are read; the default one must be, the other two are
+  # left out of the comparison when the running image cannot print them.
+  local read_dir="" installed=""
+  read_dir="$(mktemp -d)"
+  if ! read_slack_manifest "$namespace" "${read_dir}/assistant"; then
+    rm -rf "$read_dir"
     print_warning "Could not read the running Slack manifest from deployment/${PLATFORM_AGENT_DEPLOYMENT}, so it is not compared. After the upgrade, compare the app's manifest with what \`hermes slack manifest\` prints."
     return 0
   fi
+  installed="\"assistant\": $(cat "${read_dir}/assistant")"
+  if read_slack_manifest "$namespace" "${read_dir}/agent" --agent-view; then
+    installed="${installed}, \"agent\": $(cat "${read_dir}/agent")"
+  fi
+  if read_slack_manifest "$namespace" "${read_dir}/none" --no-assistant; then
+    installed="${installed}, \"none\": $(cat "${read_dir}/none")"
+  fi
+  rm -rf "$read_dir"
   local report="" status=0
-  report="$(trap - ERR; printf '%s' "$installed" | python3 "$tool" compare "$record" 2>&1)" || status=$?
+  # `trap - ERR` for the bash 3.2 reason write_tfvars_from_state gives.
+  report="$(trap - ERR; printf '{%s}' "$installed" | python3 "$tool" compare "$record" 2>&1)" || status=$?
   if [ "$status" -eq 0 ]; then
-    print_success "The Slack app's manifest is the same in this version."
+    print_success "This version does not change the Slack app's manifest."
   elif [ "$status" -eq "$SLACK_MANIFEST_DIFFERS" ]; then
     SLACK_MANIFEST_CHANGED="true"
     print_warning "This version changes the Slack app's manifest. The app keeps its old one until you re-apply it."
@@ -1365,11 +1381,35 @@ check_slack_manifest() {
   fi
 }
 
+# Writes `hermes slack manifest [flags]` from the running agent to out_file,
+# killing the exec after SLACK_MANIFEST_READ_TIMEOUT_SECONDS. Fails when the
+# exec fails or is killed. Call it as a condition, so neither set -e nor the
+# ERR trap fires on that failure.
+read_slack_manifest() {
+  local namespace="$1" out_file="$2"
+  shift 2
+  kubectl exec "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -c "$PLATFORM_AGENT_CONTAINER" \
+    -n "$namespace" -- hermes slack manifest "$@" >"$out_file" 2>/dev/null &
+  local pid=$! polls=0
+  local limit=$((SLACK_MANIFEST_READ_TIMEOUT_SECONDS * SLACK_MANIFEST_POLLS_PER_SECOND))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$polls" -ge "$limit" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 1
+    fi
+    sleep "$SLACK_MANIFEST_POLL_INTERVAL"
+    polls=$((polls + 1))
+  done
+  wait "$pid"
+}
+
 print_slack_manifest_steps() {
   local namespace="$1"
   print_info "Once the upgrade completes, re-apply the manifest:"
   echo "    1. kubectl exec deploy/${PLATFORM_AGENT_DEPLOYMENT} -c ${PLATFORM_AGENT_CONTAINER} -n ${namespace} -- hermes slack manifest"
-  echo "       Add --name and --description to keep your app's own, and --agent-view if it uses the agent view."
+  echo "       Add the flag your app was created with: --agent-view or --no-assistant. The output resets the app's name,"
+  echo "       description and long description; add --name, --description and --long-description to keep your own."
   echo "    2. In the Slack App Console, open the app's Features -> App Manifest, replace the JSON with that output, and save."
   echo "    3. Reinstall the app to the workspace when Slack prompts, which grants any new scope."
 }
@@ -1625,9 +1665,9 @@ main() {
   local target_namespace="${PARAM_AGENT_NAMESPACE:-${NAMESPACE:-$DEFAULT_NAMESPACE}}"
   export NAMESPACE="$target_namespace"
 
-  # Empty here means the run keeps the tag the install already serves (a plan
-  # without --image-tag, or --keep-image-tag), so the agent's image, and with it
-  # the Slack manifest, does not move.
+  # Empty here means the run keeps the tag the install already serves
+  # (--keep-image-tag, or a plan with no --image-tag, IMAGE_TAG or baked release
+  # version), so the agent's image, and with it the Slack manifest, does not move.
   local image_moves="true"
   [ -n "$PARAM_IMAGE_TAG" ] || image_moves="false"
 
