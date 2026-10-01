@@ -76,10 +76,10 @@ NEEDS_INPUT = "needs_input"
 #: The event kind a posted question arrives as, and the one its wake is for.
 BLOCKED_KIND = "blocked"
 
-#: Added to the ``blocked`` wake when the question is already in the thread.
+#: Added to the ``blocked`` wake when the question is already posted.
 WAKE_NOTE = (
-    "The specialist's question is already posted in this thread, in the specialist's words, as "
-    "its own message with its choices. Do not restate, paraphrase or acknowledge it. If nothing else "
+    "The specialist's question is already posted to the user as its own message, in the "
+    "specialist's words. Do not restate, paraphrase or acknowledge it. If nothing else "
     "in this notification needs saying, reply with exactly [SILENT]. When the user answers, "
     "typed or clicked, carry the answer to the card with kanban_comment, then kanban_unblock."
 )
