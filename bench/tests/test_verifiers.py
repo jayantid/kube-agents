@@ -3568,3 +3568,51 @@ def test_the_ack_voice_objectives_read_the_whole_closing_message(final_message):
 )
 def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
     assert not _ack_voice_hits(final_message), final_message
+
+
+_SILENT_CASE = TASKS / "chat-question-wake-stays-silent" / "task.yaml"
+# hermes-agent v2026.9.14 gateway/response_filters.py LIVE_GATEWAY_SILENT_MARKERS:
+# a reply that is one of these, case-insensitively and with edge punctuation
+# stripped, is never sent. Bump with the image's hermes pin.
+_GATEWAY_SILENT_MARKERS = ("[SILENT]", "SILENT", "NO_REPLY", "NO REPLY")
+
+
+def _silence_verdict(reply: str) -> str:
+    spec = yaml.safe_load(_SILENT_CASE.read_text())
+    entries = [e for e in spec["verification_spec"] if e["name"] == "the-wake-reply-is-silent"]
+    assert len(entries) == 1, _SILENT_CASE
+    check = {k: v for k, v in entries[0]["check"].items() if k != "type"}
+    transcript.set(reply, [], final_message=reply)
+    return ReportContainsVerifier(type="report_contains", **check).verify(5).status
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        "  \n",
+        *_GATEWAY_SILENT_MARKERS,
+        *(m.lower() for m in _GATEWAY_SILENT_MARKERS),
+        *(f"{m}." for m in _GATEWAY_SILENT_MARKERS),
+        "*NO_REPLY*",
+        "`[SILENT]`",
+        "  silent  ",
+        "NO  REPLY!",
+    ],
+)
+def test_the_question_wake_case_accepts_every_gateway_silent_marker(reply):
+    assert _silence_verdict(reply) == "pass", repr(reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "[SILENT] ok",
+        "silent please",
+        "Which should I look at: seeded-a or seeded-b?",
+        "the platform agent asked which cluster to check.",
+        "no",
+    ],
+)
+def test_the_question_wake_case_fails_anything_else(reply):
+    assert _silence_verdict(reply) == "fail", repr(reply)
