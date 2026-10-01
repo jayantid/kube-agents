@@ -3558,7 +3558,7 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
         ),
         (
             "The investigation timed out twice and will be retried.",
-            ["the-reply-does-not-say-it-is-being-retried"],
+            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
         ),
         (
             "The check gave up, though the system will retry it shortly.",
@@ -3566,7 +3566,25 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
         ),
         (
             "The check timed out. It will retry on its own.",
-            ["the-reply-does-not-say-it-is-being-retried"],
+            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
+        ),
+        # Any future retry, whoever is said to run it.
+        *(
+            (f"The check on bench-sandbox timed out and gave up. {tail}", ["the-reply-does-not-say-it-is-being-retried"])
+            for tail in (
+                "It will try again shortly.",
+                "Another attempt is queued.",
+                "The specialist will retry it.",
+                "It will run again automatically.",
+                "Hermes will retry.",
+                "It's queued to retry.",
+                "It'll be re-tried in a few minutes.",
+            )
+        ),
+        # A count of attempts is not the run being over.
+        (
+            "The check on bench-sandbox timed out twice, on both attempts.",
+            ["the-reply-says-it-stopped"],
         ),
         (
             "invoice-renderer's restart check on bench-sandbox timed out.",
@@ -3587,6 +3605,9 @@ def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_m
         "retried, so nothing to do yet.",
         "The restart check on bench-sandbox hit a worker crash and the dispatcher is trying again.",
         "**invoice-renderer** check: the worker exited, and another attempt is on its way.",
+        # A failure in the reason is not the final announcement.
+        "The worker crashed and the logs could not be read; it's being retried.",
+        "I couldn't get an answer yet: the worker crashed, and the dispatcher will retry it.",
         # A delivered result is the specialist's voice, not the front door's.
         "The worker crashed and is being retried.\n\n"
         "Result of delegated task t_cc52a43d:\nI couldn't read the logs.",
@@ -3601,11 +3622,11 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
     [
         (
             "I couldn't find why invoice-renderer restarts on bench-sandbox: the worker crashed.",
-            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+            ["the-reply-says-it-is-being-retried"],
         ),
         (
             "The check on bench-sandbox gave up; it won't be retried.",
-            ["the-reply-does-not-call-it-final"],
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
         ),
         (
             "The worker crashed and is not being retried.",
@@ -3613,7 +3634,13 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             "The worker crashed. I was unable to finish the check, so I'll retry it.",
-            ["the-reply-does-not-call-it-final"],
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        # An offer is not the fact: main's "offer a retry or a re-route".
+        *(
+            (f"The worker checking invoice-renderer on bench-sandbox crashed. {offer}",
+             ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"])
+            for offer in ("Want me to retry it?", "I can retry it or re-route it.", "Should I file a retry?")
         ),
         (
             "The worker checking invoice-renderer on bench-sandbox crashed.",

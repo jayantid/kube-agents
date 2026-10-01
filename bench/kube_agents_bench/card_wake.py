@@ -52,7 +52,8 @@ one wake carries both (``outcome: crashed_final`` or ``timed_out_final``) and
 its status names both: gave up, and that the dispatcher will retry. The plant
 records each attempt as the dispatcher does, the event and then
 ``_record_task_failure``, which counts it and trips on its own: one attempt
-for a retry, two for a final one. The card is assigned to
+for a retry, and as many as the image's ``DEFAULT_FAILURE_LIMIT`` for a final
+one. The card is assigned to
 :data:`WORKER_ASSIGNEE` before it fails, a profile no install has, so a
 retrying card left ``ready`` never starts a worker.
 
@@ -65,7 +66,12 @@ code.
 
 Unlike :mod:`kube_agents_bench.board`, a failed plant is not best effort: a
 run that never saw the wake grades nothing, so :func:`plant` raises and the
-harness records the run as infrastructure.
+harness records the run as infrastructure. The exception is a breaker that
+disagrees with the outcome (a retry that trips it, a final attempt that does
+not): the image's dispatcher no longer retries the way the case asserts, so
+:func:`plant` raises :class:`ReplayMismatch` and the harness records an
+errored run, which fails, rather than an infrastructure one, which the gate
+excludes.
 """
 
 from __future__ import annotations
@@ -85,6 +91,7 @@ __all__ = [
     "Failure",
     "Planted",
     "Replay",
+    "ReplayMismatch",
     "ReplayUnavailable",
     "archive",
     "merge",
@@ -160,7 +167,13 @@ import asyncio, json, os, sys
 STUB_TS = "1700000000.000200"
 STUB_PID = 4242
 STUB_ELAPSED, STUB_LIMIT = 1830, 1800
-out = {"card": None, "wake": None, "posted": 0, "error": None}
+# A final attempt's wake: its own crashed or timed_out event, then gave_up.
+FINAL_BATCH = 2
+out = {"card": None, "wake": None, "posted": 0, "error": None, "mismatch": None}
+
+
+class BreakerMismatch(RuntimeError):
+    pass
 
 
 class _Client:
@@ -226,19 +239,19 @@ try:
             extra = {"pid": STUB_PID, "sigkill": False, "retry_status": "ready"}
         # Each attempt as the dispatcher records it: the event, then the
         # breaker's count, which appends gave_up when it trips. A final
-        # attempt is the second.
-        for _attempt in range(2 if final else 1):
+        # attempt is the one that reaches the image's own limit.
+        for _attempt in range(dispatch.DEFAULT_FAILURE_LIMIT if final else 1):
             with kb.write_txn(conn):
                 kb._append_event(conn, card, trigger, payload)
             tripped = dispatch._record_task_failure(conn, card, REASON, outcome=trigger,
                                                     event_payload_extra=extra)
         if tripped != final:
-            raise RuntimeError("card %s %s its failure breaker"
-                               % (card, "tripped" if tripped else "did not trip"))
+            raise BreakerMismatch("card %s %s its failure breaker"
+                                  % (card, "tripped" if tripped else "did not trip"))
         kind = "gave_up" if final else trigger
         # The notifier claims every event since its cursor, so a final
         # attempt's crash or timeout reaches the wake with the gave_up after it.
-        batch = 2 if final else 1
+        batch = FINAL_BATCH if final else 1
     elif OUTCOME == "gave_up":
         from hermes_cli import kanban_db_dispatch as dispatch
         # force_trip records gave_up and parks the card on its first failure,
@@ -279,7 +292,7 @@ try:
         raise RuntimeError("the notifier built no wake for card %s" % card)
     out.update(wake=wake.synth, posted=len(adapter.posts))
 except Exception as exc:
-    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+    out["mismatch" if isinstance(exc, BreakerMismatch) else "error"] = "%s: %s" % (type(exc).__name__, exc)
     if conn is not None and out["card"]:
         try:
             kb.archive_task(conn, out["card"])
@@ -310,6 +323,10 @@ print(json.dumps(out))
 
 class ReplayUnavailable(RuntimeError):
     """The replay's card or wake could not be produced in the pod."""
+
+
+class ReplayMismatch(RuntimeError):
+    """The image's failure breaker disagrees with the replay's outcome."""
 
 
 @dataclass(frozen=True)
@@ -435,6 +452,8 @@ def _reply(text: str, what: str) -> dict:
         raise ReplayUnavailable(f"{what}: reply is not JSON ({exc})") from exc
     if not isinstance(payload, dict):
         raise ReplayUnavailable(f"{what}: reply is not an object")
+    if payload.get("mismatch"):
+        raise ReplayMismatch(f"{what}: {payload['mismatch']}")
     if payload.get("error"):
         raise ReplayUnavailable(f"{what}: {payload['error']}")
     return payload
@@ -445,8 +464,9 @@ def plant(shell: Callable[[str, float], str], replay: Replay | Failure, timeout:
 
     ``shell`` is :func:`harness._agent_shell`. Raises
     :class:`ReplayUnavailable` when the script did not run, its reply is not
-    JSON, or it reported an error; the script archives a card it filed
-    before failing.
+    JSON, or it reported an error, and :class:`ReplayMismatch` when the
+    image's failure breaker disagreed with the outcome; the script archives a
+    card it filed before failing.
     """
     what = "failure wake" if isinstance(replay, Failure) else "question wake"
     payload = _reply(shell(plant_command(replay), timeout), what)

@@ -1633,6 +1633,10 @@ class KubeAgentsHarness(AgentHarness):
             )
         try:
             planted = card_wake.plant(_agent_shell, replay, _EXEC_TIMEOUT)
+        except card_wake.ReplayMismatch as exc:
+            # Not infrastructure: the image no longer retries as the case
+            # asserts, and an excluded run would leave the case silent.
+            return AgentResult.errored(str(exc))
         except card_wake.ReplayUnavailable as exc:
             return _infra_failure(str(exc))
         pinned = _PINNED_RUN_ID.set(_run_id())

@@ -57,7 +57,10 @@ domain: chat-and-routing
 owner: jayantid
 
 verification_spec:
-  # The retry, said in the front door's own words or the wake's.
+  # The retry stated as a fact, in the front door's own words or the wake's.
+  # Each phrase says the card is being run again; none is satisfied by an
+  # offer ("want me to retry it?", "I can retry it"), which main's "offer a
+  # retry or a re-route" already produces without the fact.
   - name: the-reply-says-it-is-being-retried
     role: objective
     # assert, not the converge default: the transcript is immutable once the
@@ -66,25 +69,51 @@ verification_spec:
     check:
       type: report_contains
       any_of_phrases:
-        - "retr"
+        - "being retried"
+        - "being re-tried"
+        - "being re-run"
+        - "being rerun"
+        - "will be retried"
+        - "will be re-run"
+        - "will retry"
+        - "'ll retry"
+        - "is retrying"
+        - "'s retrying"
+        - "retrying it"
+        - "retrying the"
+        - "retrying now"
+        - "retrying automatically"
         - "trying again"
-        - "try again"
+        - "running it again"
+        - "will run again"
+        - "will run it again"
+        - "re-running"
+        - "rerunning"
         - "another attempt"
         - "next attempt"
-        - "second attempt"
-        - "re-run"
-        - "rerun"
-        - "running it again"
-  # Not the final-failure announcement: no "gave up", no "couldn't", and
-  # no retry denied ("won't be retried"), which would otherwise satisfy the
-  # objective above.
+        - "requeued"
+        - "back in the queue"
+  # No retry offered or started beside the dispatcher's: the reply files
+  # nothing beside it, in words as in tools. An offer-only reply is also
+  # what main's SOUL produces, so this is the half of the red the fact
+  # alone cannot carry.
+  - name: the-reply-does-not-offer-the-retry
+    role: objective
+    mode: assert
+    check:
+      type: report_contains
+      forbidden_patterns:
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want me to|would you like me to|i can|i could|i''ll|i will|let me)(?: \w+){0,2}? (?:retry|re-?try|re-?run|try (?:it |that |this )?again|run (?:it |that |this )?again|another attempt|a retry|a re-?run)'
+  # Not the final-failure announcement: no "gave up" and no retry denied
+  # ("won't be retried"). A failure in the reason ("the logs could not be
+  # read") is not a final announcement, so "couldn't" is not forbidden.
   - name: the-reply-does-not-call-it-final
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|given up|giving up|couldn[''’]t|could not|unable to|(?:won[''’]t|will not|isn[''’]t|is not|not) (?:be |being )?retr)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|given up|giving up|retries exhausted|out of retries|no more retries|(?:won''t|will not|isn''t|is not|not) (?:be |being )?re-?tr)'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard

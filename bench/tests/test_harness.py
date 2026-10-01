@@ -3288,6 +3288,23 @@ def test_a_failure_wake_that_errors_keeps_its_card_and_wake_and_archives_the_car
     assert card_wake.archive_command(_REPLAY_CARD) in scripts
 
 
+def test_a_failure_wake_whose_breaker_disagrees_is_an_errored_run_not_infrastructure(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    mismatch = json.dumps(
+        {"card": None, "wake": None, "posted": 0, "error": None,
+         "mismatch": "BreakerMismatch: card t_1 tripped its failure breaker"}
+    )
+    reply = f"{card_wake.REPLAY_PRESENT}\n{mismatch}"
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell([], plant_reply=reply))
+
+    result = KubeAgentsHarness().run(_FAILURE_PROMPT)
+
+    assert result.errors == ["failure wake: BreakerMismatch: card t_1 tripped its failure breaker"]
+    assert harness.INFRA_FAILURE_MARKER not in result.errors[0]
+    assert stub_agent.requests == []
+
+
 def test_a_failure_wake_needs_the_api_transport(
     monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
 ) -> None:

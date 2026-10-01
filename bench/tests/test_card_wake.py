@@ -491,13 +491,31 @@ def test_a_final_worker_failure_wakes_with_its_gave_up(
     )
 
 
-def test_a_worker_failure_the_breaker_disagrees_with_archives_the_card(
+def test_a_final_worker_failure_follows_the_images_failure_limit(
+    hermes_root: Path, tmp_path: Path
+) -> None:
+    prompt = FAILURE_PROMPT.replace("outcome: blocked", "outcome: timed_out_final")
+    shell = _shell_for(hermes_root, tmp_path, prompt, FAKE_FAILURE_LIMIT="3")
+
+    planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+
+    assert planted.wake.startswith(
+        f"[kanban] Task {planted.card} gave up (retries exhausted), timed out; dispatcher will retry.\n"
+    )
+    board = _board(tmp_path)
+    assert board["tasks"][planted.card]["failures"] == 3
+    assert [e["kind"] for e in board["events"]] == ["assigned"] + ["timed_out"] * 3 + ["gave_up"]
+
+
+def test_a_worker_failure_the_breaker_disagrees_with_is_a_mismatch_and_archives_the_card(
     hermes_root: Path, tmp_path: Path
 ) -> None:
     prompt = FAILURE_PROMPT.replace("outcome: blocked", "outcome: crashed")
     shell = _shell_for(hermes_root, tmp_path, prompt, FAKE_FAILURE_LIMIT="1")
 
-    with pytest.raises(card_wake.ReplayUnavailable, match="tripped its failure breaker"):
+    # A mismatch, not ReplayUnavailable: the harness records it as errored, so
+    # the case reds rather than being excluded as infrastructure.
+    with pytest.raises(card_wake.ReplayMismatch, match="tripped its failure breaker"):
         card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
 
     [card] = _board(tmp_path)["tasks"].values()
