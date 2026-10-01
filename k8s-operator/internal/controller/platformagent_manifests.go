@@ -4257,7 +4257,8 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 	//
 	// KAGE_SLACK_UX switches the Slack adapter between code paths already in
 	// the image: which reaction goes on an ask and when it settles, and whether
-	// a click on kube-agents' own choice buttons is answered. A click goes
+	// a click on kube-agents' own choice buttons is answered, and whether an
+	// incident's triage report edits its own alert in place. A click goes
 	// through the adapter's interactive authorization and the same channel and
 	// user checks a typed message gets, so it can do nothing its clicker could
 	// not do by typing. It is compared against `FLAG_ON_VALUES` in

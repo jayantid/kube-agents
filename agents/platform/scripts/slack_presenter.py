@@ -3,10 +3,10 @@
 Pure functions, plus ``ack_link_click``, the no-op handler a caller registers
 for link buttons. Nothing here imports the Hermes gateway, the Slack SDK or
 the network, so any process that posts to Slack can use it, and it can move
-with Slack ingress when it leaves the gateway. Its callers are the gateway
-patches for reactions (``slack_ux_reactions``, which the kanban notifier
-also reaches) and button clicks (``slack_ux_clicks``), which uses the action
-ids and the link ack; the answer layout has no caller yet.
+with Slack ingress when it leaves the gateway. Its callers include the
+gateway patches for reactions (``slack_ux_reactions``, which the kanban
+notifier also reaches), incident triage (``slack_ux_incident``) and button
+clicks (``slack_ux_clicks``).
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
