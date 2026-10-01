@@ -153,6 +153,11 @@ IN_PROGRESS = "⏳"
 FINISHED = "✓"
 STOPPED = "⏹"
 
+#: Under ``KAGE_SLACK_UX``, the marker a card's rolling message settles to when
+#: the thread's plan takes the card's notes over: the card still runs, and its
+#: notes go on the plan below.
+MOVED_TO_PLAN = "↓"
+
 #: The kinds that make a failure line the card still holds stale: the card
 #: recovered, and its report or review handoff is posting. So does a ``status``
 #: event moving the card to :data:`SUPERSEDING_STATUS`, a card dragged to done.
@@ -194,6 +199,21 @@ MARKER_MAX = 2
 #: them before any send. With ``KAGE_SLACK_UX`` on they still move a Slack
 #: card's row in the thread's plan; see :func:`silent_event`.
 SILENT_PLAN_KINDS = ("archived", "unblocked")
+
+#: Kinds that settle a plan row past an earlier ``unblocked`` in the same
+#: batch: every kind ``slack_status.TASK_STATUS_BY_KIND`` maps to a status
+#: other than running, plus ``archived``. ``crashed`` and ``timed_out`` are
+#: not among them, since the dispatcher retries the card and its row stays
+#: running; see :func:`_overtaken`.
+SETTLING_KINDS = (
+    "archived",
+    "blocked",
+    "block_loop_detected",
+    "changes_requested",
+    "completed",
+    "gave_up",
+    "review_requested",
+)
 
 #: Attribute the map hangs off on the watcher instance. Same lazily-initialised
 #: pattern as upstream's ``_kanban_sub_fail_counts``.
@@ -427,9 +447,11 @@ def _slack_plan(quiet: Any) -> Any:
         return None
 
 
-async def _plan_row(plan: Any, adapter: Any, sub: dict, event_id: int, title: str, line: str) -> bool:
+async def _plan_row(
+    plan: Any, adapter: Any, sub: dict, event_id: int, title: str, line: str, moved: Optional[str],
+) -> bool:
     try:
-        return bool(await plan.deliver_row(adapter, sub, event_id, title, line))
+        return bool(await plan.deliver_row(adapter, sub, event_id, title, line, moved))
     except Exception as exc:  # noqa: BLE001 — fall back to the progress line
         logger.debug("kanban progress: the plan row for %s failed: %s", sub.get("task_id"), exc)
         return False
@@ -502,6 +524,30 @@ async def _pr_opened(moments: Any, adapter: Any, sub: dict, text: str, result: A
         logger.debug("kanban progress: the PR message for %s failed: %s", sub.get("task_id"), exc)
 
 
+def _overtaken(notification: Any, ev: Any) -> bool:
+    """Whether a silent event is a redelivery, or one a later event in its batch settles past.
+
+    A delivery that fails after its pings (a wake not accepted, a wake or a
+    send that raised) rewinds the claim, and the batch is delivered again.
+    Upstream skips a ping already sent by ``last_ping_event_id``, but a silent
+    kind is never recorded there, so a replayed ``unblocked`` would undo the
+    ``blocked`` after it: the row running and Working… held while the card
+    waits on you. A later event that settles the card in the same batch
+    (:data:`SETTLING_KINDS`) wins even when recording its ping failed and
+    ``last_ping_event_id`` lags it; a note or a retried failure does not.
+    """
+    event_id = int(getattr(ev, "id", 0) or 0)
+    if event_id and event_id <= int(notification.sub.get("last_ping_event_id") or 0):
+        return True
+    batch = getattr(notification, "d", None)
+    events = batch.get("events") if isinstance(batch, dict) else None
+    return any(
+        int(getattr(later, "id", 0) or 0) > event_id
+        and str(getattr(later, "kind", "") or "") in SETTLING_KINDS
+        for later in events or ()
+    )
+
+
 async def silent_event(notification: Any, ev: Any) -> None:
     """Move a Slack card's plan row on a kind upstream keeps silent.
 
@@ -510,12 +556,13 @@ async def silent_event(notification: Any, ev: Any) -> None:
     without this a card archived by hand would hold its row running, and the
     thread's Working…, and an unblocked card would stay waiting on you, with
     its question's buttons still live, until its next note. Only
-    :data:`SILENT_PLAN_KINDS`, only with ``KAGE_SLACK_UX`` on for a Slack card,
+    :data:`SILENT_PLAN_KINDS`, never one replayed or overtaken
+    (:func:`_overtaken`), only with ``KAGE_SLACK_UX`` on for a Slack card,
     and never raises: it runs inside the send loop.
     """
     try:
         kind = str(getattr(ev, "kind", "") or "")
-        if kind not in SILENT_PLAN_KINDS:
+        if kind not in SILENT_PLAN_KINDS or _overtaken(notification, ev):
             return
         sub = notification.sub
         adapter = getattr(notification, "adapter", None)
@@ -546,10 +593,15 @@ def _explained_by_wake(quiet: Any, sub: dict, kind: str) -> bool:
 
 def _supersedes(kind: str, payload: object) -> bool:
     """Whether an event says the card recovered, so a failure it still holds is stale."""
-    if kind in SUPERSEDING_KINDS:
-        return True
-    status = payload.get("status") if kind == "status" and isinstance(payload, dict) else None
-    return str(status or "").strip() == SUPERSEDING_STATUS
+    return kind in SUPERSEDING_KINDS or _moved_to(kind, payload) == SUPERSEDING_STATUS
+
+
+def _moved_to(kind: str, payload: object) -> Optional[str]:
+    """The column a ``status`` event moved the card to, ``""`` if it names none; None for another kind."""
+    if kind != "status":
+        return None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    return str(status or "").strip()
 
 
 def _drop_superseded(watcher: Any, sub: dict, kind: str, ev: Any, event_id: int) -> None:
@@ -682,25 +734,42 @@ async def deliver(
             await _pr_opened(moments, adapter, sub, message, result)
         return result
 
-    line = rolling_line(kind, getattr(ev, "payload", None)) or message
+    payload = getattr(ev, "payload", None)
+    line = rolling_line(kind, payload) or message
     moments = _slack_moments(quiet)
     await _settle_question(moments, adapter, sub, kind)
-    result = await _roll(adapter, sub, metadata, header, title, line, _slack_plan(quiet), event_id, tracked)
+    result = await _roll(
+        adapter, sub, metadata, header, title, line, _moved_to(kind, payload),
+        _slack_plan(quiet), event_id, tracked,
+    )
     # The whole note, not the clipped line: a url past the clip is cut whole.
-    note = progress_note(getattr(ev, "payload", None), limit=0) if kind == "heartbeat" else ""
+    note = progress_note(payload, limit=0) if kind == "heartbeat" else ""
     await _pr_opened(moments, adapter, sub, note or line, result)
     return result
 
 
 async def _roll(
     adapter: Any, sub: dict, metadata: Optional[dict], header: str, title: str,
-    line: str, plan: Any, event_id: int, tracked: dict,
+    line: str, moved: Any, plan: Any, event_id: int, tracked: dict,
 ) -> Any:
     """Put one progress line on the card's plan row, or roll it into its message."""
     chat_id = sub["chat_id"]
     key = sub_key(sub)
     entry = tracked.get(key)
-    if plan is not None and await _plan_row(plan, adapter, sub, event_id, title, line):
+    if plan is not None and await _plan_row(plan, adapter, sub, event_id, title, line, moved):
+        if moved is None and entry and entry["message_id"] and entry["lines"]:
+            # The plan took over a card that rolled while it stood fallen back. A
+            # move it took may have been dropped, so only a note hands over.
+            try:
+                await adapter.edit_message(
+                    chat_id, entry["message_id"], render(header, entry["lines"][-1:], MOVED_TO_PLAN),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "kanban progress: could not settle the rolling message "
+                    "for %s: %s", sub.get("task_id"), exc,
+                )
+            tracked.pop(key, None)
         return None
     if entry and event_id and event_id <= entry["last_event_id"]:
         # An at-least-once replay of something this process already appended.

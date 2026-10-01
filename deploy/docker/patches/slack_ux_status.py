@@ -11,16 +11,16 @@ them.
 
 Upstream, and why it changes
 ----------------------------
-**The session status (#576).** With slack-sdk 3.44 or later, Hermes sends its
+**The session status.** With slack-sdk 3.44 or later, Hermes sends its
 thread status to ``agents.sessions.setStatus``: a phrase ("is thinking...")
 every 2 seconds while a turn runs, and ``""`` to clear. That method takes
 ``processing``, ``suspended`` or ``closed`` and nothing else, so every call
 fails ``invalid_arguments``, logged at debug: Working… never shows, the clear
 never lands, and the refresh loop spends 30 Slack calls a minute on errors.
 With the flag on, the phrase becomes ``processing`` and the clear
-``closed``, and a status is sent only when it changes or
-:data:`SESSION_REFRESH_SECONDS` have passed, so a turn costs a call or two
-rather than 30 a minute. Each open and close is logged at info. The legacy
+``closed``, and a status is sent only when it changes, or when
+:data:`SESSION_REFRESH_SECONDS` have passed on ``processing``, so a turn
+costs a call or two rather than 30 a minute. Each open and close is logged at info. The legacy
 ``assistant.threads.setStatus``, used when the SDK has no Agent Sessions, takes
 free text and is left to upstream.
 
@@ -38,8 +38,9 @@ event settles an existing row (``complete``, ``error``, or ``pending`` for a
 card waiting on the user) and never creates one, so a card that finished
 without a note adds no plan above its report. Two kinds upstream never posts
 reach the plan through ``kanban_progress_lines.silent_event``:
-``unblocked`` sets a waiting row running again, and ``archived`` settles a
-running or waiting row as failed, with an ``Archived`` note. The row stays
+``unblocked`` sets a waiting row, or one that gave up, running again, and
+``archived`` settles a running or waiting row as failed, with an ``Archived``
+note. The row stays
 rather than the message going: the credential proxy refuses ``chat.delete``,
 as it refuses every destructive Slack verb. ``crashed`` and ``timed_out``
 leave the row running, since the dispatcher retries the card, and
@@ -48,7 +49,9 @@ The plan holds the thread's session status: ``processing`` while a row runs,
 ``suspended`` while rows wait on the user and none runs, and a Planning Agent
 turn ending in the thread does not close it under either. Once no row is
 running or waiting, the session is closed and the plan is forgotten here, and
-the thread's next card starts a new plan. A plan with no note or settled row
+the thread's next card starts a new plan. A plan with a card that gave up,
+which the breaker parks until it is unblocked, is set aside instead, as a
+lapsed one is below, so the unblock still finds its row. A plan with no note or settled row
 for :data:`PLAN_HOLD_SECONDS` is set aside, so a card whose terminal event
 was lost does not hold the next card's Working… or put its row on a message
 far up the thread; the next note starts a new plan. A set-aside plan holds
@@ -58,8 +61,13 @@ event. Its cards' later events still update their rows on it, and a card
 answered there runs on it again: it becomes the thread's plan once more, or,
 beside a newer plan, holds ``processing`` for another hold. Past
 :data:`LAPSED_PER_THREAD` a thread drops a set-aside plan that is quiet and
-has no card waiting first. A plan evicted at :data:`PLANS_MAX`, current or set
-aside, has its session sent again on the way out, since nothing else would.
+has no card waiting first. A set-aside plan with no card waiting on the user
+or given up is dropped once :data:`SET_ASIDE_MAX_SECONDS` pass without a note
+or settled row, its session sent, so a rolling card or running row whose
+terminal event was lost does not keep it for good. A plan evicted at
+:data:`PLANS_MAX`, current or set
+aside, has its session sent again on the way out, since nothing else would;
+the current plan evicted is the thread with the oldest note.
 Past ``slack_status.ROWS_MAX`` rows the oldest settled rows leave the plan
 first, so the cap hides a live card only when more than that many are live.
 The plan has no Stop button yet: ``/stop`` interrupts only the
@@ -102,9 +110,6 @@ FLAG_ENV = "KAGE_SLACK_UX"
 #: exactly when that module cannot be imported.
 FLAG_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 
-#: The platform name kanban subscriptions carry for Slack.
-PLATFORM = "slack"
-
 #: How long an unchanged ``processing`` stands before it is sent again. Slack
 #: documents no expiry for an agent session's status; this bounds how stale a
 #: status can go if one ever does, at one call a minute instead of thirty.
@@ -118,6 +123,13 @@ SESSION_REFRESH_SECONDS = 60.0
 #: reach no one.
 PLAN_HOLD_SECONDS = 1800.0
 
+#: How long a set-aside plan is kept after its last note or settled row when
+#: nothing on it waits on a person: no card waiting on the user and none that
+#: gave up. Its running rows and rolling cards lost their terminal events, or
+#: their cards have been quiet this long; well past a card's silent stretches,
+#: so a late event almost always still finds its row.
+SET_ASIDE_MAX_SECONDS = 4 * 3600.0
+
 #: ``fail_label`` for the adapter's status setter when the plan sets it.
 PLAN_STATUS_LABEL = "plan"
 
@@ -126,8 +138,18 @@ PLAN_STATUS_LABEL = "plan"
 ARCHIVED_KIND = "archived"
 ARCHIVED_NOTE = "Archived"
 
-#: The notifier kind for a card the user unblocked: its waiting row runs again.
+#: The notifier kind for a card the user unblocked: its waiting row runs
+#: again, as does one that gave up, which the breaker parks until unblocked.
 UNBLOCKED_KIND = "unblocked"
+
+#: A dashboard move (a ``status`` event) to one of these columns settles the
+#: card's row as the event kind it maps to would. A move to any other column
+#: leaves the row's status alone: the dashboard cannot set ``running``, so a
+#: move never means the card runs. Upstream writes the event only for a drag
+#: to ready, todo or triage, which a card resuming into review lands as
+#: ``review``; a drag to done or blocked posts its own ``completed`` or
+#: ``blocked`` event instead.
+MOVE_KINDS = {"review": "review_requested"}
 
 #: Bounds on the in-process maps, oldest evicted first.
 SESSIONS_MAX = 512
@@ -145,7 +167,7 @@ _warned_missing = False
 class _Row:
     """One card's row. A plain class, for the reason ``slack_ux_reactions._Ask`` is."""
 
-    __slots__ = ("last_event_id", "lines", "status", "task_id", "title")
+    __slots__ = ("archived", "last_event_id", "lines", "status", "task_id", "title")
 
     def __init__(self, task_id: str, title: str) -> None:
         self.task_id = task_id
@@ -153,10 +175,11 @@ class _Row:
         self.lines: list[str] = []
         self.status = ""
         self.last_event_id = 0
+        self.archived = False
 
 
 class _Plan:
-    __slots__ = ("fallback", "lapse", "rolling", "rows", "team_id", "touched", "ts", "waiting")
+    __slots__ = ("expiry", "fallback", "lapse", "rolling", "rows", "team_id", "touched", "ts", "waiting")
 
     def __init__(self, team_id: str) -> None:
         self.ts = ""
@@ -173,6 +196,9 @@ class _Plan:
         self.touched = time.monotonic()
         #: The timer that sets the plan aside after :data:`PLAN_HOLD_SECONDS`.
         self.lapse: asyncio.TimerHandle | None = None
+        #: The timer that drops the plan once set aside, after
+        #: :data:`SET_ASIDE_MAX_SECONDS`.
+        self.expiry: asyncio.TimerHandle | None = None
 
 
 #: ``(channel, thread) -> (status sent, when)``. No team: a kanban
@@ -318,18 +344,23 @@ def _waiting(plan: _Plan) -> bool:
 
 def _held(plan: _Plan) -> bool:
     """Whether a set-aside plan still has a card whose events can move it."""
-    return bool(plan.rolling) or any(_live(row) for row in plan.rows.values())
+    return bool(plan.rolling) or any(_open(row) for row in plan.rows.values())
 
 
 def _live(row: _Row) -> bool:
     return row.status in (_status.TASK_RUNNING, _status.TASK_PENDING)
 
 
+def _open(row: _Row) -> bool:
+    """Whether the row can still move: live, or a card that gave up, which ``unblocked`` resumes."""
+    return _live(row) or (row.status == _status.TASK_ERROR and not row.archived)
+
+
 def _prune(plan: _Plan) -> None:
     """Drop the oldest settled rows past ``ROWS_MAX``, so the renderer's cap cuts no live card."""
     extra = len(plan.rows) - _status.ROWS_MAX
     if extra > 0:
-        for card in [card for card, row in plan.rows.items() if not _live(row)][:extra]:
+        for card in [card for card, row in plan.rows.items() if not _open(row)][:extra]:
             del plan.rows[card]
 
 
@@ -392,7 +423,9 @@ async def _session(adapter: Any, key: tuple, plan: _Plan) -> None:
 
 def _arm(adapter: Any, key: tuple, plan: _Plan) -> None:
     """(Re)start the plan's lapse timer; with no running loop there is nothing to close later."""
-    _disarm(plan)
+    if plan.lapse is not None:
+        plan.lapse.cancel()
+        plan.lapse = None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -401,9 +434,62 @@ def _arm(adapter: Any, key: tuple, plan: _Plan) -> None:
 
 
 def _disarm(plan: _Plan) -> None:
-    if plan.lapse is not None:
-        plan.lapse.cancel()
-        plan.lapse = None
+    for timer in (plan.lapse, plan.expiry):
+        if timer is not None:
+            timer.cancel()
+    plan.lapse = plan.expiry = None
+
+
+def _arm_expiry(adapter: Any, key: tuple, plan: _Plan, delay: float) -> None:
+    """(Re)start the timer that drops a set-aside plan; with no running loop nothing drops it."""
+    if plan.expiry is not None:
+        plan.expiry.cancel()
+        plan.expiry = None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    plan.expiry = loop.call_later(delay, _start_expiry, adapter, key, plan)
+
+
+def _start_expiry(adapter: Any, key: tuple, plan: _Plan) -> None:
+    plan.expiry = None
+    task = asyncio.ensure_future(_expire(adapter, key, plan))
+    _lapsing.add(task)
+    task.add_done_callback(_lapsing.discard)
+
+
+def _kept(plan: _Plan) -> bool:
+    """Whether a set-aside plan waits on a person: a card waiting on the user, or one that gave up."""
+    return _waiting(plan) or any(
+        row.status == _status.TASK_ERROR and not row.archived for row in plan.rows.values()
+    )
+
+
+async def _expire(adapter: Any, key: tuple, plan: _Plan) -> None:
+    """Drop a set-aside plan untouched for :data:`SET_ASIDE_MAX_SECONDS`, and send its session.
+
+    A plan that waits on a person (:func:`_kept`) stays, bounded by the caps,
+    and is looked at again a full period later, as is one touched since.
+    """
+    plans = _lapsed.get(key)
+    if not plans or not any(old is plan for old in plans):
+        return  # dropped, evicted, or running as the thread's plan again
+    remaining = SET_ASIDE_MAX_SECONDS - (time.monotonic() - plan.touched)
+    if _kept(plan) or remaining > 0:
+        _arm_expiry(adapter, key, plan, remaining if remaining > 0 else SET_ASIDE_MAX_SECONDS)
+        return
+    logger.info(
+        "slack_ux_status: dropping the set-aside plan in %s/%s, quiet for %ss; resending its session",
+        key[0], key[1], int(SET_ASIDE_MAX_SECONDS),
+    )
+    _disarm(plan)
+    left = [old for old in plans if old is not plan]
+    if left:
+        _lapsed[key] = left
+    else:
+        _lapsed.pop(key, None)
+    await _session(adapter, key, plan)
 
 
 def _start_lapse(adapter: Any, key: tuple, plan: _Plan) -> None:
@@ -462,6 +548,8 @@ async def _set_aside(adapter: Any, key: tuple, plan: _Plan) -> None:
         plans.remove(dropped)
     _lapsed[key] = plans
     _lapsed.move_to_end(key)
+    if plan in plans:
+        _arm_expiry(adapter, key, plan, SET_ASIDE_MAX_SECONDS)
     while len(_lapsed) > PLANS_MAX:
         old_key, evicted = _lapsed.popitem(last=False)
         for old in evicted:
@@ -502,15 +590,19 @@ def _settled(plan: _Plan) -> bool:
 
 def _move(row: _Row, kind: str) -> bool:
     """Apply a terminal or silent event to the card's row; False when it moves nothing."""
+    if row.archived:
+        return False  # upstream never unarchives, so a later event is a redelivery
     if kind == ARCHIVED_KIND:
-        if not _live(row):
+        if not _open(row):
             return False  # archived after it finished: its row stands
         # Archived by hand: nothing else will settle the row.
         row.lines = [*row.lines, ARCHIVED_NOTE][-_status.STEPS_MAX:]
         row.status = _status.TASK_ERROR
+        row.archived = True
         return True
     status = _status.task_status(kind)
-    if status is None or (kind == UNBLOCKED_KIND and row.status != _status.TASK_PENDING):
+    resumable = (_status.TASK_PENDING, _status.TASK_ERROR)
+    if status is None or (kind == UNBLOCKED_KIND and row.status not in resumable):
         return False  # nothing to move, or an unblocked replay
     row.status = status
     return True
@@ -543,6 +635,7 @@ async def _settle_lapsed(
         return None
     changed = resumed = None
     for old in plans:
+        unrolled = done and card in old.rolling
         parked = _park(old, card, status, done)
         if done:
             old.rolling.discard(card)
@@ -551,7 +644,7 @@ async def _settle_lapsed(
             await _render(adapter, key, old)
             if row.status == _status.TASK_RUNNING:
                 resumed = old
-        elif not parked:
+        elif not (parked or unrolled):
             continue
         elif card in old.rolling and card not in old.waiting:
             resumed = old
@@ -597,28 +690,66 @@ async def _settle_current(
         _disarm(plan)
         if _plans.get(key) is plan:
             _plans.pop(key, None)
+            if plan.ts and _held(plan):
+                await _set_aside(adapter, key, plan)  # a card that gave up waits there for its unblock
     else:
         _arm(adapter, key, plan)
     return True
 
 
+async def _deliver_move(
+    adapter: Any, sub: dict, key: tuple, card: str, event_id: int, line: str, moved: str,
+) -> bool:
+    """Put a dashboard move on the card's row, settling it per :data:`MOVE_KINDS`.
+
+    A move opens no row: one for a card with no row on the current plan is
+    taken and dropped, unless the plan fell back or the card rolls on a plan
+    set aside, where the card's rolling message takes it.
+    """
+    plan = _plans.get(key)
+    row = plan.rows.get(card) if plan is not None and not plan.fallback else None
+    if row is not None:
+        if event_id and event_id <= row.last_event_id:
+            return True  # an at-least-once replay already on the row
+        previous = (list(row.lines), row.last_event_id)
+        row.lines = [*row.lines, line][-_status.STEPS_MAX:]
+        row.last_event_id = max(row.last_event_id, event_id)
+    kind = MOVE_KINDS.get(moved)
+    if kind is not None:
+        await settle_row(adapter, sub, kind)
+        refused = row is not None and plan.fallback  # the settle's edit was refused
+    else:
+        refused = row is not None and not await _render(adapter, key, plan)
+    if refused:
+        row.lines, row.last_event_id = previous
+        return False
+    rolls = any(card in old.rolling for old in _lapsed.get(key, ()))
+    return row is not None or not (rolls or (plan is not None and plan.fallback))
+
+
 async def deliver_row(
-    adapter: Any, sub: dict, event_id: int, title: str, line: str,
+    adapter: Any, sub: dict, event_id: int, title: str, line: str, moved: str | None = None,
 ) -> bool:
     """Put a progress note on the card's row in the thread's plan.
 
     True when the plan took it, which the caller reports as delivered; False
     when the caller should roll it into a progress line instead: no thread, no
     Slack client, or a plan that fell back, on this note or an earlier one.
+    ``moved`` is the column a ``status`` event moved the card to, which
+    :func:`_deliver_move` handles rather than marking the row running.
     """
     key = _thread(sub)
     card = str(sub.get("task_id") or "")
     if not (key[0] and key[1] and card and hasattr(adapter, "_get_client")):
         return False
+    if moved is not None:
+        return await _deliver_move(adapter, sub, key, card, event_id, line, moved)
     plan = _plans.get(key)
     if plan is None:
         plan = _Plan(str(sub.get("team_id") or ""))
         await _keep(adapter, key, plan)
+    else:
+        _plans.move_to_end(key)  # eviction at PLANS_MAX takes the least active thread
     if plan.fallback:
         _roll(adapter, key, plan, card)
         if plan.ts:

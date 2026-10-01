@@ -31,6 +31,7 @@ from kanban_progress_lines import (
     FINISHED,
     IN_PROGRESS,
     MAX_LINES,
+    MOVED_TO_PLAN,
     MAX_RENDER,
     MAX_TRACKED,
     STOPPED,
@@ -1022,14 +1023,16 @@ class SlackPlanHookTest(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.rows = []
+        self.moves = []
         self.settled = []
         self.flag = True
         self.plan = True
         self.takes = True
         test = self
 
-        async def deliver_row(adapter, sub, event_id, title, line):
+        async def deliver_row(adapter, sub, event_id, title, line, moved=None):
             test.rows.append((sub["task_id"], event_id, title, line))
+            test.moves.append(moved)
             if isinstance(test.takes, Exception):
                 raise test.takes
             return test.takes
@@ -1089,6 +1092,42 @@ class SlackPlanHookTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((refused.sent, refused.edits), (without_plan.sent, without_plan.edits))
                 self.assertEqual(refused.edits[-1][1], f"{FINISHED} [default] @platform Reading pod state.")
 
+    async def test_a_plan_taking_over_a_rolling_card_settles_its_message(self):
+        adapter, watcher = _Adapter(), SimpleNamespace()
+        self.takes = False
+        await deliver(
+            watcher, adapter, SLACK_SUB, "heartbeat", _beat(1, "Checking seeded-a."),
+            f"{IN_PROGRESS} {HEADER}Checking seeded-a.", None, HEADER, title="check seeded-a",
+        )
+        self.takes = True
+        await deliver(
+            watcher, adapter, SLACK_SUB, "heartbeat", _beat(2, "Reading pod state."),
+            f"{IN_PROGRESS} {HEADER}Reading pod state.", None, HEADER, title="check seeded-a",
+        )
+        self.assertEqual(len(adapter.edits), 1)
+        self.assertTrue(adapter.edits[0][1].startswith(MOVED_TO_PLAN))
+        self.assertIn("Checking seeded-a.", adapter.edits[0][1])
+        self.assertEqual(tracked_messages(watcher), {})
+
+    async def test_a_move_the_plan_takes_leaves_a_rolling_message_rolling(self):
+        adapter, watcher = _Adapter(), SimpleNamespace()
+        self.takes = False
+        await deliver(
+            watcher, adapter, SLACK_SUB, "heartbeat", _beat(1, "Checking seeded-a."),
+            f"{IN_PROGRESS} {HEADER}Checking seeded-a.", None, HEADER, title="check seeded-a",
+        )
+        self.takes = True
+        move = SimpleNamespace(id=2, kind="status", payload={"status": "ready"})
+        await deliver(watcher, adapter, SLACK_SUB, "status", move, "🔄", None, HEADER)
+        self.assertEqual(adapter.edits, [])
+        self.assertNotEqual(tracked_messages(watcher), {})
+
+    async def test_a_status_move_reaches_the_plan_as_a_move(self):
+        move = SimpleNamespace(id=1, kind="status", payload={"status": " ready "})
+        await deliver(SimpleNamespace(), _Adapter(), SLACK_SUB, "status", move, "🔄", None, HEADER)
+        await deliver(SimpleNamespace(), _Adapter(), SLACK_SUB, "heartbeat", _beat(2, "note"), "note", None, HEADER)
+        self.assertEqual(self.moves, ["ready", None])
+
     async def test_other_platforms_never_reach_the_plan(self):
         await self._run(_Adapter(), SUB)
         self.assertEqual((self.rows, self.settled), ([], []))
@@ -1098,6 +1137,45 @@ class SlackPlanHookTest(unittest.IsolatedAsyncioTestCase):
         for kind in ("archived", "unblocked"):
             await silent_event(SimpleNamespace(sub=SLACK_SUB, adapter=_Adapter()), SimpleNamespace(kind=kind))
         self.assertEqual(self.settled, [("t_e0c1", "archived"), ("t_e0c1", "unblocked")])
+
+    def _blocked_batch(self, last_ping):
+        # unblocked, a note, then blocked again: the batch a rewound claim replays.
+        events = [SimpleNamespace(id=6, kind="unblocked"), _beat(7, "retrying"), SimpleNamespace(id=8, kind="blocked")]
+        sub = {**SLACK_SUB, "last_ping_event_id": last_ping}
+        return SimpleNamespace(sub=sub, adapter=_Adapter(), d={"events": events}), events[0]
+
+    async def test_a_replayed_unblock_leaves_a_later_block_waiting(self):
+        # The wake after the batch was not accepted; its pings were recorded through 8.
+        # Without the batch, last_ping_event_id alone marks the replay.
+        notification, unblocked = self._blocked_batch(last_ping=8)
+        del notification.d
+        await silent_event(notification, unblocked)
+        self.assertEqual(self.settled, [])
+
+    async def test_an_unblock_overtaken_in_its_batch_moves_nothing_when_the_ping_record_lags(self):
+        # blocked 8 was sent but recording its ping failed, so last_ping_event_id is behind it.
+        notification, unblocked = self._blocked_batch(last_ping=0)
+        await silent_event(notification, unblocked)
+        self.assertEqual(self.settled, [])
+
+    async def test_an_unblock_after_the_last_settle_in_its_batch_still_moves_the_row(self):
+        events = [SimpleNamespace(id=5, kind="blocked"), SimpleNamespace(id=6, kind="unblocked"), _beat(7, "retrying")]
+        notification = SimpleNamespace(
+            sub={**SLACK_SUB, "last_ping_event_id": 5}, adapter=_Adapter(), d={"events": events},
+        )
+        await silent_event(notification, events[1])
+        self.assertEqual(self.settled, [("t_e0c1", "unblocked")])
+
+    async def test_a_retried_failure_after_an_unblock_leaves_the_row_running(self):
+        # crashed and timed_out leave a row alone while the dispatcher retries
+        # the card, so they settle nothing past the unblock before them.
+        for kind in ("crashed", "timed_out"):
+            with self.subTest(kind=kind):
+                self.settled.clear()
+                events = [SimpleNamespace(id=6, kind="unblocked"), SimpleNamespace(id=7, kind=kind)]
+                notification = SimpleNamespace(sub=dict(SLACK_SUB), adapter=_Adapter(), d={"events": events})
+                await silent_event(notification, events[0])
+                self.assertEqual(self.settled, [("t_e0c1", "unblocked")])
 
     async def test_other_silent_events_and_platforms_do_not(self):
         await silent_event(SimpleNamespace(sub=SLACK_SUB, adapter=_Adapter()), SimpleNamespace(kind="heartbeat"))

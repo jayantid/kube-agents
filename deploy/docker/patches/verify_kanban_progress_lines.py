@@ -126,6 +126,11 @@ check(
     "an unclaimed kind never reaches the formatter",
 )
 check(
+    "the silent kinds are claimed",
+    {"archived", "unblocked"} <= set(notifier.TERMINAL_KINDS),
+    "an unclaimed archived or unblocked never reaches the _send_pings hook",
+)
+check(
     "heartbeat never wakes the creator",
     "heartbeat" not in notifier._WAKE_KINDS,
     "a progress note that costs a full LLM turn is the most expensive thing on the board",
@@ -185,6 +190,14 @@ check(
     NOTIFIER_SOURCE.count("await _progress_silent_event(self, ev)") == 1
     and NOTIFIER_SOURCE[_silent_at:].split("\n", 2)[1].strip() == "continue",
     "an archived or unblocked card would never move its plan row",
+)
+_loop_at = NOTIFIER_SOURCE.rfind('for ev in self.d["events"]:', 0, _silent_at)
+check(
+    "the hook sits in the loop over the delivery's batch, ahead of the ping dedup",
+    0 <= _loop_at < _silent_at
+    and _silent_at < NOTIFIER_SOURCE.find('if ev.id <= self.sub.get("last_ping_event_id", 0):', _silent_at),
+    "silent_event reads notification.d['events'] and last_ping_event_id to skip a replayed unblocked; "
+    "renamed, a rewound claim's replay would revive a row waiting on the user",
 )
 check(
     "the heartbeat formatter still builds the first rendering",
