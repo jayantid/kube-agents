@@ -3,9 +3,10 @@
 Pure functions, plus ``ack_link_click``, the no-op handler a caller registers
 for link buttons. Nothing here imports the Hermes gateway, the Slack SDK or
 the network, so any process that posts to Slack can use it, and it can move
-with Slack ingress when it leaves the gateway. Today its one caller is the
-gateway's reactions patch (``slack_ux_reactions``), which the kanban notifier
-also reaches; the answer layout and buttons have no caller yet.
+with Slack ingress when it leaves the gateway. Its callers are the gateway
+patches for reactions (``slack_ux_reactions``, which the kanban notifier
+also reaches) and button clicks (``slack_ux_clicks``), which uses the action
+ids and the link ack; the answer layout has no caller yet.
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
@@ -120,9 +121,10 @@ BUTTONS_PER_ROW = 5
 HEADLINE_MAX = 150
 ELLIPSIS = "…"
 
-#: Action ids: ``<prefix>.link.<n>`` and ``<prefix>.choice.<n>``. A link button
-#: opens its url client-side and Slack still sends a block_actions request,
-#: which ``ack_link_click`` is for; the patterns are what a click handler matches.
+#: Action ids: ``<prefix>.link.<n>`` and ``<prefix>.choice.<n>``. Link buttons
+#: open their url client-side and Slack still sends a block_actions request,
+#: which the no-op handler acknowledges; a choice click is answered as the
+#: clicker's reply (the gateway's ``slack_ux_clicks``).
 LINK_ACTION = "link"
 CHOICE_ACTION = "choice"
 LINK_ACTION_ID_PATTERN = re.compile(r"\.link\.\d+$")
