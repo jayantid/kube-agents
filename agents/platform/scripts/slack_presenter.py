@@ -6,7 +6,9 @@ the network, so any process that posts to Slack can use it, and it can move
 with Slack ingress when it leaves the gateway. Its callers are the gateway
 patches for reactions (``slack_ux_reactions``, which the kanban notifier
 also reaches) and button clicks (``slack_ux_clicks``), which uses the action
-ids and the link ack; the answer and report layouts have no caller yet.
+ids and the link ack; and ``session_kv_server``'s cron relay, which gates the
+fleet-audit report on :func:`enabled` and lays it out through
+``slack_audit_report``. The answer layout has no caller yet.
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
