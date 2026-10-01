@@ -1,16 +1,23 @@
-"""Slack presentation for kube-agents: the reactions an ask gets.
+"""Slack presentation for kube-agents: answer layout, buttons and reactions.
 
-Pure functions only. Nothing here imports the Hermes gateway, the Slack SDK or
+Pure functions, plus ``ack_link_click``, the no-op handler a caller registers
+for link buttons. Nothing here imports the Hermes gateway, the Slack SDK or
 the network, so any process that posts to Slack can use it, and it can move
 with Slack ingress when it leaves the gateway. Today its one caller is the
 gateway's reactions patch (``slack_ux_reactions``), which the kanban notifier
-also reaches.
+also reaches; the answer layout and buttons have no caller yet.
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
 Everything a caller changes on screen is gated on :func:`enabled`, the
 ``KAGE_SLACK_UX`` environment variable, off by default. With it off, callers
 take their upstream path unchanged; this module only answers questions.
+
+Layout: :func:`split_answer` takes the headline off an agent's markdown
+answer; url link buttons and choice buttons, whose value is the label, are
+built by ``_button`` and wrapped into rows by ``_actions``; :func:`fallback_text`
+is the headline, links and choices as plain mrkdwn, for the message's ``text``
+field.
 
 Reactions (:func:`arrival_reaction`, :func:`settle_reaction`): the first
 reaction says what kind of ask arrived, chosen by keyword before any model
@@ -22,6 +29,8 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 #: The flag, and the values that turn it on. Anything else (unset included) is off.
 FLAG_ENV = "KAGE_SLACK_UX"
@@ -100,6 +109,79 @@ INCIDENT_WORDS = re.compile(
 MENTION = re.compile(r"<[@#!][^>]*>")
 FIRST_WORD = re.compile(r"[A-Za-z']+")
 
+# --- layout ----------------------------------------------------------------
+
+#: Slack's limits: button label, button value, buttons shown per actions block
+#: before mobile wraps badly (Slack allows 25; Hermes uses 5).
+BUTTON_TEXT_MAX = 75
+BUTTON_VALUE_MAX = 2000
+BUTTONS_PER_ROW = 5
+#: Ours, not Slack's: the longest headline, and the mark a clip ends with.
+HEADLINE_MAX = 150
+ELLIPSIS = "…"
+
+#: Action ids: ``<prefix>.link.<n>`` and ``<prefix>.choice.<n>``. A link button
+#: opens its url client-side and Slack still sends a block_actions request,
+#: which ``ack_link_click`` is for; the patterns are what a click handler matches.
+LINK_ACTION = "link"
+CHOICE_ACTION = "choice"
+LINK_ACTION_ID_PATTERN = re.compile(r"\.link\.\d+$")
+CHOICE_ACTION_ID_PATTERN = re.compile(r"\.choice\.\d+$")
+
+CHOICES_LEAD = "Reply with one of: "
+CHOICE_SEPARATOR = " · "
+
+#: A code fence line; nothing between an opener and its closer is a heading, a bullet or markup.
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
+LIST_MARKER = re.compile(r"^\s*([-*+]|\d+[.)])\s+")
+#: Bold markers. An opener has no word character before it and a closer none after
+#: it, so an in-word run such as ``DB__HOST`` or ``2**20`` is text.
+BOLD_MARKERS = ("**", "__")
+BOLD_OPEN = r"(?<!\w){0}(?=\S)"
+BOLD_CLOSE = r"(?<=\S){0}(?!\w)"
+#: As in CommonMark, ``**`` may also bold part of a word (``**Pod**s``, ``re**start**ed``),
+#: but only a run without spaces when the opener is in-word, so ``2**20 and 2**30`` stays text.
+#: ``__`` keeps the word-boundary rule.
+STAR_BOLD = BOLD_OPEN.format(re.escape("**")) + r"(.+?)(?<=\S)\*\*"
+STAR_BOLD_IN_WORD = r"(?<=\w)\*\*([^\s*]+)\*\*"
+UNDERSCORE_BOLD = BOLD_OPEN.format(re.escape("__")) + "(.+?)" + BOLD_CLOSE.format(re.escape("__"))
+MD_BOLD = re.compile(f"{STAR_BOLD}|{STAR_BOLD_IN_WORD}|{UNDERSCORE_BOLD}")
+#: A markdown link; the url may hold balanced parentheses, as a Logs Explorer query does.
+MD_LINK = re.compile(r"\[([^\]]+)\]\(([^()\s]+(?:\([^()\s]*\)[^()\s]*)*)\)")
+#: ``*italic*`` and ``_italic_``; a ``*`` inside a word (``2*3``) or unpaired (``*.tmp``) is text.
+MD_ITALIC = re.compile(r"(?<![\w*])\*(?=[^\s.])([^*\n]+?)(?<=\S)\*(?![\w*])|(?<![\w_])_(?=[^\s.])([^_\n]+?)(?<=\S)_(?![\w_])")
+#: A code span: a backtick run, then content, then a run of the same length (CommonMark).
+MD_CODE = re.compile(r"(?<!`)(`+)([^\n]+?)(?<!`)\1(?!`)")
+#: Holds a code span's place while the other markup is stripped; input NULs are dropped first.
+CODE_PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
+MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
+#: A sentence ends at ``.``, ``!`` or ``?``, or just after the emphasis that closes on one,
+#: then space, then anything but a lowercase letter ("in ns. prod" runs on).
+SENTENCE_END = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][*_])|(?<=[.!?]\*\*)|(?<=[.!?]__))\s+(?=[^\sa-z])")
+#: Per bold marker, its opener and closer, which a split can leave unpaired; the first
+#: sentence closes one and the rest reopens it.
+BOLD_EDGES = {
+    marker: (re.compile(BOLD_OPEN.format(re.escape(marker))), re.compile(BOLD_CLOSE.format(re.escape(marker))))
+    for marker in BOLD_MARKERS
+}
+#: A text ending in one of these abbreviations has not ended its sentence.
+ABBREVIATION_END = re.compile(
+    r"(?:^|[\s(\[])(?:e\.g|i\.e|vs|approx|incl|cf|etc|esp|fig|rev|ver|cont|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.$",
+    re.IGNORECASE,
+)
+#: How far back from a candidate end an abbreviation can start; bounds the check to the tail.
+ABBREVIATION_TAIL = 16
+#: Slack refuses a button whose url is longer than this.
+URL_MAX = 3000
+#: A url a link button or ``<url|label>`` may carry: http(s) in any case, nothing that ends or
+#: splits the link, and short enough for a button. Use ``fullmatch``: ``$`` would admit a trailing
+#: newline.
+SAFE_URL = re.compile(rf"https?://[^\s<>|]{{1,{URL_MAX - len('https://')}}}", re.IGNORECASE)
+#: A space-aligned clip shorter than this share of the limit drops too much; it cuts hard instead.
+CLIP_MIN_SHARE = 2
+
 
 def enabled() -> bool:
     """Whether ``KAGE_SLACK_UX`` is on in this process's environment."""
@@ -138,3 +220,206 @@ def settle_reaction(outcome: str) -> str | None:
 def settle_for_kanban_kind(kind: str) -> str | None:
     """``done``/``blocked``/``failed`` for a notifier event kind that settles work, else None."""
     return SETTLE_BY_KANBAN_KIND.get(kind)
+
+
+# --- markdown --------------------------------------------------------------
+
+
+def next_fence(line: str, fence: str | None) -> str | None:
+    """The fence open after ``line``, given the one open before it.
+
+    As in CommonMark, only a line of the opener's character, at least as long, closes it, an
+    unclosed fence runs to the end, and a backtick run followed by another backtick is a code span.
+    """
+    match = FENCE.match(line)
+    if not match:
+        return fence
+    mark = match.group(1)
+    if fence is None:
+        return None if mark[0] == "`" and "`" in line[match.end():] else mark
+    closes = mark[0] == fence[0] and len(mark) >= len(fence) and not line.strip().strip(mark[0])
+    return None if closes else fence
+
+
+def _opens_fence(line: str) -> bool:
+    return next_fence(line, None) is not None
+
+
+def _paragraphs(markdown: str) -> list[str]:
+    """Blank-line separated blocks, never splitting inside a fenced code block."""
+    out: list[str] = []
+    current: list[str] = []
+    fence = None
+    for line in markdown.split("\n"):
+        fence = next_fence(line, fence)
+        if fence is None and not line.strip():
+            if current:
+                out.append("\n".join(current).strip("\n"))
+                current = []
+            continue
+        current.append(line)
+    if current:
+        out.append("\n".join(current).strip("\n"))
+    return [p for p in out if p.strip()]
+
+
+def _plain(markdown: str) -> str:
+    """One line of markdown as plain text: no heading, list marker, emphasis or link syntax.
+
+    Code spans are held out first, as a renderer resolves them first, so ``__init__`` in one stays.
+    """
+    text, spans = _hold_code(markdown.replace("\x00", "").strip())
+    text = HEADING.sub("", text)
+    text = LIST_MARKER.sub("", text)
+    text = MD_LINK.sub(r"\1", text)
+    text = MD_BOLD.sub(lambda m: next(g for g in m.groups() if g is not None), text)
+    text = MD_ITALIC.sub(lambda m: m.group(1) or m.group(2), text)
+    return CODE_PLACEHOLDER.sub(lambda m: spans[int(m.group(1))].group(2).strip(), text).strip()
+
+
+def _hold_code(text: str) -> tuple[str, list[re.Match]]:
+    """``text`` with each code span swapped for a placeholder, and the spans."""
+    spans: list[re.Match] = []
+
+    def hold(match: re.Match) -> str:
+        spans.append(match)
+        return f"\x00{len(spans) - 1}\x00"
+
+    return MD_CODE.sub(hold, text), spans
+
+
+def _restore_code(text: str, spans: list[re.Match]) -> str:
+    """``text`` with each placeholder put back as its code span, backticks included."""
+    return CODE_PLACEHOLDER.sub(lambda m: spans[int(m.group(1))].group(0), text)
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    hard = text[: limit - len(ELLIPSIS)]
+    cut = hard.rsplit(" ", 1)[0]
+    # A long unbroken word would otherwise take everything after the last space with it.
+    if len(cut) * CLIP_MIN_SHARE < len(hard):
+        cut = hard
+    return cut.rstrip() + ELLIPSIS
+
+
+def _escape(text: str) -> str:
+    for raw, escaped in MRKDWN_ESCAPES:
+        text = text.replace(raw, escaped)
+    return text
+
+
+def _first_sentence(line: str) -> tuple[str, str]:
+    """``(first sentence, the rest)`` of ``line``, not cut after an abbreviation."""
+    for match in SENTENCE_END.finditer(line):
+        sentence = line[: match.start()]
+        stem = sentence.rstrip("*_")
+        if not ABBREVIATION_END.search(stem, max(0, len(stem) - ABBREVIATION_TAIL)):
+            rest = line[match.end() :].strip()
+            # "**One. Two.**" splits inside the bold, which would leave both halves unpaired.
+            for marker, (opener, closer) in BOLD_EDGES.items():
+                if sentence.count(marker) % 2 and opener.search(sentence) and closer.search(rest):
+                    sentence, rest = sentence + marker, marker + rest
+            return sentence, rest
+    return line, ""
+
+
+def split_answer(markdown: str) -> tuple[str, list[str]]:
+    """``(headline, body_sections)`` for an agent's markdown answer.
+
+    The headline is the first sentence of the first paragraph, as plain text
+    capped at ``HEADLINE_MAX``. The rest of that paragraph and every later
+    paragraph are the body sections, still markdown, in order. Empty input
+    gives ``("", [])``.
+    """
+    paragraphs = _paragraphs((markdown or "").replace("\x00", ""))
+    if not paragraphs:
+        return "", []
+    first, rest = paragraphs[0], paragraphs[1:]
+    if _opens_fence(first.split("\n", 1)[0]):
+        return "", paragraphs
+    # A soft-wrapped sentence continues onto the next line; a list item, heading or fence does not,
+    # and nothing continues a heading.
+    lines = first.split("\n")
+    wrapped = 1
+    while wrapped < len(lines) and not HEADING.match(lines[0]) and not (
+        LIST_MARKER.match(lines[wrapped]) or HEADING.match(lines[wrapped]) or _opens_fence(lines[wrapped])
+    ):
+        wrapped += 1
+    joined = " ".join(line.strip() for line in lines[:wrapped])
+    more_lines = "\n".join(lines[wrapped:])
+    # The list marker goes first, or "1. Checkout is down." would end at "1.".
+    # A period inside a code span does not end the sentence.
+    held, spans = _hold_code(LIST_MARKER.sub("", joined))
+    sentence, remainder = (_restore_code(part, spans) for part in _first_sentence(held))
+    headline = _clip(_plain(sentence), HEADLINE_MAX)
+    tail = "\n".join(part for part in (remainder, more_lines.strip("\n")) if part)
+    body = ([tail] if tail.strip() else []) + rest
+    return headline, body
+
+
+# --- blocks ----------------------------------------------------------------
+
+
+def _link_pairs(links: Iterable[Any]) -> list[tuple[str, str]]:
+    """``(label, url)`` from tuples or ``{"text", "url"}`` mappings; entries without a ``SAFE_URL`` dropped."""
+    pairs = []
+    for link in links or ():
+        if isinstance(link, Mapping):
+            label, url = link.get("text") or link.get("label") or "", link.get("url") or ""
+        else:
+            label, url = link
+        if url and SAFE_URL.fullmatch(str(url)):
+            pairs.append((str(label or url), str(url)))
+    return pairs
+
+
+def _button(label: str, action_id: str, *, url: str | None = None, value: str | None = None) -> dict:
+    button: dict = {
+        "type": "button",
+        "text": {"type": "plain_text", "text": _clip(label, BUTTON_TEXT_MAX), "emoji": True},
+        "action_id": action_id,
+    }
+    if url is not None:
+        button["url"] = url
+    if value is not None:
+        button["value"] = value[:BUTTON_VALUE_MAX]
+    return button
+
+
+def _actions(buttons: Sequence[dict]) -> list[dict]:
+    return [
+        {"type": "actions", "elements": list(buttons[i : i + BUTTONS_PER_ROW])}
+        for i in range(0, len(buttons), BUTTONS_PER_ROW)
+    ]
+
+
+def fallback_text(headline: str, links: Iterable[Any] = (), choices: Iterable[str] = ()) -> str:
+    """The same layout as plain mrkdwn, with no buttons.
+
+    Used as the ``text`` of a blocks message (notifications, screen readers).
+    ``headline`` is already plain, as :func:`split_answer` gives it; a second
+    plain pass would strip markup a code span had kept. Links become inline
+    ``<url|label>``; choices become one "Reply with one of:" line. Every label
+    is escaped and every url is a ``SAFE_URL``, so none can mention anyone.
+    """
+    parts: list[str] = []
+    title = _clip((headline or "").strip(), HEADLINE_MAX)
+    if title:
+        parts.append(f"*{_escape(title)}*")
+    pairs = _link_pairs(links)
+    if pairs:
+        parts.append(CHOICE_SEPARATOR.join(f"<{url}|{_escape(label)}>" for label, url in pairs))
+    labels = [_escape(str(c)) for c in choices or () if str(c).strip()]
+    if labels:
+        parts.append(CHOICES_LEAD + CHOICE_SEPARATOR.join(labels))
+    return "\n".join(parts)
+
+
+# --- link-button ack -------------------------------------------------------
+
+
+async def ack_link_click(ack: Any, body: Any = None, action: Any = None) -> None:
+    """Acknowledge a link-button click and do nothing else; Slack already opened the url."""
+    await ack()
