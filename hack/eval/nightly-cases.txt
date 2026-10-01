@@ -516,5 +516,5 @@
 
 # SOUL §2 step 5: the front door stays silent on a wake for a question the gateway
 # already posted, then routes the typed answer to the card. Plants its own
-# card through question_wake.py; reads no cluster.
+# card through card_wake.py; reads no cluster.
 ./tasks/chat-question-wake-stays-silent/task.yaml
