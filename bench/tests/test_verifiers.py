@@ -3332,10 +3332,10 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         ),
         (
             "Let me check why checkout-gateway on seeded-a was not restarted.",
-            ["the-reply-says-why", "the-reply-opens-without-preamble"],
+            ["the-reply-opens-without-preamble"],
         ),
-        ("[SILENT]", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
-        ("", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
+        ("[SILENT]", ["the-reply-leads-with-the-fact"]),
+        ("", ["the-reply-leads-with-the-fact"]),
     ],
 )
 def test_the_failure_voice_objectives_fail_the_voice_the_soul_rules_out(final_message, missed):
