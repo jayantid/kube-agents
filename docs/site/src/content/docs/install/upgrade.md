@@ -171,6 +171,41 @@ chart's default `platformAgent.name` value.
 
 The run also writes a machine-readable report to `/tmp/kube-agents-upgrade-report.json`.
 
+## When the Slack manifest changes
+
+An upgrade moves the agent's image but not your Slack app. The app has the manifest you pasted
+when you created it, and nothing re-applies it, so a scope, event or setting a newer release adds
+to `hermes slack manifest` is missing from the app until you paste it again. Slack does not say
+so: an API call that needs the new scope fails with `missing_scope` inside the agent, and an event
+the app never subscribed to is never delivered, so the feature that needed it simply does not
+appear.
+
+When Slack is enabled and the run moves the agent's image, `upgrade.sh` reads the manifest the
+running image prints and compares it with the one the target release ships. `--plan` with
+`--image-tag` compares too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a
+`--plan` without `--image-tag` do not: a dry run never contacts the install, and the others leave
+the agent's image where it is. If the two differ, the run prints the scopes, events,
+features and settings that are added, removed or changed, the release's note for each manifest
+change since the version you run, and these steps, and repeats the steps after the upgrade
+completes:
+
+1. Print the new manifest from the upgraded agent:
+
+   ```bash
+   kubectl exec deploy/platform-agent-gateway -c platform-agent -n kubeagents-system \
+     -- hermes slack manifest
+   ```
+
+   Add `--name` and `--description` with your app's own, which the printed manifest otherwise
+   resets to Hermes defaults, and `--agent-view` if your app uses Slack's agent view.
+
+2. In the [Slack App Console](https://api.slack.com/apps), open your app's **Features → App
+   Manifest**, replace the JSON with that output, and save.
+3. Reinstall the app to the workspace when Slack prompts. That is what grants a new scope.
+
+The comparison is advisory. A run that cannot reach the agent pod, or upgrades to a release that
+predates it, says so in one line and carries on.
+
 ## When an upgrade is refused
 
 Every one of these stops the run before any of the new release is applied. The first three are

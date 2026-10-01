@@ -795,6 +795,16 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # Runs after the reactions-scope patch because both edit slack_cli.py; the verifier drives the
 # real manifest command and prompt reader with the flag off and on.
 # See the module docstring in deploy/docker/patches/apply_slack_agent_view.py.
+#
+# Slack: the manifest record. Nothing re-pastes the manifest into an existing
+# Slack app, so a scope, event or setting a later image adds is missing on every
+# install that upgraded into it, and fails as silently as reactions:write did.
+# verify_slack_manifest.py runs last, after every Slack patch: it fails the build
+# unless the manifest the patched CLI emits equals slack_manifest.json's, and the
+# record's newest entry carries its digest and a release-note line, which
+# upgrade.sh prints to an operator whose running manifest differs. It also holds
+# interactivity, Socket Mode and assistant:write, which no other gate asserts.
+# See the module docstring in deploy/docker/patches/slack_manifest.py.
 COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/verify_slack_code_emphasis.py \
      deploy/docker/patches/apply_google_chat_attachment_notice.py \
@@ -824,6 +834,9 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      agents/platform/scripts/slack_moments.py \
      deploy/docker/patches/apply_slack_agent_view.py \
      deploy/docker/patches/verify_slack_agent_view.py \
+     deploy/docker/patches/slack_manifest.py \
+     deploy/docker/patches/slack_manifest.json \
+     deploy/docker/patches/verify_slack_manifest.py \
      deploy/docker/patches/patchlib.py \
      /tmp/message-surface/
 RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis.py /opt/hermes && \
@@ -867,6 +880,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_boilerplate.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_incident.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_agent_view.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_manifest.py && \
     rm -rf /tmp/message-surface
 
 # Perf: hide worker-only kanban tools from orchestrator profiles. Upstream gates

@@ -1,0 +1,177 @@
+{
+  "changes": [
+    {
+      "assistant_digest": "c93b8ec2392b",
+      "digest": "51c180872da8",
+      "note": "The manifest Hermes v2026.9.14 emits, before any kube-agents patch."
+    },
+    {
+      "assistant_digest": "d82f0c073db7",
+      "digest": "fefaea83799c",
+      "note": "Adds the reactions:write bot scope. Without it the eyes reaction on pickup and the check mark or cross when a turn ends never appear."
+    }
+  ],
+  "manifests": {
+    "agent": {
+      "features": {
+        "agent_view": {},
+        "app_home": {
+          "home_tab_enabled": false,
+          "messages_tab_enabled": true,
+          "messages_tab_read_only_enabled": false
+        }
+      },
+      "oauth_config": {
+        "scopes": {
+          "bot": [
+            "app_mentions:read",
+            "assistant:write",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "commands",
+            "files:read",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "im:read",
+            "im:write",
+            "mpim:history",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "users:read"
+          ]
+        }
+      },
+      "settings": {
+        "event_subscriptions": {
+          "bot_events": [
+            "app_context_changed",
+            "app_home_opened",
+            "app_mention",
+            "message.channels",
+            "message.groups",
+            "message.im",
+            "message.mpim",
+            "reaction_added",
+            "reaction_removed"
+          ]
+        },
+        "interactivity": {
+          "is_enabled": true
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": true,
+        "token_rotation_enabled": false
+      }
+    },
+    "assistant": {
+      "features": {
+        "app_home": {
+          "home_tab_enabled": false,
+          "messages_tab_enabled": true,
+          "messages_tab_read_only_enabled": false
+        },
+        "assistant_view": {}
+      },
+      "oauth_config": {
+        "scopes": {
+          "bot": [
+            "app_mentions:read",
+            "assistant:write",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "commands",
+            "files:read",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "im:read",
+            "im:write",
+            "mpim:history",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "users:read"
+          ]
+        }
+      },
+      "settings": {
+        "event_subscriptions": {
+          "bot_events": [
+            "app_mention",
+            "assistant_thread_context_changed",
+            "assistant_thread_started",
+            "message.channels",
+            "message.groups",
+            "message.im",
+            "message.mpim",
+            "reaction_added",
+            "reaction_removed"
+          ]
+        },
+        "interactivity": {
+          "is_enabled": true
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": true,
+        "token_rotation_enabled": false
+      }
+    },
+    "none": {
+      "features": {
+        "app_home": {
+          "home_tab_enabled": false,
+          "messages_tab_enabled": true,
+          "messages_tab_read_only_enabled": false
+        }
+      },
+      "oauth_config": {
+        "scopes": {
+          "bot": [
+            "app_mentions:read",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "commands",
+            "files:read",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "im:read",
+            "im:write",
+            "mpim:history",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "users:read"
+          ]
+        }
+      },
+      "settings": {
+        "event_subscriptions": {
+          "bot_events": [
+            "app_mention",
+            "message.channels",
+            "message.groups",
+            "message.im",
+            "message.mpim",
+            "reaction_added",
+            "reaction_removed"
+          ]
+        },
+        "interactivity": {
+          "is_enabled": true
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": true,
+        "token_rotation_enabled": false
+      }
+    }
+  }
+}
