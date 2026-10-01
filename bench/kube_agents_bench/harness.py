@@ -140,6 +140,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -148,7 +149,7 @@ from devops_bench.agents import AgentHarness, AgentResult
 from devops_bench.agents.result import empty_tokens
 
 from kube_agents_bench import inject_transport as inject
-from kube_agents_bench import board, gitops, transcript, worker_trajectory
+from kube_agents_bench import board, gitops, question_wake, transcript, worker_trajectory
 from kube_agents_bench.parsing import (
     STATUS_TOOL,
     delegated_task_ids,
@@ -230,6 +231,9 @@ _DEFAULT_AGENT_NAMESPACE = "kubeagents-system"
 # message id.
 _RUN_ID_PREFIX = "devops-bench-"
 _RUN_ID_HEX_WIDTH = 12
+# Set while a question-wake replay sends its two turns, so both land on one
+# conversation: see KubeAgentsHarness._execute_question_wake.
+_PINNED_RUN_ID: ContextVar[str | None] = ContextVar("pinned_run_id", default=None)
 # How long one injected task may run before the harness reads the record and
 # classifies it. The api path's AGENT_HTTP_TIMEOUT is a PER-REQUEST bound
 # there, with AGENT_DELEGATION_TIMEOUT covering the work across status turns;
@@ -1296,10 +1300,11 @@ def _run_id() -> str:
     """The api path's run id: pinned by ``AGENT_CONVERSATION_ID`` or minted.
 
     It is the stateful ``conversation`` field, fresh per invocation so no task
-    inherits the previous task's trajectory. The inject path does not use it:
-    see :func:`_inject_identity`.
+    inherits the previous task's trajectory. A question-wake replay pins it
+    for its two turns (:data:`_PINNED_RUN_ID`). The inject path does not use
+    it: see :func:`_inject_identity`.
     """
-    return os.environ.get("AGENT_CONVERSATION_ID") or _mint_run_id()
+    return _PINNED_RUN_ID.get() or os.environ.get("AGENT_CONVERSATION_ID") or _mint_run_id()
 
 
 def _inject_identity() -> tuple[str, str, str]:
@@ -1432,6 +1437,12 @@ class KubeAgentsHarness(AgentHarness):
         return result
 
     def _execute(self, prompt: str, workspace_path: Path | None = None) -> AgentResult:
+        try:
+            replay = question_wake.parse(prompt)
+        except ValueError as exc:
+            return AgentResult.errored(str(exc))
+        if replay is not None:
+            return self._execute_question_wake(replay, workspace_path)
         transport = os.environ.get("AGENT_TRANSPORT", TRANSPORT_API)
         if transport not in _TRANSPORTS:
             return AgentResult.errored(
@@ -1602,6 +1613,37 @@ class KubeAgentsHarness(AgentHarness):
         # And only then the workers', which the row must not overwrite.
         _fold_worker_tokens(result.tokens)
         return result
+
+    def _execute_question_wake(
+        self, replay: question_wake.Replay, workspace_path: Path | None
+    ) -> AgentResult:
+        """Send a planted question's wake, then the user's answer, on one conversation.
+
+        See :mod:`kube_agents_bench.question_wake`. A plant that fails is
+        infrastructure, not an answer: no agent saw anything. The card is
+        archived whatever the turns did, so an unanswered question does not
+        outlive the run.
+        """
+        transport = os.environ.get("AGENT_TRANSPORT", TRANSPORT_API)
+        if transport != TRANSPORT_API:
+            return AgentResult.errored(
+                f"{question_wake.DIRECTIVE} needs AGENT_TRANSPORT={TRANSPORT_API}, got {transport!r}"
+            )
+        try:
+            planted = question_wake.plant(_agent_shell, replay, _EXEC_TIMEOUT)
+        except question_wake.ReplayUnavailable as exc:
+            return _infra_failure(str(exc))
+        pinned = _PINNED_RUN_ID.set(_run_id())
+        try:
+            wake_turn = self._execute(planted.wake, workspace_path)
+            if wake_turn.errors:
+                return wake_turn
+            answer_turn = self._execute(replay.answer, workspace_path)
+        finally:
+            _PINNED_RUN_ID.reset(pinned)
+            if not question_wake.archive(_agent_shell, planted.card, _EXEC_TIMEOUT):
+                _log.warning("question wake: card %s was not archived", planted.card)
+        return question_wake.merge(planted, wake_turn, answer_turn)
 
     def _execute_inject(self, prompt: str) -> AgentResult:
         """The inject transport: send the prompt through the gateway's front door.

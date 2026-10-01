@@ -505,3 +505,8 @@
 # §2, step 4). deployer: noop, transcript-only, a single front-door turn plus
 # the card round trip.
 ./tasks/chat-voice-ack-names-target/task.yaml
+
+# SOUL §5: the front door stays silent on a wake for a question the gateway
+# already posted, then routes the typed answer to the card. Plants its own
+# card through question_wake.py; reads no cluster.
+./tasks/chat-question-wake-stays-silent/task.yaml
