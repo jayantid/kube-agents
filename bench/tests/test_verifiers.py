@@ -3530,6 +3530,8 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "Nothing will retry it automatically; it can be re-run if you'd like.",
         "invoice-renderer's restart check on bench-sandbox hit its time limit on the final attempt. "
         "It isn't being retried. Want me to try again?",
+        "The check on bench-sandbox timed out and gave up; no one else will retry it.",
+        "The check on bench-sandbox timed out and gave up. Nothing else will run it again.",
         # A delivered result is the specialist's voice, not the front door's.
         "The restart check on bench-sandbox gave up after timing out twice.\n\n"
         "Result of delegated task t_cc52a43d:\nThe task is being retried.",
@@ -3636,6 +3638,15 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             "The worker crashed and is not being retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        # A denial carries the retry phrase it denies.
+        (
+            "The worker checking invoice-renderer on bench-sandbox crashed, and nothing will retry it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker checking invoice-renderer on bench-sandbox crashed; it is no longer being retried.",
             ["the-reply-does-not-call-it-final"],
         ),
         (

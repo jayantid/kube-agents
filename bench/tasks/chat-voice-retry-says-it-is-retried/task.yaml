@@ -113,7 +113,7 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|given up|giving up|retries exhausted|out of retries|no more retries|(?:won''t|will not|isn''t|is not|not) (?:be |being )?re-?tr)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|given up|giving up|retries exhausted|out of retries|no more retries|(?:won''t|will not|isn''t|is not|not) (?:be |being )?re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run)|no longer (?:be |being )?re-?(?:tr|run))'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard
