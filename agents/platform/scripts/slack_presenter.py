@@ -5,8 +5,9 @@ the network, so any process that posts to Slack can use it, and it can move
 with Slack ingress when it leaves the gateway. Today its callers are the
 gateway's reactions patch (``slack_ux_reactions``), which the kanban notifier
 also reaches, its plan and session-status patch (``slack_ux_status``), which
-reads only :func:`enabled`, its moments patch (``slack_ux_moments``, through
-``slack_moments``), and its button-click patch (``slack_ux_clicks``).
+reads only :func:`enabled`, its moments patch (``slack_ux_moments``, which
+reads :func:`enabled` and lays out through ``slack_moments``), and its
+button-click patch (``slack_ux_clicks``).
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 

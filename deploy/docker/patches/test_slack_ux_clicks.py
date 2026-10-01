@@ -9,6 +9,7 @@ they must be identical, which is the flag-off identity for this surface. The
 runtime module is driven with a stub adapter.
 """
 
+import ast
 import asyncio
 import importlib
 import os
@@ -34,6 +35,20 @@ import verify_slack_ux_clicks as verifier
 UPSTREAM = '''\
 """Fixture standing in for plugins/platforms/slack/adapter.py."""
 import re
+
+
+def _flag_getter(key):
+    def getter(self):
+        return False
+
+    return getter
+
+
+def _channel_set_getter(key):
+    def getter(self):
+        return set()
+
+    return getter
 
 
 class App:
@@ -74,8 +89,8 @@ class SlackAdapter:
     async def _handle_slack_message(self, event, payload=None):
         return None
 
-    _slack_disable_dms = staticmethod(lambda: False)
-    _slack_allowed_channels = staticmethod(set)
+    _slack_disable_dms = _flag_getter("disable_dms")
+    _slack_allowed_channels = _channel_set_getter("allowed_channels")
 
     def _register_bolt_handlers(self) -> None:
         """Wire every Bolt listener onto ``self._app``; must run before Socket Mode starts."""
@@ -176,6 +191,20 @@ class ApplierTest(unittest.TestCase):
             ("body, action, kind, *", "body, action, source, kind, *", "_begin_interaction takes"),
             (returns, returns.replace("channel_id, user_name", "user_name, channel_id"), "returns"),
             (returns, returns + ", None", "returns"),
+            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, *, team=None)",
+             "_get_client no longer accepts"),
+            ("*, team_scoped=True)", "*, team_scoped)", "_begin_interaction requires a keyword"),
+            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, team_id)",
+             "_get_client no longer accepts 1 positional argument(s) and ()"),
+            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, team_id=None, /)",
+             "_get_client no longer accepts 1 positional argument(s) and ('team_id',)"),
+            ("    def _get_client(", "    @property\n    def _get_client(", "_get_client is no longer a method"),
+            ("def _handle_slack_message(self, event, payload=None)",
+             "def _handle_slack_message(self, event, payload)", "_handle_slack_message no longer accepts"),
+            ('_slack_disable_dms = _flag_getter("disable_dms")', "_slack_disable_dms = property(bool)",
+             "_slack_disable_dms is no longer a method"),
+            ("    def getter(self):\n        return False", "    def getter(self, extra):\n        return False",
+             "_slack_disable_dms no longer accepts"),
         ):
             with self.subTest(named=named, new=new):
                 self.assertEqual(patched.count(old), 1, old)
@@ -183,6 +212,20 @@ class ApplierTest(unittest.TestCase):
                 with self.assertRaises(SystemExit) as caught:
                     verifier.main(self.root.dir)
                 self.assertIn(named, str(caught.exception))
+
+    def test_a_required_parameter_the_runtime_passes_by_keyword_is_accepted(self):
+        args = ast.parse("def _get_client(self, chat_id, team_id): pass").body[0].args
+        self.assertTrue(verifier._accepts(args, 1, ("team_id",)))
+        self.assertFalse(verifier._accepts(args, 1, ()))
+        posonly = ast.parse("def _get_client(self, chat_id, team_id=None, /): pass").body[0].args
+        self.assertFalse(verifier._accepts(posonly, 1, ("team_id",)))
+        swapped = ast.parse("def _get_client(self, team_id, chat_id=None, **kwargs): pass").body[0].args
+        self.assertFalse(verifier._accepts(swapped, 1, ("team_id",)))
+        swallowed = ast.parse("def _get_client(self, chat_id, team_id=None, /, **kwargs): pass").body[0].args
+        self.assertFalse(verifier._accepts(swallowed, 1, ("team_id",)))
+        annotated = ast.parse("def _get_client(self, chat_id: str, team_id: Opt[str] = UNSET): pass").body[0].args
+        self.assertTrue(verifier._accepts(annotated, 1, ("team_id",)))
+        self.assertTrue(verifier._accepts(annotated, 1, ()))
 
 
 class FlagOffIdentityTest(unittest.TestCase):
@@ -217,8 +260,11 @@ class FlagOffIdentityTest(unittest.TestCase):
 
 class ActionIdTest(unittest.TestCase):
     def test_choice_pattern_matches_the_presenters_choice_buttons_only(self):
-        blocks = presenter.blocks_answer("h", links=[("l", "https://l")], choices=["a", "b"], action_id_prefix="triage")
-        ids = [e["action_id"] for b in blocks if b["type"] == "actions" for e in b["elements"]]
+        ids = [
+            f"triage.{presenter.LINK_ACTION}.0",
+            f"triage.{presenter.CHOICE_ACTION}.0",
+            f"triage.{presenter.CHOICE_ACTION}.1",
+        ]
         self.assertEqual(
             [bool(presenter.CHOICE_ACTION_ID_PATTERN.search(i)) for i in ids], [False, True, True]
         )
@@ -333,6 +379,8 @@ class RuntimeTest(unittest.TestCase):
             [[e["action_id"] for e in b["elements"]] for b in actions], [["kage.link.0"]]
         )
         self.assertEqual(update["blocks"][-1]["elements"][0]["text"], "✓ <@U1>: Leave it")
+        # The notification text no longer offers the choices the blocks dropped.
+        self.assertEqual(update["text"], "✓ <@U1>: Leave it")
         self.assertEqual(echo, {"channel": CHANNEL, "thread_ts": THREAD, "text": "↳ <@U1>: Leave it"})
         self.assertEqual(
             turn,
@@ -352,6 +400,23 @@ class RuntimeTest(unittest.TestCase):
             self._answer(adapter, *_choice())
         turn = adapter.log[-1][1]
         self.assertEqual(turn["text"], "Leave it\n\n" + runtime.CARD_NOTE.format(card="t_e0c1"))
+
+    def test_the_card_is_looked_up_before_the_rewrite(self):
+        cards = {(CHANNEL, MESSAGE_TS): "t_e0c1"}
+        moments = SimpleNamespace(question_card=lambda channel, ts: cards.get((channel, ts)))
+        adapter = _Adapter()
+        client = _Client(adapter.log)
+        update = client.chat_update
+
+        async def settle_then_update(**kwargs):
+            cards.clear()  # the card moved on and its question was settled meanwhile
+            await update(**kwargs)
+
+        client.chat_update = settle_then_update
+        adapter._get_client = lambda chat_id, team_id=None: client
+        with mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_moments=moments), "gateway.slack_ux_moments": moments}):
+            self._answer(adapter, *_choice())
+        self.assertEqual(adapter.log[-1][1]["text"], "Leave it\n\n" + runtime.CARD_NOTE.format(card="t_e0c1"))
 
     def test_a_click_on_any_other_message_is_the_label_alone(self):
         moments = SimpleNamespace(question_card=lambda channel, ts: None)
@@ -390,14 +455,40 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(runtime.answered(CHANNEL, MESSAGE_TS))
         self.assertFalse(runtime.answered("C0OTHER", MESSAGE_TS))
 
-    def test_a_failed_rewrite_is_not_reported_answered_but_still_answers_once(self):
+    def test_a_failed_rewrite_is_not_reported_answered(self):
         adapter = _Adapter(fail=("chat_update",))
         with self.assertLogs(runtime.logger, level="WARNING"):
             self._answer(adapter, *_choice(1, "Leave it"))
         self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS), "a question the click did not rewrite reads settled")
-        self._answer(_Adapter(), *_choice(0, "Raise to 512Mi"))
-        self.assertEqual([entry[0] for entry in adapter.log], ["chat_postMessage", "message"])
-        self.assertFalse(runtime.answered(CHANNEL, MESSAGE_TS))
+
+    def test_two_clicks_at_once_run_one_turn(self):
+        adapter = _Adapter()
+
+        async def both():
+            release = asyncio.Event()
+            client = _Client(adapter.log)
+            update = client.chat_update
+
+            async def held(**kwargs):
+                await release.wait()
+                await update(**kwargs)
+
+            client.chat_update = held
+            adapter._get_client = lambda chat_id, team_id=None: client
+            clicks = [
+                asyncio.ensure_future(runtime.answer(adapter, self._ack(adapter), *_choice(1, "Leave it"), runtime.CHOICE_KIND)),
+                asyncio.ensure_future(runtime.answer(adapter, self._ack(adapter), *_choice(0, "Raise to 512Mi"), runtime.CHOICE_KIND)),
+            ]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(adapter.log, [], "the first click's rewrite was not held")
+            release.set()
+            await asyncio.gather(*clicks)
+
+        _run(both())
+        turns = [entry[1]["text"] for entry in adapter.log if entry[0] == "message"]
+        self.assertEqual(turns, ["Leave it"])
+        self.assertEqual(adapter.acks, 2)
 
     def test_label_is_escaped_in_what_slack_shows_but_not_in_the_turn(self):
         adapter = _Adapter()
@@ -409,7 +500,7 @@ class RuntimeTest(unittest.TestCase):
 
     def test_turn_and_echo_carry_the_shown_text_never_the_longer_value(self):
         label = "Yes, roll back checkout-gateway to the previous revision in namespace prod " * 3
-        button = presenter.blocks_answer("h", choices=[label])[-1]["elements"][0]
+        button = presenter._button(label, "kage.choice.0", value=label)
         shown = button["text"]["text"]
         self.assertLess(len(shown), len(button["value"]))
         adapter = _Adapter()
@@ -473,6 +564,15 @@ class RuntimeTest(unittest.TestCase):
         with self.assertLogs(runtime.logger, level="WARNING"):
             self._answer(adapter, *_choice())
         self.assertEqual([entry[0] for entry in adapter.log], ["message"])
+
+    def test_buttons_left_by_a_failed_rewrite_do_not_run_a_second_turn(self):
+        adapter = _Adapter(fail=("chat_update",))
+        with self.assertLogs(runtime.logger, level="INFO") as logs:
+            self._answer(adapter, *_choice(1, "Leave it"))
+            self._answer(adapter, *_choice(0, "Raise to 512Mi"))
+        turns = [entry[1]["text"] for entry in adapter.log if entry[0] == "message"]
+        self.assertEqual(turns, ["Leave it"])
+        self.assertTrue(any("dropping a second" in line for line in logs.output))
 
     def test_empty_label_does_nothing(self):
         adapter = _Adapter()

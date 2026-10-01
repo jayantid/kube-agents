@@ -21,9 +21,10 @@ reaches the thread as "⏸ <head> blocked: <reason>", clipped to 160
 characters, and the ``blocked`` wake has the Planning Agent explain it, so
 the thread gets the question twice, once as a paraphrase. With the flag on,
 :func:`needs_you` instead posts the reason as a question: the first line in
-bold (plain if bold would drop a ``*``), the rest below (clipped at 2,000 characters), a choice button per option
-the question ends with, and "waiting on you". Buttons need the card's thread, since a click answers in the
-thread it was clicked in; a card with no thread keeps its options as text.
+bold (plain if bold would drop a ``*``), the rest below (clipped at 2,000
+characters), a choice button per option the question ends with, and "waiting
+on you". Buttons need the card's thread, since a click answers in the thread
+it was clicked in; a card with no thread keeps its options as text.
 The wake still runs, since it is how the Planning Agent learns which card an
 answer belongs to, but :func:`wake_text` adds a note that the question is
 already posted, so it says nothing now and only takes the answer, typed or
@@ -36,9 +37,10 @@ buttons and "waiting on you" off the question, so a typed answer does not
 leave them live. A question a click already answered was rewritten by the
 click and is left alone; one whose rewrite failed is settled here. The
 notifier delivers at least once, so a ``blocked`` event replayed after its
-question posted (:func:`asked`) neither settles nor reposts it. The open
-questions are held in process, so a restart leaves the buttons of any it
-forgot.
+question posted (:func:`asked`) neither settles nor reposts it. A question
+whose settle failed when the card asked again is kept and retried with the
+card's next settle. The open questions are held in process, so a restart
+leaves the buttons of any it forgot.
 
 Fail-soft: a moment that cannot be posted is logged, and the caller falls back
 to what it did before.
@@ -89,6 +91,8 @@ ANNOUNCED_MAX = 512
 _announced: OrderedDict[tuple, None] = OrderedDict()
 #: Subscription -> ``(event id, channel, ts, blocks, text)`` of its open question.
 _questions: OrderedDict[tuple, tuple] = OrderedDict()
+#: ``(subscription, ts)`` -> the entry of a question asked again before its settle succeeded.
+_unsettled: OrderedDict[tuple, tuple] = OrderedDict()
 _warned_missing = False
 
 
@@ -180,12 +184,17 @@ async def needs_you(adapter: Any, sub: dict, payload: Any, event_id: int = 0) ->
         return True
     # A card blocks again only after it was unblocked, so an earlier question is answered.
     await settle_question(adapter, sub)
+    key = _sub_key(sub)
+    earlier = _questions.get(key)
+    if earlier is not None:
+        # Its settle failed; the new question takes the slot, so keep this one for a retry.
+        _remember(_unsettled, (key, earlier[2]), earlier)
     blocks, text = moment
     ts = await _post(adapter, sub, blocks, text)
     if ts is None:
         return False
     entry = (int(event_id or 0), str(sub.get("chat_id") or ""), ts, blocks, text)
-    _remember(_questions, _sub_key(sub), entry)
+    _remember(_questions, key, entry)
     return True
 
 
@@ -216,21 +225,11 @@ def _clicked(channel: str, ts: str) -> bool:
         return False
 
 
-async def settle_question(adapter: Any, sub: dict) -> None:
-    """Take the buttons and "waiting on you" off the card's open question, if it has one.
-
-    The question is forgotten only once the rewrite succeeds (or a click has
-    answered it), so a failed rewrite is retried on the card's next event and
-    a click in between still names the card.
-    """
-    key = _sub_key(sub)
-    entry = _questions.get(key)
-    if entry is None:
-        return
+async def _settled(adapter: Any, sub: dict, entry: tuple) -> bool:
+    """Rewrite one question without its buttons; True once it needs nothing more."""
     _event_id, channel, ts, blocks, text = entry
     if not ts or _clicked(channel, ts):
-        _questions.pop(key, None)
-        return
+        return True
     try:
         client = adapter._get_client(channel, team_id=sub.get("team_id") or None)
         await client.chat_update(
@@ -238,8 +237,26 @@ async def settle_question(adapter: Any, sub: dict) -> None:
         )
     except Exception as exc:  # noqa: BLE001 — cosmetic; the next event retries
         logger.warning("slack_ux_moments: settling the question %s failed: %s", ts, exc)
+        return False
+    return True
+
+
+async def settle_question(adapter: Any, sub: dict) -> None:
+    """Take the buttons and "waiting on you" off the card's open question, if it has one.
+
+    The question is forgotten only once the rewrite succeeds (or a click has
+    answered it), so a failed rewrite is retried on the card's next event and
+    a click in between still names the card. Earlier questions of the card
+    whose settle failed are retried too.
+    """
+    key = _sub_key(sub)
+    for stale_key, stale in [item for item in _unsettled.items() if item[0][0] == key]:
+        if await _settled(adapter, sub, stale) and _unsettled.get(stale_key) is stale:
+            _unsettled.pop(stale_key, None)
+    entry = _questions.get(key)
+    if entry is None:
         return
-    if _questions.get(key) is entry:
+    if await _settled(adapter, sub, entry) and _questions.get(key) is entry:
         _questions.pop(key, None)
 
 

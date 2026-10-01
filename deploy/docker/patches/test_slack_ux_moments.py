@@ -32,6 +32,7 @@ SUB = {
 }
 QUESTION = {"kind": "needs_input", "reason": "Which cluster?\n- seeded-a\n- seeded-b"}
 POSTED_TS = "1700000000.000300"
+EARLIER_TS = "1700000000.000200"
 WAKE = "Task t_e0c1 is blocked.\n\ngateway.kanban.wake.guidance"
 
 #: build_wake_text's shape upstream, trimmed to what the patch touches.
@@ -63,7 +64,7 @@ class _Client:
         return {"ts": POSTED_TS}
 
     async def chat_update(self, **kwargs):
-        if self.adapter.fail:
+        if self.adapter.fail or self.adapter.fail_update:
             raise RuntimeError("message_not_found")
         self.adapter.updates.append(kwargs)
 
@@ -74,6 +75,7 @@ class _Adapter:
         self.updates = []
         self.teams = []
         self.fail = fail
+        self.fail_update = False
 
 
     def _get_client(self, chat_id, team_id=None):
@@ -162,6 +164,7 @@ class PrOpenedTest(unittest.TestCase):
 class NeedsYouTest(unittest.TestCase):
     def setUp(self):
         runtime._questions.clear()
+        runtime._unsettled.clear()
 
     def test_posts_a_needs_input_question_with_its_choices(self):
         adapter = _Adapter()
@@ -271,6 +274,7 @@ class SettleQuestionTest(unittest.TestCase):
 
     def setUp(self):
         runtime._questions.clear()
+        runtime._unsettled.clear()
 
     def test_rewrites_the_question_without_buttons_or_the_waiting_line(self):
         adapter = _Adapter()
@@ -332,6 +336,21 @@ class SettleQuestionTest(unittest.TestCase):
         self.assertEqual(_buttons(adapter.updates[-1]["blocks"]), [])
         self.assertEqual(runtime._questions, {})
         self.assertIsNone(runtime.question_card("C0KAGE", POSTED_TS))
+
+    def test_a_question_asked_again_after_a_failed_settle_is_retried_with_the_next(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
+        key = runtime._sub_key(SUB)
+        first = runtime._questions[key]
+        runtime._questions[key] = (first[0], first[1], EARLIER_TS, *first[3:])
+        adapter.fail_update = True
+        with self.assertLogs(runtime.logger, "WARNING"):
+            self.assertTrue(_run(runtime.needs_you(adapter, SUB, QUESTION, 9)))
+        self.assertEqual(runtime._questions[key][0], 9)
+        adapter.fail_update = False
+        _run(runtime.settle_question(adapter, SUB))
+        self.assertEqual([u["ts"] for u in adapter.updates], [EARLIER_TS, POSTED_TS])
+        self.assertEqual((runtime._questions, runtime._unsettled), ({}, {}))
 
     def test_a_clicked_question_is_forgotten_without_a_rewrite(self):
         adapter = _Adapter()

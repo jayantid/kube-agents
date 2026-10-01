@@ -26,18 +26,25 @@ With the flag on, :func:`register` adds two listeners:
   a line naming who chose what, a short echo ("↳ @user: label") is posted in
   the thread, since a bot token cannot post as the user, and the label is fed
   to the adapter's message handler as that user's message in that thread, the
-  path a reaction trigger already takes. When the clicked message is a card's
-  question (``gateway/slack_ux_moments.py``), the turn also names the card, so
-  with two cards blocked in one thread the answer reaches the right one. That
-  path applies the channel and user checks a typed message gets, so a click
+  path a reaction trigger already takes. That path applies the channel and user checks a typed message gets, so a click
   can do nothing its clicker could not do by typing the label.
 * A link button (``<prefix>.link.<n>``) is acknowledged and nothing else;
   Slack has already opened the url.
 
+When the clicked message is a card's question (``gateway/slack_ux_moments.py``),
+the turn also names the card, so with two cards blocked in one thread the
+answer reaches the right one, and the rewrite drops its "waiting on you" line.
+
 A message is answered once: the first authorized click wins, and a second
 click on the same message, before the rewrite lands, is dropped in this
-process. :func:`answered` reports the message only once the rewrite landed, so
-a question whose rewrite failed is still settled when its card moves on.
+process and logged. If the rewrite fails, the buttons stay on the message but
+the click still counts: its turn runs, and a later click on them is dropped and
+logged rather than running a second apply. That memory is this process's and
+holds the last ``ANSWERED_MAX`` answers, so only a failed rewrite followed by a
+gateway restart, or by that many later answers, lets the leftover buttons run
+again.
+:func:`answered` reports a message only once its rewrite landed, so a question
+whose rewrite failed is still settled when its card moves on.
 
 Fail-soft throughout: a rewrite or echo that fails is logged and the turn
 still runs, because the click was the user's answer.
@@ -92,8 +99,10 @@ FALLBACK_TS = "kage-click-{ts}-{action}-{user}"
 #: Bound on the answered-message map, oldest evicted first.
 ANSWERED_MAX = 512
 
-#: ``(channel, ts, kind)`` a click answered -> whether its rewrite landed.
-_answered: OrderedDict[tuple, bool] = OrderedDict()
+#: ``(channel, ts, kind)`` a click answered.
+_answered: OrderedDict[tuple, None] = OrderedDict()
+#: The keys of ``_answered`` whose rewrite landed.
+_rewritten: OrderedDict[tuple, None] = OrderedDict()
 _warned_missing = False
 
 
@@ -130,7 +139,7 @@ def _escape(text: str) -> str:
 
 def answered(channel_id: str, msg_ts: str) -> bool:
     """Whether a choice click in this process answered the message and rewrote it."""
-    return bool(_answered.get((str(channel_id), str(msg_ts), CHOICE_KIND)))
+    return (str(channel_id), str(msg_ts), CHOICE_KIND) in _rewritten
 
 
 def _answered_by(other: str) -> bool:
@@ -142,7 +151,8 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
     """``blocks`` with the answered buttons dropped, and ``note`` as a context line after them.
 
     An actions block left with no buttons is dropped; one that still holds a
-    link keeps it. So is the "waiting on you" line, now that it is answered.
+    link keeps it.
+    So is the "waiting on you" line, now that it is answered.
     """
     out: list[dict] = []
     for block in blocks or ():
@@ -216,8 +226,9 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
         return
     key = (channel_id, msg_ts, kind)
     if key in _answered:
+        logger.info("slack_ux_clicks: dropping a second %s click on %s, already answered", kind, msg_ts)
         return
-    _answered[key] = False
+    _answered[key] = None
     while len(_answered) > ANSWERED_MAX:
         _answered.popitem(last=False)
 
@@ -225,15 +236,22 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     shown = _escape(label)
     client = adapter._get_client(channel_id, team_id=team_id)
     note = ANSWERED.format(user=user_id, label=shown)
+    # Before the awaits: a card that moves on in between settles its question and forgets it.
+    card = _question_card(channel_id, msg_ts)
     try:
         await client.chat_update(
-            channel=channel_id, ts=msg_ts, text=message.get("text") or note,
+            channel=channel_id, ts=msg_ts, text=note,
             blocks=answered_blocks(message.get("blocks"), _answered_by, note),
         )
         if key in _answered:
-            _answered[key] = True
+            _rewritten[key] = None
+            while len(_rewritten) > ANSWERED_MAX:
+                _rewritten.popitem(last=False)
     except Exception as exc:  # noqa: BLE001 — the click still answers
-        logger.warning("slack_ux_clicks: could not mark %s answered: %s", msg_ts, exc)
+        logger.warning(
+            "slack_ux_clicks: could not mark %s answered; its buttons stay but further clicks are dropped: %s",
+            msg_ts, exc,
+        )
     try:
         await client.chat_postMessage(
             channel=channel_id, thread_ts=thread_ts, text=ECHO.format(user=user_id, label=shown),
@@ -244,7 +262,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     synthetic = {
         "type": "message",
         "user": user_id,
-        "text": _turn_text(label, _question_card(channel_id, msg_ts)),
+        "text": _turn_text(label, card),
         "channel": channel_id,
         # The click's own ts keeps the deduplicator from conflating this turn
         # with the echo or the clicked message, as a reaction trigger's does.

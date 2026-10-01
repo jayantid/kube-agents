@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import importlib.util
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -55,6 +57,15 @@ BEGIN_INTERACTION = "_begin_interaction"
 BEGIN_POSITIONAL = ("self", "ack", "body", "action", "kind")
 #: What ``_begin_interaction`` returns, unpacked positionally by ``answer()``.
 BEGIN_RETURNS = ("team_id", "action_id", "value", "message", "msg_ts", "channel_id", "user_name", "user_id")
+#: How the runtime calls the other members: positional arguments after ``self``, and keywords.
+#: ``_get_client`` has two callers: ``slack_ux_clicks`` passes ``team_id``, ``slack_ux_incident``'s
+#: alert edit does not.
+CALL_SHAPES = {
+    "_slack_allowed_channels": ((0, ()),),
+    "_slack_disable_dms": ((0, ()),),
+    "_get_client": ((1, ("team_id",)), (1, ())),
+    "_handle_slack_message": ((1, ()),),
+}
 
 CHANNEL = "C0KAGE"
 TEAM = "T0KAGE"
@@ -120,8 +131,56 @@ def _members(cls: ast.ClassDef) -> dict[str, ast.AST]:
     return found
 
 
+def _method_args(tree: ast.Module, member: ast.AST) -> ast.arguments | None:
+    """The arguments of a method, or of the function a module-level factory returns for it."""
+    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # A decorator (``@property``, ``@staticmethod``) changes how the call binds.
+        return None if member.decorator_list else member.args
+    if not (isinstance(member, ast.Assign) and isinstance(member.value, ast.Call)
+            and isinstance(member.value.func, ast.Name)):
+        return None
+    factory = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == member.value.func.id), None
+    )
+    if factory is None:
+        return None
+    nested = {n.name: n for n in factory.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    returned = [n.value.id for n in factory.body if isinstance(n, ast.Return) and isinstance(n.value, ast.Name)]
+    return nested[returned[0]].args if len(returned) == 1 and returned[0] in nested else None
+
+
+def _signature(args: ast.arguments) -> inspect.Signature:
+    """The signature ``args`` declares, with annotations dropped and every default ``None``."""
+    bare = copy.deepcopy(args)
+    for arg in [*bare.posonlyargs, *bare.args, *bare.kwonlyargs, bare.vararg, bare.kwarg]:
+        if arg is not None:
+            arg.annotation = None
+    bare.defaults = [ast.Constant(None) for _ in bare.defaults]
+    bare.kw_defaults = [None if d is None else ast.Constant(None) for d in bare.kw_defaults]
+    scope: dict = {}
+    exec(f"def member({ast.unparse(bare)}): pass", scope)  # noqa: S102 — a signature, no body
+    return inspect.signature(scope["member"])
+
+
+def _accepts(args: ast.arguments, positional: int, keywords: tuple[str, ...]) -> bool:
+    """Whether a method with ``args`` binds ``self`` plus the given call as Python would.
+
+    A keyword that binds only into ``**kwargs`` (a positional-only parameter of that name)
+    counts as refused: the call runs, but the parameter it meant to set does not get it.
+    """
+    signature = _signature(args)
+    try:
+        bound = signature.bind(None, *[None] * positional, **dict.fromkeys(keywords))
+    except TypeError:
+        return False
+    extra = next(
+        (bound.arguments.get(p.name, {}) for p in signature.parameters.values() if p.kind is p.VAR_KEYWORD), {}
+    )
+    return not set(keywords) & set(extra)
+
+
 def check_members(tree: ast.Module) -> None:
-    """The adapter members the runtime calls exist, and ``_begin_interaction`` has its shape."""
+    """The adapter members the runtime calls exist and accept its calls, and ``_begin_interaction`` has its shape."""
     classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == ADAPTER_CLASS]
     if len(classes) != 1:
         raise _fail(f"{ADAPTER} has {len(classes)} class {ADAPTER_CLASS}, expected 1")
@@ -129,12 +188,24 @@ def check_members(tree: ast.Module) -> None:
     missing = [name for name in RUNTIME_MEMBERS if name not in members]
     if missing:
         raise _fail(f"{ADAPTER_CLASS} no longer has {', '.join(missing)}, which slack_ux_clicks calls")
+    for name, calls in CALL_SHAPES.items():
+        args = _method_args(tree, members[name])
+        if args is None:
+            raise _fail(f"{ADAPTER_CLASS}.{name} is no longer a method the runtime can call")
+        for positional, keywords in calls:
+            if not _accepts(args, positional, keywords):
+                raise _fail(
+                    f"{ADAPTER_CLASS}.{name} no longer accepts {positional} positional argument(s)"
+                    f" and {keywords!r}, as the runtime calls it"
+                )
     begin = members[BEGIN_INTERACTION]
-    if not isinstance(begin, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    if not isinstance(begin, (ast.FunctionDef, ast.AsyncFunctionDef)) or begin.decorator_list:
         raise _fail(f"{ADAPTER_CLASS}.{BEGIN_INTERACTION} is no longer a method")
     positional = tuple(a.arg for a in [*begin.args.posonlyargs, *begin.args.args])
     if positional != BEGIN_POSITIONAL:
         raise _fail(f"{BEGIN_INTERACTION} takes {positional!r}, slack_ux_clicks passes {BEGIN_POSITIONAL!r}")
+    if not _accepts(begin.args, len(BEGIN_POSITIONAL) - 1, ()):
+        raise _fail(f"{BEGIN_INTERACTION} requires a keyword argument slack_ux_clicks does not pass")
     returned = [
         tuple(e.id if isinstance(e, ast.Name) else ast.unparse(e) for e in n.value.elts)
         for n in ast.walk(begin)
