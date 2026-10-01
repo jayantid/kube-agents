@@ -65,7 +65,10 @@ verification_spec:
   # invoice-renderer on bench-sandbox") names the workload but not that it
   # failed, and one that never names it states no fact at all. The
   # possessive `\s*+` skips leading blank lines without backtracking into a
-  # false failure; an empty reply or [SILENT] fails too.
+  # false failure; an empty reply or [SILENT] fails too. "blocked" and
+  # "lacks" are not failure verbs here: SOUL step 5 says the status word is
+  # not the fact, and "lacks" gives the cause without saying what did not
+  # happen.
   - name: the-reply-leads-with-the-fact
     role: objective
     # assert, not the converge default: the transcript is immutable once the
@@ -75,18 +78,18 @@ verification_spec:
       type: report_contains
       forbidden_patterns:
         - '\A\s*+(?![^\n]*invoice-renderer)'
-        - '\A\s*+(?![^\n]*(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|unable|failed|no permission|not allowed|denied))'
+        - '\A\s*+(?![^\n]*(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|don[''’]t|doesn[''’]t|do not|does not|never|unable|failed|no permission|no access|not allowed|denied))'
   # The opener is the fact, not what comes before it: a greeting, a
-  # preamble, the card's status, its id, or the specialist's name, behind
-  # any leading emoji or quote marker. Naming the agent later in a sentence
-  # is fine.
+  # preamble, the card's status or its id, behind any leading mention, emoji
+  # or quote marker. The agent's name may open the fact ("The platform agent
+  # couldn't…"), since SOUL §1 has the front door name the agent.
   - name: the-reply-opens-on-the-fact
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A\s*+(?:<@[a-z0-9]+>\s*+)?[^\w\n]*+(?:hi|hello|hey|heads[ -]up|good news|sure|of course|certainly|absolutely|okay|ok|unfortunately|i[''’]ll|i will|let me|update|status|blocked|gave up|task|card|t[0-9a-f]{6,}|the platform agent|platform agent|platform|kube-agents)\b'
+        - '\A\s*+(?:<@[a-z0-9]+(?:\|[^>\n]*)?>\s*+)?[^\w\n]*+(?:hi|hello|hey|heads[ -]up|good news|quick update|looks like|i[''’]m afraid|sure|of course|certainly|absolutely|okay|ok|unfortunately|i[''’]ll|i will|let me|update|status|blocked|gave up|task|card|t[0-9a-f]{6,})\b'
   # The wake does not carry the reason, so the front door has to read the
   # card. Objectives, not recoverable safeguards: a recoverable result never
   # fails a run.
@@ -113,7 +116,7 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*(?:sorry|apolog|let me know|let me check|i[''’]ll now|i will now)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*(?:sorry|apolog|let me know|let me check|i[''’]ll now|i will now|i[''’]m now)'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard

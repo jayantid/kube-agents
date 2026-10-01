@@ -3307,6 +3307,10 @@ def test_the_failure_case_requires_a_successful_card_read():
         "container.deployments.update there.",
         "<@U0BHV61L37B> I couldn't restart invoice-renderer on bench-sandbox: the service "
         "account lacks container.deployments.update there.",
+        "I don't have permission to restart invoice-renderer on bench-sandbox: the service "
+        "account lacks container.deployments.update there.",
+        "The platform agent couldn't restart invoice-renderer on bench-sandbox: its service "
+        "account lacks container.deployments.update there.",
     ],
 )
 def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(final_message):
@@ -3328,7 +3332,17 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             f"I'm afraid invoice-renderer on bench-sandbox wasn't restarted. {_FAILURE_WHY} "
             "Let me check who can.",
+            ["the-reply-opens-on-the-fact", "no-apology-let-me-know-or-narration"],
+        ),
+        (
+            f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} "
+            "I'm now looking for an agent that can.",
             ["no-apology-let-me-know-or-narration"],
+        ),
+        # The model's own miss on main and on a green: a status, not a failure verb.
+        (
+            f"The restart of invoice-renderer on bench-sandbox is blocked. {_FAILURE_WHY}",
+            ["the-reply-leads-with-the-fact"],
         ),
         # An echo of the wake's title names the workload but not the failure.
         (
@@ -3343,7 +3357,7 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             "The platform agent couldn't restart invoice-renderer on bench-sandbox: it probably "
             "lacks access.",
-            ["the-reply-opens-on-the-fact", "the-reply-says-why"],
+            ["the-reply-says-why"],
         ),
         (
             "Task t_cc52a43d is blocked and needs attention.\n\n"
@@ -3368,7 +3382,20 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
             ["the-reply-opens-on-the-fact"],
         ),
         (
+            "<@U0BHV61L37B|jayanti> blocked: invoice-renderer on bench-sandbox was not restarted. "
+            + _FAILURE_WHY,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
             f"Unfortunately invoice-renderer on bench-sandbox could not be restarted. {_FAILURE_WHY}",
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            f"Looks like invoice-renderer on bench-sandbox couldn't be restarted. {_FAILURE_WHY}",
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            f"Quick update: invoice-renderer on bench-sandbox wasn't restarted. {_FAILURE_WHY}",
             ["the-reply-opens-on-the-fact"],
         ),
         (
