@@ -6,6 +6,7 @@ Run: python3 -m pytest agents/platform/scripts/test_slack_presenter.py
 import asyncio
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -274,6 +275,30 @@ class SplitAnswerTest(unittest.TestCase):
         for line in ("Node pool np-1 at rev. 7 is cordoned.", "Certs expired Sept. 30 on seeded-a."):
             self.assertEqual(sp.split_answer(line), (line, []))
 
+    def test_an_abbreviation_in_parentheses_does_not_end_the_headline(self):
+        for line, headline in (
+            ("Several pods fail (e.g. Checkout) in prod. Raise it.", "Several pods fail (e.g. Checkout) in prod."),
+            ("Pods fail (i.e. Checkout). Raise it.", "Pods fail (i.e. Checkout)."),
+        ):
+            self.assertEqual(sp.split_answer(line)[0], headline)
+
+    def test_max_min_and_no_end_a_sentence(self):
+        for line, headline in (
+            ("Replicas are at max. Raise the HPA ceiling.", "Replicas are at max."),
+            ("Restarted after 5 min. Raise it.", "Restarted after 5 min."),
+            ("The answer is no. Checkout is down.", "The answer is no."),
+        ):
+            self.assertEqual(sp.split_answer(line)[0], headline)
+
+    def test_a_nul_in_the_answer_is_dropped(self):
+        self.assertEqual(sp.split_answer("Hello \x005\x00 world. More."), ("Hello 5 world.", ["More."]))
+
+    def test_many_abbreviations_stay_linear(self):
+        line = "See e.g. A " * 4000 + "end."
+        started = time.monotonic()
+        sp.split_answer(line)
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_plain_leaves_code_spans_and_globs_alone(self):
         self.assertEqual(sp._plain("`__init__.py` is missing"), "__init__.py is missing")
         self.assertEqual(sp._plain("Delete `__pycache__` and **this**"), "Delete __pycache__ and this")
@@ -350,6 +375,16 @@ class FallbackTextTest(unittest.TestCase):
         self.assertNotIn("<!", text)
         self.assertNotIn("<@", text)
         self.assertIn("&lt;@U1&gt; &amp; &lt;!channel&gt;", text)
+
+
+    def test_urls_cannot_mention_anyone_or_break_the_link(self):
+        links = [("x", "!channel"), ("y", "@U123"), ("z", "https://a?b=>c|d"), ("ok", "https://p")]
+        self.assertEqual(sp.fallback_text("h", links=links), "*h*\n<https://p|ok>")
+
+    def test_a_url_slack_would_refuse_is_dropped(self):
+        too_long = "https://x/" + "a" * sp.URL_MAX
+        links = [("a", too_long), ("b", "https://p\n"), ("c", "https://"), ("d", "HTTPS://P")]
+        self.assertEqual(sp.fallback_text("h", links=links), "*h*\n<HTTPS://P|d>")
 
 
 class LinkAckTest(unittest.TestCase):

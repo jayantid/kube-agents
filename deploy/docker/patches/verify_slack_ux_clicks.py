@@ -11,8 +11,11 @@ Two things are checked:
 1. The adapter. ``SlackAdapter`` still has the members the runtime calls:
    ``_begin_interaction(ack, body, action, kind)`` returning the eight fields
    :func:`slack_ux_clicks.answer` unpacks, in that order, plus
-   ``_slack_allowed_channels``, ``_slack_disable_dms``, ``_get_client`` and
-   ``_handle_slack_message``. ``_register_bolt_handlers`` still wires the plugin
+   ``_is_ignored_channel``, ``_slack_allowed_channels``, ``_slack_disable_dms``,
+   ``_get_client`` and ``_handle_slack_message``, plus ``_client_for`` for
+   ``slack_ux_incident``, each sync or async as the
+   runtime calls it, and the adapter file still reads the
+   ``_hermes_force_process`` marker the click's message carries. ``_register_bolt_handlers`` still wires the plugin
    action handlers, and the flag guard calling
    ``_kage_slack_clicks.register(self)`` follows that call directly. The import
    the guard names is bound at module level.
@@ -47,23 +50,28 @@ IMPORT_MODULE = "gateway"
 IMPORT_NAME = "slack_ux_clicks"
 
 ADAPTER_CLASS = "SlackAdapter"
-#: The adapter members ``slack_ux_clicks`` calls; the stub below supplies them,
-#: so only this check ties them to upstream.
+#: The adapter members ``slack_ux_clicks`` calls, and ``_client_for``, which
+#: ``slack_ux_incident``'s alert edit calls; the stubs supply them, so only this
+#: check ties them to upstream.
 RUNTIME_MEMBERS = (
-    "_begin_interaction", "_slack_allowed_channels", "_slack_disable_dms", "_get_client",
-    "_handle_slack_message",
+    "_begin_interaction", "_is_ignored_channel", "_slack_allowed_channels", "_slack_disable_dms",
+    "_get_client", "_handle_slack_message", "_client_for",
 )
+#: The members the runtime awaits; every other one it calls plainly.
+ASYNC_MEMBERS = ("_begin_interaction", "_handle_slack_message")
+#: The marker that makes the message handler skip the mention requirement for a click's turn.
+FORCE_MARKER = 'event.get("_hermes_force_process")'
 BEGIN_INTERACTION = "_begin_interaction"
 BEGIN_POSITIONAL = ("self", "ack", "body", "action", "kind")
 #: What ``_begin_interaction`` returns, unpacked positionally by ``answer()``.
 BEGIN_RETURNS = ("team_id", "action_id", "value", "message", "msg_ts", "channel_id", "user_name", "user_id")
 #: How the runtime calls the other members: positional arguments after ``self``, and keywords.
-#: ``_get_client`` has two callers: ``slack_ux_clicks`` passes ``team_id``, ``slack_ux_incident``'s
-#: alert edit does not.
 CALL_SHAPES = {
+    "_is_ignored_channel": ((1, ()),),
     "_slack_allowed_channels": ((0, ()),),
     "_slack_disable_dms": ((0, ()),),
-    "_get_client": ((1, ("team_id",)), (1, ())),
+    "_get_client": ((1, ("team_id",)),),
+    "_client_for": ((2, ()),),
     "_handle_slack_message": ((1, ()),),
 }
 
@@ -198,6 +206,14 @@ def check_members(tree: ast.Module) -> None:
                     f"{ADAPTER_CLASS}.{name} no longer accepts {positional} positional argument(s)"
                     f" and {keywords!r}, as the runtime calls it"
                 )
+    for name in RUNTIME_MEMBERS:
+        member = members[name]
+        if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        awaited = name in ASYNC_MEMBERS
+        if isinstance(member, ast.AsyncFunctionDef) != awaited:
+            state, use = ("no longer", "awaits") if awaited else ("now", "calls")
+            raise _fail(f"{ADAPTER_CLASS}.{name} is {state} async; slack_ux_clicks {use} it")
     begin = members[BEGIN_INTERACTION]
     if not isinstance(begin, (ast.FunctionDef, ast.AsyncFunctionDef)) or begin.decorator_list:
         raise _fail(f"{ADAPTER_CLASS}.{BEGIN_INTERACTION} is no longer a method")
@@ -219,8 +235,11 @@ def check_adapter(root: Path) -> None:
     path = root / ADAPTER
     if not path.is_file():
         raise _fail(f"{path} does not exist")
-    tree = ast.parse(path.read_text())
+    source = path.read_text()
+    tree = ast.parse(source)
     check_members(tree)
+    if FORCE_MARKER not in source:
+        raise _fail(f"{ADAPTER} no longer reads {FORCE_MARKER}, which a click's message relies on")
     methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == METHOD]
     if len(methods) != 1:
         raise _fail(f"{ADAPTER} has {len(methods)} def {METHOD}(), expected 1")
@@ -276,6 +295,9 @@ class _StubAdapter:
             return None
         message = body["message"]
         return (TEAM, action["action_id"], action["value"], message, message["ts"], CHANNEL, "someone", USER)
+
+    def _is_ignored_channel(self, channel_id):
+        return False
 
     def _slack_allowed_channels(self):
         return set()

@@ -101,7 +101,7 @@ Two moments get a message of their own with the flag on. When a card's progress 
 
 ### Buttons
 
-With `KAGE_SLACK_UX` on, an incident's triage edits its alert in place instead of replying under it. The alert becomes a one-line headline, a button per proposed option with the recommended one highlighted, a button for each console link on the report's 🔗 line, and the full report folded underneath. Clicking an option is the same as replying `apply Option B` in the thread yourself: the agent posts a short echo naming you, replaces the option buttons with a line saying who chose what, and your reply passes the same user and channel checks a typed message does. A report that does not parse into options, a second report in the same thread, a report too long to fold, or an edit Slack refuses arrives as a threaded reply as before.
+With `KAGE_SLACK_UX` on, an incident's triage edits its alert in place instead of replying under it. The alert becomes a one-line headline, a button per proposed option with the recommended one highlighted, a button for each console link on the report's 🔗 line, and the full report folded underneath. Clicking an option is the same as replying `apply Option B` in the thread yourself: the agent posts a short echo naming you, removes the option buttons and adds a line saying who chose what, and your reply passes the same user and channel checks a typed message does. A report that does not parse into options, a second report in the same thread, a report too long to fold, or an edit Slack refuses arrives as a threaded reply as before.
 
 ## Proactive alerts (both channels)
 

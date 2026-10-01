@@ -14,8 +14,10 @@ handlers::
 and the module import is appended to the end of the file, where it resolves at
 import time, before the adapter connects. With the flag off nothing is
 registered, so the adapter's listeners are exactly upstream's. After the
-plugin handlers, because Bolt dispatches to the first matching listener: a
-plugin that claims one of these action ids keeps it. What the handlers do,
+``_register_plugin_action_handlers`` call, because Bolt dispatches to the
+first matching listener: a plugin action handler that claims one of these
+action ids keeps it. Handlers from ``register_platform_handler`` factories are
+wired after ours, so ours win for these ids. What the handlers do,
 and why, is in the module docstring of
 ``deploy/docker/patches/slack_ux_clicks.py``.
 

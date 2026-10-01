@@ -12,7 +12,6 @@ and a routing database written the way ``session_kv_server`` writes it.
 import asyncio
 import json
 import os
-import re
 import sqlite3
 import sys
 import tempfile
@@ -28,14 +27,13 @@ SCRIPTS = HERE.parents[2] / "agents" / "platform" / "scripts"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(SCRIPTS))
 
-import slack_presenter as presenter
-
 import apply_slack_ux_incident as applier
 import kanban_notifier
+import kanban_progress_lines
+import slack_presenter as presenter
 import slack_ux_clicks as clicks
 import slack_ux_incident as runtime
 from apply_kanban_progress_lines import SEND_PATCHED
-import kanban_progress_lines
 
 CHANNEL = "C0KAGE"
 ALERT_TS = "1700000000.000100"
@@ -108,7 +106,8 @@ class _Adapter:
         self.fail_update = fail_update
         self.name = "slack-adapter"
 
-    def _get_client(self, chat_id, team_id=None):
+    def _client_for(self, chat_id, metadata):
+        self.client_metadata = metadata
         return _Client(self.log, self.fail_update)
 
     async def send(self, chat_id, content, metadata=None):
@@ -293,6 +292,26 @@ class RuntimeTest(unittest.TestCase):
         self.assertIs(fold["is_collapsible"], True)
         self.assertIs(fold["default_collapsed"], True)
         self.assertIn("apply Option A", update["text"])
+        # The whole report is in the text, the only place a thread read-back finds it.
+        self.assertTrue(update["text"].endswith(REPORT.strip()))
+        self.assertEqual(adapter.client_metadata, {"thread_id": ALERT_TS})
+
+    def test_the_message_text_is_the_report_as_mrkdwn(self):
+        adapter = _Adapter()
+        adapter.format_message = lambda s: "fmt:" + s
+        self.deliver(adapter)
+        self.assertIn("\n\nfmt:" + REPORT.strip(), adapter.log[0][1]["text"])
+
+    def test_a_report_too_long_to_fold_keeps_the_reply(self):
+        adapter = _Adapter()
+        long_report = REPORT + "\n\n" + "x" * runtime.FOLD_TEXT_MAX
+        self.assertIsNotNone(runtime.parse_triage(long_report))
+        self.assertIs(self.wrap(adapter, result=long_report), adapter)
+
+    def test_an_alert_thread_routed_for_another_platform_is_not_taken(self):
+        adapter = _Adapter()
+        self.route("k8s-evt-0000beef", "google_chat", CHANNEL, "1700000000.000888")
+        self.assertIs(self.wrap(adapter, thread="1700000000.000888"), adapter)
 
     def test_the_fold_is_the_plugins_rendering_of_the_whole_report(self):
         adapter = _Adapter()

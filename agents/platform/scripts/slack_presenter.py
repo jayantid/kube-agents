@@ -1,6 +1,7 @@
 """Slack presentation for kube-agents: answer layout, buttons and reactions.
 
-Pure functions only. Nothing here imports the Hermes gateway, the Slack SDK or
+Pure functions, plus ``ack_link_click``, the no-op handler a caller registers
+for link buttons. Nothing here imports the Hermes gateway, the Slack SDK or
 the network, so any process that posts to Slack can use it, and it can move
 with Slack ingress when it leaves the gateway. Its callers include the
 gateway patches for reactions (``slack_ux_reactions``, which the kanban
@@ -120,6 +121,7 @@ FIRST_WORD = re.compile(r"[A-Za-z']+")
 BUTTON_TEXT_MAX = 75
 BUTTON_VALUE_MAX = 2000
 BUTTONS_PER_ROW = 5
+#: Ours, not Slack's: the longest headline, and the mark a clip ends with.
 HEADLINE_MAX = 150
 ELLIPSIS = "…"
 
@@ -157,15 +159,13 @@ MD_BOLD = re.compile(f"{STAR_BOLD}|{STAR_BOLD_IN_WORD}|{UNDERSCORE_BOLD}")
 MD_LINK = re.compile(r"\[([^\]]+)\]\(([^()\s]+(?:\([^()\s]*\)[^()\s]*)*)\)")
 #: ``*italic*`` and ``_italic_``; a ``*`` inside a word (``2*3``) or unpaired (``*.tmp``) is text.
 MD_ITALIC = re.compile(r"(?<![\w*])\*(?=[^\s.])([^*\n]+?)(?<=\S)\*(?![\w*])|(?<![\w_])_(?=[^\s.])([^_\n]+?)(?<=\S)_(?![\w_])")
-#: Inline code.
 #: A code span: a backtick run, then content, then a run of the same length (CommonMark).
 MD_CODE = re.compile(r"(?<!`)(`+)([^\n]+?)(?<!`)\1(?!`)")
-#: Holds a code span's place while the other markup is stripped; NUL never appears in an answer.
+#: Holds a code span's place while the other markup is stripped; input NULs are dropped first.
 CODE_PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
 MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
-#: A candidate sentence end: punctuation, then space, then anything but a
-#: lowercase letter ("in ns. prod" runs on).
-#: A sentence ends at ``.``, ``!`` or ``?``, or just after the emphasis that closes on one.
+#: A sentence ends at ``.``, ``!`` or ``?``, or just after the emphasis that closes on one,
+#: then space, then anything but a lowercase letter ("in ns. prod" runs on).
 SENTENCE_END = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][*_])|(?<=[.!?]\*\*)|(?<=[.!?]__))\s+(?=[^\sa-z])")
 #: Per bold marker, its opener and closer, which a split can leave unpaired; the first
 #: sentence closes one and the rest reopens it.
@@ -175,10 +175,18 @@ BOLD_EDGES = {
 }
 #: A text ending in one of these abbreviations has not ended its sentence.
 ABBREVIATION_END = re.compile(
-    r"(?:^|\s)(?:e\.g|i\.e|vs|approx|incl|cf|etc|esp|no|min|max|fig|rev|ver|ex|cont|"
+    r"(?:^|[\s(\[])(?:e\.g|i\.e|vs|approx|incl|cf|etc|esp|fig|rev|ver|cont|"
     r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.$",
     re.IGNORECASE,
 )
+#: How far back from a candidate end an abbreviation can start; bounds the check to the tail.
+ABBREVIATION_TAIL = 16
+#: Slack refuses a button whose url is longer than this.
+URL_MAX = 3000
+#: A url a link button or ``<url|label>`` may carry: http(s) in any case, nothing that ends or
+#: splits the link, and short enough for a button. Use ``fullmatch``: ``$`` would admit a trailing
+#: newline.
+SAFE_URL = re.compile(rf"https?://[^\s<>|]{{1,{URL_MAX - len('https://')}}}", re.IGNORECASE)
 #: A space-aligned clip shorter than this share of the limit drops too much; it cuts hard instead.
 CLIP_MIN_SHARE = 2
 
@@ -268,7 +276,7 @@ def _plain(markdown: str) -> str:
 
     Code spans are held out first, as a renderer resolves them first, so ``__init__`` in one stays.
     """
-    text, spans = _hold_code(markdown.strip())
+    text, spans = _hold_code(markdown.replace("\x00", "").strip())
     text = HEADING.sub("", text)
     text = LIST_MARKER.sub("", text)
     text = MD_LINK.sub(r"\1", text)
@@ -314,7 +322,8 @@ def _first_sentence(line: str) -> tuple[str, str]:
     """``(first sentence, the rest)`` of ``line``, not cut after an abbreviation."""
     for match in SENTENCE_END.finditer(line):
         sentence = line[: match.start()]
-        if not ABBREVIATION_END.search(sentence.rstrip("*_")):
+        stem = sentence.rstrip("*_")
+        if not ABBREVIATION_END.search(stem, max(0, len(stem) - ABBREVIATION_TAIL)):
             rest = line[match.end() :].strip()
             # "**One. Two.**" splits inside the bold, which would leave both halves unpaired.
             for marker, (opener, closer) in BOLD_EDGES.items():
@@ -332,7 +341,7 @@ def split_answer(markdown: str) -> tuple[str, list[str]]:
     paragraph are the body sections, still markdown, in order. Empty input
     gives ``("", [])``.
     """
-    paragraphs = _paragraphs(markdown or "")
+    paragraphs = _paragraphs((markdown or "").replace("\x00", ""))
     if not paragraphs:
         return "", []
     first, rest = paragraphs[0], paragraphs[1:]
@@ -362,14 +371,14 @@ def split_answer(markdown: str) -> tuple[str, list[str]]:
 
 
 def _link_pairs(links: Iterable[Any]) -> list[tuple[str, str]]:
-    """``(label, url)`` from tuples or ``{"text", "url"}`` mappings; entries without a url dropped."""
+    """``(label, url)`` from tuples or ``{"text", "url"}`` mappings; entries without a ``SAFE_URL`` dropped."""
     pairs = []
     for link in links or ():
         if isinstance(link, Mapping):
             label, url = link.get("text") or link.get("label") or "", link.get("url") or ""
         else:
             label, url = link
-        if url:
+        if url and SAFE_URL.fullmatch(str(url)):
             pairs.append((str(label or url), str(url)))
     return pairs
 
@@ -430,7 +439,7 @@ def fallback_text(headline: str, links: Iterable[Any] = (), choices: Iterable[st
     ``headline`` is already plain, as :func:`split_answer` gives it; a second
     plain pass would strip markup a code span had kept. Links become inline
     ``<url|label>``; choices become one "Reply with one of:" line. Every label
-    is escaped, so none can mention anyone.
+    is escaped and every url is a ``SAFE_URL``, so none can mention anyone.
     """
     parts: list[str] = []
     title = _clip((headline or "").strip(), HEADLINE_MAX)

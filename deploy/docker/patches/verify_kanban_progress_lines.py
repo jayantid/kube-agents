@@ -2,7 +2,8 @@
 """Build gate for the rolling-progress-message patch.
 
 Run by ``deploy/docker/Dockerfile`` from ``/opt/hermes`` immediately after
-``apply_kanban_progress_lines.py``. The applier proves its anchors matched in
+``apply_kanban_progress_lines.py``, and again after ``apply_slack_ux_incident.py``
+wraps the adapter the notifier passes. The applier proves its anchors matched in
 ``gateway/kanban_watchers_notifier.py``; a matched anchor is the weaker half of
 every concern here, because **every** failure mode of this patch is silent:
 

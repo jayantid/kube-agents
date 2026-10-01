@@ -21,7 +21,10 @@ With the flag on, :func:`register` adds two listeners:
   label that starts like a command (``/`` or ``!``) is sent as text, since a
   choice is an answer. The click goes through the adapter's own interactive
   authorization; an unlisted user's click is logged and changes nothing, and
-  so does one in a channel or DM the adapter would ignore a typed message in.
+  so does one in an ignored channel, outside ``allowed_channels``, or in a
+  one-to-one DM with DMs disabled. A group DM with DMs disabled is not caught
+  here: the action payload does not say a channel is a group DM, so the
+  message handler's own check refuses its turn after the rewrite and echo.
   Then the message is rewritten with the choice buttons replaced by
   a line naming who chose what, a short echo ("↳ @user: label") is posted in
   the thread, since a bot token cannot post as the user, and the label is fed
@@ -177,8 +180,11 @@ def _shown_text(action: dict) -> str:
 
 
 def _gated_out(adapter: Any, channel_id: str) -> bool:
-    """Whether the adapter would ignore a typed message in ``channel_id``: outside
-    ``allowed_channels``, or a DM with DMs disabled. Checked before anything is shown."""
+    """Whether the adapter would ignore a typed message in ``channel_id``: an
+    ignored channel, outside ``allowed_channels``, or a one-to-one DM with DMs
+    disabled. Checked before anything is shown."""
+    if adapter._is_ignored_channel(channel_id):
+        return True
     allowed = adapter._slack_allowed_channels()
     if allowed and channel_id not in allowed:
         return True
