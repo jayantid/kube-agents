@@ -103,7 +103,7 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want me to|would you like me to|i can|i could|i''ll|i will|let me)(?: \w+){0,2}? (?:retry|re-?try|re-?run|try (?:it |that |this )?again|run (?:it |that |this )?again|another attempt|a retry|a re-?run)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want me to|would you like me to|i can|i could|i''ll|i will|let me|happy to)(?: \w+){0,2}? (?:retry|re-?try|re-?run|try (?:it |that |this )?again|run (?:it |that |this )?again|another attempt|a retry|a re-?run|kick (?:it |that |this )?off|file (?:a |another )?(?:retry|re-?run|card))'
   # Not the final-failure announcement: no "gave up" and no retry denied
   # ("won't be retried"). A failure in the reason ("the logs could not be
   # read") is not a final announcement, so "couldn't" is not forbidden.

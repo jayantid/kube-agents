@@ -3579,6 +3579,12 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
                 "Hermes will retry.",
                 "It's queued to retry.",
                 "It'll be re-tried in a few minutes.",
+                "It's retrying shortly.",
+                "It will be picked up again.",
+                "The next attempt will start in a minute.",
+                "It's been requeued.",
+                "Requeued it.",
+                "It's queued again.",
             )
         ),
         # A count of attempts is not the run being over.
@@ -3640,7 +3646,12 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         *(
             (f"The worker checking invoice-renderer on bench-sandbox crashed. {offer}",
              ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"])
-            for offer in ("Want me to retry it?", "I can retry it or re-route it.", "Should I file a retry?")
+            for offer in (
+                "Want me to retry it?",
+                "I can retry it or re-route it.",
+                "Should I file a retry?",
+                "Happy to kick it off again.",
+            )
         ),
         (
             "The worker checking invoice-renderer on bench-sandbox crashed.",

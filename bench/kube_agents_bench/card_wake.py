@@ -57,7 +57,12 @@ one. The card is assigned to
 :data:`WORKER_ASSIGNEE` before it fails, a profile no install has, so a
 retrying card left ``ready`` never starts a worker.
 
-What neither replay reproduces: the turns arrive on the run's own
+What neither replay reproduces: a final attempt's wake split in two. The
+dispatcher appends the ``crashed`` or ``timed_out`` event and the breaker's
+``gave_up`` in separate transactions, so the notifier can claim the first
+alone and wake with "dispatcher will retry", then wake again with
+``gave_up``; the plant always delivers both in one wake. And the turns arrive
+on the run's own
 ``/v1/responses`` conversation rather than the session that filed the card, so
 the front door has not seen the ask that led to it; for a question, the flag is
 set in the script's process whatever the install's setting and no message
