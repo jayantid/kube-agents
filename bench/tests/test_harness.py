@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from devops_bench.agents import AGENTS, AgentResult
-from kube_agents_bench import board, harness, transcript, worker_trajectory
+from kube_agents_bench import board, harness, question_wake, transcript, worker_trajectory
 from kube_agents_bench.cases import CaseSpec
 from kube_agents_bench.harness import KubeAgentsHarness
 from kube_agents_bench.parsing import merge_new as _merge_new
@@ -3131,3 +3131,112 @@ def test_an_errored_run_still_stamps_a_start(
 
     assert result.has_errors()
     assert transcript.get().started_at > 0.0
+
+
+# --- The question-wake replay (kube_agents_bench.question_wake) ---------------
+
+_REPLAY_PROMPT = """[bench:slack-question-wake]
+title: Check checkout-gateway's restarts
+question: Two clusters run checkout-gateway. Which should I look at?
+options: seeded-a | seeded-b
+answer: seeded-b
+"""
+_REPLAY_CARD = "t_5e1ec7ed"
+_REPLAY_WAKE = f"[kanban] Task {_REPLAY_CARD} blocked; needs attention."
+
+
+def _replay_shell(scripts: list[str], plant_reply: str | None = None):
+    """A stand-in for ``_agent_shell`` answering the plant and archive scripts."""
+    planted = json.dumps({"card": _REPLAY_CARD, "wake": _REPLAY_WAKE, "posted": 1, "error": None})
+    archived = json.dumps({"archived": True, "error": None})
+
+    def shell(script: str, timeout: float) -> str:
+        scripts.append(script)
+        if question_wake.REPLAY_PRESENT not in script:
+            return ""
+        if "create_task" in script:
+            return plant_reply if plant_reply is not None else f"{question_wake.REPLAY_PRESENT}\n{planted}"
+        return f"{question_wake.REPLAY_PRESENT}\n{archived}"
+
+    return shell
+
+
+def _answer_turn() -> bytes:
+    return _turn(
+        *_call("kanban_comment", {"task_id": _REPLAY_CARD, "body": "seeded-b"}, {"ok": True}, "c1"),
+        *_call("kanban_unblock", {"task_id": _REPLAY_CARD}, {"ok": True}, "c2"),
+        _text("Passed seeded-b to the card."),
+        usage={"input_tokens": 300, "output_tokens": 30, "total_tokens": 330},
+    )
+
+
+def test_a_question_wake_sends_the_wake_then_the_answer_on_one_conversation(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+    stub_agent.turns = [_turn(_text("[SILENT]")), _answer_turn()]
+
+    result = KubeAgentsHarness().run(_REPLAY_PROMPT)
+
+    assert not result.has_errors()
+    assert [r["input"] for r in stub_agent.requests] == [_REPLAY_WAKE, "seeded-b"]
+    assert stub_agent.requests[0]["conversation"] == stub_agent.requests[1]["conversation"]
+    assert result.output == "[SILENT]"
+    assert [s["name"] for s in result.trajectory] == ["kanban_comment", "kanban_unblock"]
+    snap = transcript.get()
+    assert snap.final_message == "[SILENT]"
+    assert result.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
+    assert any(question_wake.archive_command(_REPLAY_CARD) == s for s in scripts)
+
+
+def test_the_next_run_gets_a_fresh_conversation_after_a_question_wake(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell([]))
+    stub_agent.turns = [_turn(_text("[SILENT]")), _answer_turn(), json.dumps(_RESPONSE).encode()]
+
+    KubeAgentsHarness().run(_REPLAY_PROMPT)
+    KubeAgentsHarness().run("Provision operator agent in cluster mercury-09.")
+
+    conversations = [r["conversation"] for r in stub_agent.requests]
+    assert conversations[0] == conversations[1] != conversations[2]
+
+
+def test_a_question_wake_that_cannot_be_planted_is_infrastructure(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell([], plant_reply=""))
+
+    result = KubeAgentsHarness().run(_REPLAY_PROMPT)
+
+    assert result.errors[0].startswith(harness.INFRA_FAILURE_MARKER)
+    assert result.output == ""
+    assert stub_agent.requests == []
+
+
+def test_a_question_wake_archives_its_card_when_the_wake_turn_errors(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+    stub_agent.fail_with = 500
+
+    result = KubeAgentsHarness().run(_REPLAY_PROMPT)
+
+    assert result.has_errors()
+    assert len(stub_agent.requests) == 1
+    assert question_wake.archive_command(_REPLAY_CARD) in scripts
+
+
+def test_a_question_wake_missing_its_answer_errors_without_planting(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+
+    result = KubeAgentsHarness().run(_REPLAY_PROMPT.replace("answer: seeded-b\n", ""))
+
+    assert result.errors == [f"{question_wake.DIRECTIVE} prompt is missing answer"]
+    assert scripts == []
+    assert stub_agent.requests == []
