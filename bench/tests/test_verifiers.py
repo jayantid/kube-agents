@@ -56,6 +56,7 @@ from kube_agents_bench.verifiers import (
     WorkerCommandsVerifier,
     LedgerIssueContainsVerifier,
     PullRequestOpenedVerifier,
+    ReplayCardVerifier,
     ReportContainsVerifier,
     ToolCalledVerifier,
 )
@@ -221,6 +222,71 @@ def test_worker_commands_rejects_a_pattern_that_does_not_compile():
 
 def test_worker_commands_is_registered_under_its_type():
     assert "worker_commands" in VERIFIERS
+
+
+# ------------------------------------------------------------ replay_card
+
+
+def _stash_settled(result) -> None:
+    entry = {"name": "card_wake_settled", "args": {"card": "t_1"}, "result": result, "status": "harness"}
+    transcript.set("[SILENT]", _TRAJECTORY + [entry])
+
+
+def _replay_card(**fields) -> ReplayCardVerifier:
+    return ReplayCardVerifier(type="replay_card", **fields)
+
+
+def test_replay_card_passes_on_an_unblocked_card_carrying_the_answer():
+    _stash_settled({"status": "ready", "comments": [{"author": "default", "body": "Answer: Seeded-B"}]})
+    res = _replay_card(status_not_in=["blocked"], comment_phrases=["seeded-b"]).verify(5.0)
+    assert res.success, res.reason
+
+
+def test_replay_card_fails_on_a_card_left_blocked():
+    _stash_settled({"status": "blocked", "comments": [{"author": "default", "body": "seeded-b"}]})
+    res = _replay_card(status_not_in=["blocked"]).verify(5.0)
+    assert not res.success and res.status != "error"
+    assert "'blocked'" in res.reason
+
+
+def test_replay_card_fails_when_no_comment_carries_the_phrase():
+    _stash_settled({"status": "ready", "comments": []})
+    res = _replay_card(comment_phrases=["seeded-b"]).verify(5.0)
+    assert not res.success and res.status != "error"
+
+
+def test_replay_card_status_in_is_an_allow_list():
+    _stash_settled({"status": "todo", "comments": []})
+    assert not _replay_card(status_in=["ready", "running"]).verify(5.0).success
+
+
+@pytest.mark.parametrize("trajectory", [_TRAJECTORY, None])
+def test_replay_card_errors_without_a_replay_entry(trajectory):
+    if trajectory is None:
+        transcript.clear()
+    else:
+        transcript.set("ok", trajectory)
+    assert _replay_card(status_not_in=["blocked"]).verify(5.0).status == "error"
+
+
+def test_replay_card_errors_when_the_card_was_not_read():
+    _stash_settled(None)
+    res = _replay_card(status_not_in=["blocked"]).verify(5.0)
+    assert res.status == "error"
+    assert "unknown" in res.reason
+
+
+def test_replay_card_must_assert_something():
+    with pytest.raises(ValidationError):
+        _replay_card()
+
+
+def test_replay_card_is_published_and_registered():
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        eps = tomllib.load(fh)["project"]["entry-points"]["devops_bench.verifiers"]
+    assert eps["replay_card"] == "kube_agents_bench.verifiers:ReplayCardVerifier"
+    assert isinstance(parse_node({"type": "replay_card", "status_not_in": ["blocked"]}), ReplayCardVerifier)
 
 
 # ------------------------------------------------------------ worker_agents

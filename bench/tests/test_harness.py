@@ -25,6 +25,7 @@ import pytest
 
 from devops_bench.agents import AGENTS, AgentResult
 from kube_agents_bench import board, card_wake, harness, transcript, worker_trajectory
+from kube_agents_bench.verifiers import ReplayCardVerifier
 from kube_agents_bench.cases import CaseSpec
 from kube_agents_bench.harness import KubeAgentsHarness
 from kube_agents_bench.parsing import merge_new as _merge_new
@@ -3191,7 +3192,10 @@ def test_a_question_wake_sends_the_wake_then_the_answer_on_one_conversation(
     assert [r["input"] for r in stub_agent.requests] == [_REPLAY_WAKE, "seeded-b"]
     assert stub_agent.requests[0]["conversation"] == stub_agent.requests[1]["conversation"]
     assert result.output == "[SILENT]"
-    assert [s["name"] for s in result.trajectory] == ["kanban_comment", "kanban_unblock"]
+    assert [s["name"] for s in result.trajectory] == ["kanban_comment", "kanban_unblock", card_wake.SETTLED_ENTRY]
+    assert result.trajectory[-1]["result"] == _REPLAY_SETTLED
+    check = ReplayCardVerifier(type="replay_card", status_not_in=["blocked"], comment_phrases=["seeded-b"])
+    assert check.verify(5.0).success
     snap = transcript.get()
     assert snap.final_message == "[SILENT]"
     assert result.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
@@ -3290,7 +3294,8 @@ def test_a_failure_wake_is_the_runs_only_turn_and_its_reply_is_graded(
     assert not result.has_errors()
     assert [r["input"] for r in stub_agent.requests] == [_REPLAY_WAKE]
     assert result.output == "I couldn't restart checkout-gateway on seeded-a."
-    assert [s["name"] for s in result.trajectory] == ["kanban_show"]
+    assert [s["name"] for s in result.trajectory] == ["kanban_show", card_wake.SETTLED_ENTRY]
+    assert result.trajectory[-1]["result"] == _REPLAY_SETTLED
     assert transcript.get().final_message == "I couldn't restart checkout-gateway on seeded-a."
     assert result.metadata["failure_wake"]["card"] == _REPLAY_CARD
     assert result.metadata["failure_wake"]["settled"] == _REPLAY_SETTLED

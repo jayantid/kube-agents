@@ -64,7 +64,7 @@ from devops_bench.verification.base import (
 )
 from devops_bench.verification.verifiers import ResourcePropertyVerifier
 
-from kube_agents_bench import discovery, github_writes, onboarding, transcript
+from kube_agents_bench import card_wake, discovery, github_writes, onboarding, transcript
 from kube_agents_bench.fleet import (
     ROLE_PATTERN,
     FleetRoleUnresolved,
@@ -81,6 +81,7 @@ __all__ = [
     "GitHubWritesVerifier",
     "LedgerIssueContainsVerifier",
     "PullRequestOpenedVerifier",
+    "ReplayCardVerifier",
     "ReportContainsVerifier",
     "ToolCalledVerifier",
     "WorkerCommandsVerifier",
@@ -720,6 +721,83 @@ class WorkerAgentsVerifier(BaseVerifier):
             success=True,
             elapsed_time=time.monotonic() - start,
             reason=f"all {len(self.required_agents)} required profile pattern(s) matched; workers ran as {agents}",
+        )
+
+
+_NO_REPLAY_CARD_REASON = (
+    f"no {card_wake.SETTLED_ENTRY} entry in the trajectory: the prompt was not a "
+    "card-wake replay, so there is no planted card to read"
+)
+_REPLAY_CARD_UNREAD_REASON = (
+    "the replay's card could not be read before it was archived (the archive "
+    "step did not confirm), so its status and comments are unknown"
+)
+
+
+@VERIFIERS.register("replay_card")
+class ReplayCardVerifier(BaseVerifier):
+    """Checks the card a card-wake replay planted, as the run left it.
+
+    :mod:`kube_agents_bench.card_wake` reads the planted card's status and
+    comments just before archiving it and records them as the trajectory's
+    ``card_wake_settled`` harness entry. ``tool_called`` sees that the agent
+    called ``kanban_unblock``, not which card it unblocked; this reads the
+    planted card itself.
+
+    ``status_in`` / ``status_not_in``: the card's final status must be one of
+    the first and none of the second. ``comment_phrases``: each must appear,
+    case-insensitively, in at least one of the card's comments.
+
+    Fails closed: no entry (not a replay) or an entry whose card was not read
+    is ``status="error"``.
+    """
+
+    type: Literal["replay_card"]
+    status_in: list[str] = Field(default_factory=list)
+    status_not_in: list[str] = Field(default_factory=list)
+    comment_phrases: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _asserts_something(self) -> ReplayCardVerifier:
+        if not (self.status_in or self.status_not_in or self.comment_phrases):
+            raise ValueError("replay_card needs status_in, status_not_in or comment_phrases")
+        return self
+
+    def verify(self, timeout_sec: float) -> VerificationResult:
+        start = time.monotonic()
+
+        def error(reason: str) -> VerificationResult:
+            return VerificationResult(
+                success=False, status="error", elapsed_time=time.monotonic() - start, reason=reason
+            )
+
+        snap = transcript.get()
+        if snap is None:
+            return error(_NO_TRANSCRIPT_REASON)
+        entries = [e for e in snap.trajectory if e.get("name") == card_wake.SETTLED_ENTRY]
+        if not entries:
+            return error(_NO_REPLAY_CARD_REASON)
+        settled = entries[-1].get("result")
+        if not isinstance(settled, dict):
+            return error(_REPLAY_CARD_UNREAD_REASON)
+        status = settled.get("status")
+        comments = [str(c.get("body", "")) for c in settled.get("comments") or [] if isinstance(c, dict)]
+        problems = []
+        if self.status_in and status not in self.status_in:
+            problems.append(f"status {status!r} is not one of {self.status_in}")
+        if status in self.status_not_in:
+            problems.append(f"status {status!r} is one of {self.status_not_in}")
+        missing = [p for p in self.comment_phrases if not any(p.casefold() in c.casefold() for c in comments)]
+        if missing:
+            problems.append(f"no comment contains {missing} ({len(comments)} comment(s))")
+        if problems:
+            return VerificationResult(
+                success=False, elapsed_time=time.monotonic() - start, reason="; ".join(problems)
+            )
+        return VerificationResult(
+            success=True,
+            elapsed_time=time.monotonic() - start,
+            reason=f"the replay's card ended {status!r} with {len(comments)} comment(s) matching",
         )
 
 

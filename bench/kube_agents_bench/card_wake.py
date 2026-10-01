@@ -53,9 +53,11 @@ code.
 
 Every replay's card carries a key minted for the run
 (:data:`REPLAY_KEY_PREFIX`, the card's ``idempotency_key``). :func:`archive`
-reads the card's status and comments, which a case may grade, then archives
-every card carrying the key, so a card filed by a plant whose ``kubectl exec``
-timed out is swept as well.
+reads the card's status and comments, then archives every card carrying the
+key, so a card filed by a plant whose ``kubectl exec`` timed out is swept as
+well. What it read rides on the run's trajectory as a harness entry
+(:data:`SETTLED_ENTRY`), because devops-bench persists the trajectory and not
+the metadata; the ``replay_card`` verifier grades it.
 
 Unlike :mod:`kube_agents_bench.board`, a failed plant is not best effort: a
 run that never saw the wake grades nothing. :func:`plant` raises
@@ -79,6 +81,7 @@ from kube_agents_bench.worker_trajectory import FALLBACK_PYTHON, HERMES_PYTHON
 __all__ = [
     "FAILURE_DIRECTIVE",
     "QUESTION_DIRECTIVE",
+    "SETTLED_ENTRY",
     "Failure",
     "Planted",
     "Replay",
@@ -100,6 +103,11 @@ FAILURE_DIRECTIVE = "[bench:card-failure-wake]"
 _QUESTION_FIELDS = ("title", "question", "options", "answer")
 _FAILURE_FIELDS = ("title", "body", "outcome", "reason")
 OPTION_SEPARATOR = "|"
+
+# The name of the harness trajectory entry carrying the card as the run left
+# it: ``args.card`` is the card, ``result`` is ``Settled.as_metadata()`` or
+# ``None`` when the archive was not confirmed.
+SETTLED_ENTRY = "card_wake_settled"
 
 # How the plant script ends the card. ``question`` is a ``needs_input`` block;
 # the failure outcomes are a failure prompt's ``outcome:`` values.
@@ -520,6 +528,15 @@ def _card_metadata(planted: Planted, settled: Settled | None) -> dict:
     }
 
 
+def _settled_entry(planted: Planted, settled: Settled | None) -> dict:
+    return {
+        "name": SETTLED_ENTRY,
+        "args": {"card": planted.card},
+        "result": settled.as_metadata() if settled is not None else None,
+        "status": "harness",
+    }
+
+
 def merge(
     planted: Planted, wake: AgentResult, answer: AgentResult, settled: Settled | None = None
 ) -> AgentResult:
@@ -527,7 +544,8 @@ def merge(
 
     ``output`` and ``final_message`` are the reply to the wake; the answer
     turn's text, and the card as the run left it (``settled``), are kept in
-    metadata. The trajectory, errors and worker captures are both turns'. The
+    metadata and as the trajectory's :data:`SETTLED_ENTRY`. The trajectory,
+    errors and worker captures are both turns'. The
     answer turn's tokens supersede the wake turn's when both read the same
     session, whose row is cumulative over the conversation, except for the
     wake turn's ``workers``, which are that turn's alone and are added back;
@@ -555,7 +573,7 @@ def merge(
     }
     return AgentResult(
         output=wake.output,
-        trajectory=[*wake.trajectory, *answer.trajectory],
+        trajectory=[*wake.trajectory, *answer.trajectory, _settled_entry(planted, settled)],
         tokens=tokens,
         errors=[*wake.errors, *answer.errors],
         metadata=metadata,
@@ -565,13 +583,13 @@ def merge(
 def tag(planted: Planted, wake: AgentResult, settled: Settled | None = None) -> AgentResult:
     """The failure replay's one turn, with the card, its wake and ``settled`` kept in metadata.
 
-    The reply to the wake is already the run's ``final_message``; nothing
-    else about the result changes.
+    The reply to the wake is already the run's ``final_message``; the
+    trajectory gains :data:`SETTLED_ENTRY` and nothing else changes.
     """
     metadata = {**wake.metadata, "failure_wake": _card_metadata(planted, settled)}
     return AgentResult(
         output=wake.output,
-        trajectory=wake.trajectory,
+        trajectory=[*wake.trajectory, _settled_entry(planted, settled)],
         tokens=wake.tokens,
         errors=wake.errors,
         metadata=metadata,

@@ -519,7 +519,11 @@ def test_merge_grades_the_wake_reply_and_keeps_both_trajectories() -> None:
 
     assert merged.output == "[SILENT]"
     assert merged.metadata["final_message"] == "[SILENT]"
-    assert [step["name"] for step in merged.trajectory] == ["kanban_comment", "kanban_unblock"]
+    assert [step["name"] for step in merged.trajectory] == [
+        "kanban_comment",
+        "kanban_unblock",
+        card_wake.SETTLED_ENTRY,
+    ]
     # One session: the answer turn's row already counts the wake turn.
     assert merged.tokens == {"input": 30, "output": 5, "total": 35}
     assert merged.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
@@ -615,11 +619,26 @@ def test_tag_keeps_the_wake_reply_and_records_the_card() -> None:
 
     assert tagged.output == wake.output
     assert tagged.metadata["final_message"] == "I couldn't restart checkout-gateway on seeded-a."
-    assert tagged.trajectory == wake.trajectory
+    assert tagged.trajectory == [
+        *wake.trajectory,
+        {"name": card_wake.SETTLED_ENTRY, "args": {"card": "t_1"}, "result": None, "status": "harness"},
+    ]
     assert tagged.tokens == wake.tokens
     assert tagged.metadata["failure_wake"] == {
         "card": "t_1",
         "wake": "[kanban] Task t_1 blocked.",
         "posted": 1,
         "settled": None,
+    }
+
+
+def test_the_settled_card_rides_on_the_trajectory_for_the_verifier() -> None:
+    settled = card_wake.Settled("ready", ({"author": "default", "body": "seeded-b"},))
+    merged = card_wake.merge(_PLANTED, _result("", [], {}), _result("", [], {}), settled)
+
+    assert merged.trajectory[-1] == {
+        "name": card_wake.SETTLED_ENTRY,
+        "args": {"card": "t_1"},
+        "result": {"status": "ready", "comments": [{"author": "default", "body": "seeded-b"}]},
+        "status": "harness",
     }
