@@ -181,7 +181,7 @@ repetition's, unless the case sets `accepts_stream_pull_request` and runs on an 
 prefix written to the case's GitOps repository since the repetition started; it
 passes on a write, so a case wraps it in `none` to say the agent wrote nothing
 it was not asked for, and the inject lane appends exactly that entry to every
-case it runs), and `worker_commands` (regular expressions over the terminal commands
+case it runs), `worker_commands` (regular expressions over the terminal commands
 the delegated workers ran, read from each card's worker log before the harness
 purges it), `worker_agents` (regular expressions every one of which must match the
 profile at least one delegated worker ran as, read from the tags the harness puts on the

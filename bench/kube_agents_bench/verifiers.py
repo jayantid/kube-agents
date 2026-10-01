@@ -22,13 +22,15 @@ published* carry the finding — for the fleet audits, whose SOPs deliberately
 keep the chat reply to one line — is the *pull request* the reply links one
 this run opened rather than an earlier one, and did the run *write* to the
 case's GitOps repository at all (``github_writes``, the question the cluster
-safeguards cannot answer). They read the per-run stash in
+safeguards cannot answer), and what a card-wake replay's planted card ended as
+(``replay_card``, read from the trajectory the harness records). They read the per-run stash in
 :mod:`kube_agents_bench.transcript`, and they fail closed: an empty
 stash is ``status="error"`` — the check could not be evaluated — never a pass
 or a fail, so ``VerificationCoverage`` drops below 1.0 and the gate catches
 it.
 
-The exception, ``fleet_resource_property``, does read cluster state, and exists
+Two read state instead. ``bootstrap_fanout`` reads the agent pod's board and
+profiles. ``fleet_resource_property`` reads a fleet cluster, and exists
 because upstream's ``resource_property`` reads the WRONG cluster and cannot
 tell a missing fixture from a missing cluster. See
 :class:`FleetResourcePropertyVerifier`.
@@ -729,8 +731,9 @@ _NO_REPLAY_CARD_REASON = (
     "card-wake replay, so there is no planted card to read"
 )
 _REPLAY_CARD_UNREAD_REASON = (
-    "the replay's card could not be read before it was archived (the archive "
-    "step did not confirm), so its status and comments are unknown"
+    "the replay's card could not be read before it was archived (the read "
+    "failed, or no card carried the run's key), so its status and comments "
+    "are unknown"
 )
 
 

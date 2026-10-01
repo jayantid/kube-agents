@@ -1303,8 +1303,8 @@ def _run_id() -> str:
     """The api path's run id: pinned by ``AGENT_CONVERSATION_ID`` or minted.
 
     It is the stateful ``conversation`` field, fresh per invocation so no task
-    inherits the previous task's trajectory. A question-wake replay pins it
-    for its two turns (:data:`_PINNED_RUN_ID`). The inject path does not use
+    inherits the previous task's trajectory. A card-wake replay pins it
+    for its turns (:data:`_PINNED_RUN_ID`). The inject path does not use
     it: see :func:`_inject_identity`.
     """
     return _PINNED_RUN_ID.get() or os.environ.get("AGENT_CONVERSATION_ID") or _mint_run_id()
@@ -1651,6 +1651,8 @@ class KubeAgentsHarness(AgentHarness):
             _PINNED_RUN_ID.reset(pinned)
             settled = card_wake.archive(_agent_shell, planted.key, _EXEC_TIMEOUT)
             if settled is None:
+                _log.warning("card wake: card %s could not be read", planted.card)
+            if settled is None or not settled.archived:
                 _log.warning("card wake: card %s was not archived", planted.card)
         if wake_turn.errors:
             return wake_turn

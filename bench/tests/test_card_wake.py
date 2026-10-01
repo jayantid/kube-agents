@@ -239,14 +239,16 @@ KEY = f"{card_wake.REPLAY_KEY_PREFIX}test"
 def _shell_for(root: Path, tmp_path: Path, prompt: str = PROMPT, **env: str):
     """A stand-in for ``harness._agent_shell`` that runs the scripts locally.
 
-    Each command must be the one :func:`card_wake.plant_command` or
-    :func:`card_wake.archive_command` builds for :data:`KEY`; it runs with
+    Each command must be the one :func:`card_wake.plant_command`,
+    :func:`card_wake.read_command` or :func:`card_wake.archive_command` builds
+    for :data:`KEY`; it runs with
     the stand-in tree in place of ``/opt/hermes`` and ``/opt/defaults/scripts``.
     """
     replay = card_wake.parse(prompt)
     assert replay is not None
     commands = {
         card_wake.plant_command(replay, KEY): card_wake._PLANT_SCRIPT,
+        card_wake.read_command(KEY): card_wake._READ_SCRIPT,
         card_wake.archive_command(KEY): card_wake._ARCHIVE_SCRIPT,
     }
 
@@ -379,7 +381,27 @@ def test_archive_reads_the_card_as_the_run_left_it_then_archives_it(
     settled = card_wake.archive(shell, KEY, timeout=30)
 
     assert settled == card_wake.Settled("blocked", ({"author": "default", "body": "seeded-b"},))
+    assert settled.archived
     assert _board(tmp_path)["tasks"][planted.card]["status"] == "archived"
+
+
+def test_an_archive_that_times_out_keeps_the_card_it_read(hermes_root: Path, tmp_path: Path) -> None:
+    shell = _shell_for(hermes_root, tmp_path)
+    _plant(shell)
+
+    def archive_timed_out(command: str, timeout: float) -> str:
+        return "" if command == card_wake.archive_command(KEY) else shell(command, timeout)
+
+    settled = card_wake.archive(archive_timed_out, KEY, timeout=30)
+
+    assert settled == card_wake.Settled("blocked", ())
+    assert not settled.archived
+
+
+def test_no_card_carrying_the_key_reads_as_unknown(hermes_root: Path, tmp_path: Path) -> None:
+    """Not as a card with no status, which ``status_not_in`` would pass."""
+    shell = _shell_for(hermes_root, tmp_path)
+    assert card_wake.archive(shell, KEY, timeout=30) is None
 
 
 def test_a_plant_whose_exec_gave_out_sweeps_the_card_it_filed(
@@ -415,8 +437,15 @@ def test_plant_refuses_a_reply_it_cannot_trust(reply: str, error: type, reason: 
 
 def test_archive_is_best_effort() -> None:
     assert card_wake.archive(lambda command, timeout: "", KEY, 30) is None
-    archived_nothing = f'{card_wake.REPLAY_PRESENT}\n{{"archived": false, "error": null}}'
-    assert card_wake.archive(lambda command, timeout: archived_nothing, KEY, 30) is None
+    read = f'{card_wake.REPLAY_PRESENT}\n{{"card": "t_1", "status": "ready", "comments": [], "error": null}}'
+    refused = f'{card_wake.REPLAY_PRESENT}\n{{"archived": false, "error": "OperationalError: locked"}}'
+
+    def shell(command: str, timeout: float) -> str:
+        return read if command == card_wake.read_command(KEY) else refused
+
+    settled = card_wake.archive(shell, KEY, 30)
+    assert settled == card_wake.Settled("ready", ())
+    assert not settled.archived
 
 
 def test_parse_reads_a_failure_prompt() -> None:

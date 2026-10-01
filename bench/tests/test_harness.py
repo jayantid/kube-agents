@@ -3153,7 +3153,8 @@ _REPLAY_SETTLED = {"status": "ready", "comments": [{"author": "default", "body":
 def _replay_shell(scripts: list[str], plant_reply: str | None = None):
     """A stand-in for ``_agent_shell`` answering the plant and archive scripts."""
     planted = json.dumps({"card": _REPLAY_CARD, "wake": _REPLAY_WAKE, "posted": 1, "error": None})
-    archived = json.dumps({"archived": True, "cards": [_REPLAY_CARD], **_REPLAY_SETTLED, "error": None})
+    read = json.dumps({"card": _REPLAY_CARD, **_REPLAY_SETTLED, "error": None})
+    archived = json.dumps({"archived": True, "cards": [_REPLAY_CARD], "error": None})
 
     def shell(script: str, timeout: float) -> str:
         scripts.append(script)
@@ -3161,6 +3162,8 @@ def _replay_shell(scripts: list[str], plant_reply: str | None = None):
             return ""
         if "create_task" in script:
             return plant_reply if plant_reply is not None else f"{card_wake.REPLAY_PRESENT}\n{planted}"
+        if shlex.quote(card_wake._READ_SCRIPT) in script:
+            return f"{card_wake.REPLAY_PRESENT}\n{read}"
         return f"{card_wake.REPLAY_PRESENT}\n{archived}"
 
     return shell

@@ -53,9 +53,9 @@ read ``@None``.
 
 Every replay's card carries a key minted for the run
 (:data:`REPLAY_KEY_PREFIX`, the card's ``idempotency_key``). :func:`archive`
-reads the card's status and comments, then archives every card carrying the
-key, so a card filed by a plant whose ``kubectl exec`` timed out is swept as
-well. What it read rides on the run's trajectory as a harness entry
+reads the card's status and comments, then, in a second exec, archives every
+card carrying the key, so a card filed by a plant whose ``kubectl exec`` timed
+out is swept as well, and an archive that fails keeps what was read. What it read rides on the run's trajectory as a harness entry
 (:data:`SETTLED_ENTRY`), because devops-bench persists the trajectory and not
 the metadata; the ``replay_card`` verifier grades it.
 
@@ -72,7 +72,7 @@ import json
 import shlex
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from devops_bench.agents import AgentResult
 
@@ -106,7 +106,7 @@ OPTION_SEPARATOR = "|"
 
 # The name of the harness trajectory entry carrying the card as the run left
 # it: ``args.card`` is the card, ``result`` is ``Settled.as_metadata()`` or
-# ``None`` when the archive was not confirmed.
+# ``None`` when the card could not be read.
 SETTLED_ENTRY = "card_wake_settled"
 
 # How the plant script ends the card. ``question`` is a ``needs_input`` block;
@@ -123,8 +123,8 @@ REPLAY_PRESENT = "__BENCH_CARD_WAKE__"
 # A replay card's ``idempotency_key`` is this and a fresh hex suffix per run.
 REPLAY_KEY_PREFIX = "devops-bench-card-wake-"
 
-# Where the image installs hermes, and the scripts directory holding
-# slack_presenter.py and slack_moments.py, which slack_ux_moments imports.
+# Where the image installs hermes, and the scripts directory slack_ux_moments
+# imports its layout modules from.
 HERMES_ROOT = "/opt/hermes"
 SCRIPTS_DIR = "/opt/defaults/scripts"
 
@@ -250,15 +250,15 @@ print(SENTINEL)
 print(json.dumps(out))
 """
 
-# Reads and archives the run's cards once it is over. Positional arguments:
-# the sentinel, the hermes root and the run's key. ``status`` and ``comments``
-# are the newest such card's, as the run left it.
-_ARCHIVE_SCRIPT = r"""
+# Reads the run's newest card as the run left it. Positional arguments: the
+# sentinel, the hermes root and the run's key. ``card`` is ``None`` when no
+# card that is not yet archived carries the key.
+_READ_SCRIPT = r"""
 import json, sys
 
 SENTINEL, HERMES_ROOT, KEY = sys.argv[1:4]
 sys.path.insert(0, HERMES_ROOT)
-out = {"archived": False, "cards": [], "status": None, "comments": [], "error": None}
+out = {"card": None, "status": None, "comments": [], "error": None}
 try:
     from hermes_cli import kanban_db as kb
     try:
@@ -269,11 +269,35 @@ try:
     cards = [row[0] for row in conn.execute(
         "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
         "ORDER BY created_at DESC", (KEY,))]
-    out["cards"] = cards
     if cards:
         task = kb.get_task(conn, cards[0])
+        out["card"] = cards[0]
         out["status"] = task.status if task else None
         out["comments"] = [{"author": c.author, "body": c.body} for c in kb.list_comments(conn, cards[0])]
+except Exception as exc:
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+print(SENTINEL)
+print(json.dumps(out))
+"""
+
+# Archives every card carrying the run's key. Positional arguments: the
+# sentinel, the hermes root and the run's key.
+_ARCHIVE_SCRIPT = r"""
+import json, sys
+
+SENTINEL, HERMES_ROOT, KEY = sys.argv[1:4]
+sys.path.insert(0, HERMES_ROOT)
+out = {"archived": False, "cards": [], "error": None}
+try:
+    from hermes_cli import kanban_db as kb
+    try:
+        from hermes_cli.kanban_db_connect import connect
+    except ImportError:
+        connect = kb.connect
+    conn = connect()
+    cards = [row[0] for row in conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived'", (KEY,))]
+    out["cards"] = cards
     out["archived"] = all([bool(kb.archive_task(conn, card)) for card in cards])
 except Exception as exc:
     out["error"] = "%s: %s" % (type(exc).__name__, exc)
@@ -327,10 +351,16 @@ class Planted:
 
 @dataclass(frozen=True)
 class Settled:
-    """The replay's card as the run left it, read just before :func:`archive` archived it."""
+    """The replay's card as the run left it, read by :func:`archive` before it archives it.
+
+    ``archived`` says whether the archive that followed was confirmed; it is
+    not part of what the card says, so it is left out of comparisons and of
+    :meth:`as_metadata`.
+    """
 
     status: str | None
     comments: tuple[dict, ...] = ()
+    archived: bool = field(default=False, compare=False)
 
     def as_metadata(self) -> dict:
         return {"status": self.status, "comments": [dict(c) for c in self.comments]}
@@ -415,8 +445,13 @@ def plant_command(replay: Replay | Failure, key: str) -> str:
     )
 
 
+def read_command(key: str) -> str:
+    """The ``sh -c`` line that reads the newest card carrying ``key`` in the pod."""
+    return _command(_READ_SCRIPT, [REPLAY_PRESENT, HERMES_ROOT, key])
+
+
 def archive_command(key: str) -> str:
-    """The ``sh -c`` line that reads and archives the cards carrying ``key`` in the pod."""
+    """The ``sh -c`` line that archives the cards carrying ``key`` in the pod."""
     return _command(_ARCHIVE_SCRIPT, [REPLAY_PRESENT, HERMES_ROOT, key])
 
 
@@ -454,28 +489,46 @@ def plant(
     try:
         payload = _reply(shell(plant_command(replay, key), timeout), what)
     except ReplayUnavailable:
-        archive(shell, key, timeout)
+        _sweep(shell, key, timeout)
         raise
     card, wake = payload.get("card"), payload.get("wake")
     if not isinstance(card, str) or not card or not isinstance(wake, str) or not wake.strip():
-        archive(shell, key, timeout)
+        _sweep(shell, key, timeout)
         raise ReplayBroken(f"{what}: no card or no wake in {payload!r}")
     posted = payload.get("posted")
     return Planted(card, wake, posted if isinstance(posted, int) else 0, key)
 
 
-def archive(shell: Callable[[str, float], str], key: str, timeout: float) -> Settled | None:
-    """Read and archive the run's cards. Best effort: ``None`` when the archive could not be confirmed."""
+def _sweep(shell: Callable[[str, float], str], key: str, timeout: float) -> bool:
+    """Archive every card carrying ``key``; True when the archive was confirmed."""
     try:
         reply = _reply(shell(archive_command(key), timeout), "archiving the replay's cards")
     except (ReplayUnavailable, ReplayBroken):
-        return None
-    if not reply.get("archived"):
+        return False
+    return bool(reply.get("archived"))
+
+
+def archive(shell: Callable[[str, float], str], key: str, timeout: float) -> Settled | None:
+    """Read the run's newest card, then archive every card carrying ``key``.
+
+    The read and the archive are separate execs, so an archive that times out
+    or is refused keeps the card already read, with ``archived`` False.
+    ``None`` when the read failed or found no card carrying ``key``: the
+    card's status and comments are then unknown, and ``replay_card`` reports
+    an error rather than grading an absent card as unblocked.
+    """
+    try:
+        reply = _reply(shell(read_command(key), timeout), "reading the replay's card")
+    except (ReplayUnavailable, ReplayBroken):
+        reply = None
+    archived = _sweep(shell, key, timeout)
+    if reply is None or not isinstance(reply.get("card"), str):
         return None
     status, comments = reply.get("status"), reply.get("comments")
     return Settled(
         status if isinstance(status, str) else None,
         tuple(c for c in comments if isinstance(c, dict)) if isinstance(comments, list) else (),
+        archived,
     )
 
 
@@ -514,8 +567,8 @@ def _combine(first, second):
 
 
 def _card_metadata(planted: Planted, settled: Settled | None) -> dict:
-    # ``settled`` is ``None`` when the archive was not confirmed; the card's
-    # status and comments are then unknown rather than empty.
+    # ``settled`` is ``None`` when the card could not be read; its status and
+    # comments are then unknown rather than empty.
     return {
         "card": planted.card,
         "wake": planted.wake,
