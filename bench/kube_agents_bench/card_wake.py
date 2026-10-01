@@ -1,6 +1,11 @@
-"""Replay a specialist's Slack question and the wake it sends the front door.
+"""Replay the wake a blocked or failed card sends the front door.
 
-With ``KAGE_SLACK_UX`` on, a card that blocks on ``needs_input`` in a Slack
+The front door's reply to a card's wake is a turn the harness's own asks never
+reach. Two replays produce one. A prompt whose first line is
+:data:`QUESTION_DIRECTIVE` or :data:`FAILURE_DIRECTIVE` is a replay instead of
+an ask; :func:`parse` reads it.
+
+**A specialist's Slack question.** With ``KAGE_SLACK_UX`` on, a card that blocks on ``needs_input`` in a Slack
 thread posts the specialist's question there itself
 (``gateway/slack_ux_moments.py``, ``needs_you``), and the wake the notifier
 then gives the conversation that filed the card says so. The front door is
@@ -10,21 +15,37 @@ is reachable from the harness. The API server never subscribes a card the way
 a Slack thread does, and on an install with no Slack adapter the notifier skips
 a Slack subscription before it builds any text.
 
-A prompt whose first line is :data:`DIRECTIVE` is a replay instead of an ask.
-The in-pod script files a card on the agent's board and blocks it on
+For :data:`QUESTION_DIRECTIVE`, the in-pod script files a card on the agent's board and blocks it on
 ``needs_input`` with the case's question, posts the question through the
 image's ``needs_you`` with a stub Slack client where the image has that
 module, and builds the wake with the image's own notifier. The harness then
 sends that wake as the first turn and the case's typed answer as the second,
-on one conversation (:meth:`KubeAgentsHarness._execute_question_wake`). An
+on one conversation (:meth:`KubeAgentsHarness._execute_card_wake`). An
 image without the module builds the wake it always did, which is what makes
 the case red there.
 
-What this does not reproduce: the flag is set in the script's process
-whatever the install's setting, the turns arrive on the run's own
-``/v1/responses`` conversation rather than the Slack thread's session, and no
-message reaches Slack. The text under test is the notifier's, built by the
-image's own code.
+**A card that blocked or gave up.** On the API server a ``blocked`` or
+``gave_up`` card wakes the conversation that filed it through the notifier's
+self-post (``deploy/docker/patches/kanban_notifier.py``, ``wake_kinds_for``: a
+non-push adapter always wakes for the failure kinds), and the reply to that
+wake is the user's only announcement of the failure (``agents/chat/SOUL.md``
+§2, step 5). The harness never reads it: its own poll turns ask for a status
+recital, and no prompt makes a specialist fail every time. For
+:data:`FAILURE_DIRECTIVE` the in-pod script files the card assigned to
+:data:`FAILURE_ASSIGNEE`, blocks it with the case's reason (``outcome:
+blocked``) or trips its failure breaker with it as the error (``outcome:
+gave_up``, the event the dispatcher records when its retries run out), and
+builds the wake with the image's notifier through a non-push stub adapter, as
+the API server's is. The harness sends that wake as the run's only turn. The
+wake names the card but not the reason, so the front door reads the card
+(``kanban_show``) as it would in a real thread.
+
+What neither replay reproduces: the turns arrive on the run's own
+``/v1/responses`` conversation rather than the session that filed the card, so
+the front door has not seen the ask that led to it; for a question, the flag is
+set in the script's process whatever the install's setting and no message
+reaches Slack. The wake under test is the notifier's, built by the image's own
+code.
 
 Unlike :mod:`kube_agents_bench.board`, a failed plant is not best effort: a
 run that never saw the wake grades nothing, so :func:`plant` raises and the
@@ -43,7 +64,9 @@ from devops_bench.agents import AgentResult
 from kube_agents_bench.worker_trajectory import FALLBACK_PYTHON, HERMES_PYTHON
 
 __all__ = [
-    "DIRECTIVE",
+    "FAILURE_DIRECTIVE",
+    "QUESTION_DIRECTIVE",
+    "Failure",
     "Planted",
     "Replay",
     "ReplayUnavailable",
@@ -51,17 +74,28 @@ __all__ = [
     "merge",
     "parse",
     "plant",
+    "tag",
 ]
 
-# First line of a replay prompt. The ``key: value`` lines under it are
-# :data:`_FIELDS`; anything else is ignored.
-DIRECTIVE = "[bench:slack-question-wake]"
-_FIELDS = ("title", "question", "options", "answer")
+# First lines of the two replay prompts. The ``key: value`` lines under each
+# are its fields (:data:`_QUESTION_FIELDS`, :data:`_FAILURE_FIELDS`); anything
+# else is ignored.
+QUESTION_DIRECTIVE = "[bench:slack-question-wake]"
+FAILURE_DIRECTIVE = "[bench:card-failure-wake]"
+_QUESTION_FIELDS = ("title", "question", "options", "answer")
+_FAILURE_FIELDS = ("title", "body", "outcome", "reason")
 OPTION_SEPARATOR = "|"
+
+# How the plant script ends the card. ``question`` is a ``needs_input`` block;
+# the failure outcomes are a failure prompt's ``outcome:`` values.
+OUTCOME_QUESTION = "question"
+OUTCOME_BLOCKED = "blocked"
+OUTCOME_GAVE_UP = "gave_up"
+FAILURE_OUTCOMES = (OUTCOME_BLOCKED, OUTCOME_GAVE_UP)
 
 # Line the in-pod scripts print before their JSON. A reply without it means
 # the script never ran to completion.
-REPLAY_PRESENT = "__SLACK_QUESTION_WAKE__"
+REPLAY_PRESENT = "__BENCH_CARD_WAKE__"
 
 # Where the image installs hermes, and the scripts directory holding
 # slack_presenter.py and slack_moments.py, which slack_ux_moments imports.
@@ -72,21 +106,23 @@ SCRIPTS_DIR = "/opt/defaults/scripts"
 SLACK_UX_FLAG = "KAGE_SLACK_UX"
 FLAG_ON = "1"
 
-# Who the card says filed it, and the stub thread its question is posted in.
-# Slack never sees either.
+# Who the card says filed it, who a failed card says was working it, and the
+# stub thread a question is posted in. Slack never sees the thread.
 CARD_CREATOR = "devops-bench"
+FAILURE_ASSIGNEE = "platform"
 STUB_CHANNEL = "C0BENCHWAKE"
 STUB_THREAD = "1700000000.000100"
 
 # Runs inside the agent container. Positional arguments: the sentinel, the
 # hermes root, the scripts directory, the flag, its on value, the creator,
-# the stub channel, the stub thread, the card title and the block reason.
+# the stub channel, the stub thread, the card title, its body, the block
+# reason or failure error, the outcome and the assignee (empty for none).
 # The card is archived again if anything after filing it fails.
 _PLANT_SCRIPT = r"""
 import asyncio, json, os, sys
 
 (SENTINEL, HERMES_ROOT, SCRIPTS, FLAG, ON, CREATOR,
- CHANNEL, THREAD, TITLE, REASON) = sys.argv[1:11]
+ CHANNEL, THREAD, TITLE, BODY, REASON, OUTCOME, ASSIGNEE) = sys.argv[1:14]
 STUB_TS = "1700000000.000200"
 out = {"card": None, "wake": None, "posted": 0, "error": None}
 
@@ -111,6 +147,14 @@ class _Adapter:
         return _Client(self.posts)
 
 
+class _ApiServerAdapter:
+    # The API server's adapter has no push channel: its wake is a self-post.
+    supports_async_delivery = False
+
+    def __init__(self):
+        self.posts = []
+
+
 conn = None
 try:
     sys.path[:0] = [HERMES_ROOT, SCRIPTS]
@@ -122,22 +166,41 @@ try:
     except ImportError:
         moments = None
     conn = kb.connect()
-    card = kb.create_task(conn, title=TITLE, body=REASON, created_by=CREATOR)
+    card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR)
     out["card"] = card
-    if not kb.block_task(conn, card, reason=REASON, kind="needs_input"):
-        raise RuntimeError("card %s would not block" % card)
-    events = [e for e in kb.list_events(conn, card) if e.kind == "blocked"][-1:]
+    if OUTCOME == "gave_up":
+        from hermes_cli import kanban_db_dispatch as dispatch
+        # force_trip records gave_up and parks the card on its first failure,
+        # where the dispatcher would after exhausting its retries.
+        if not dispatch._record_task_failure(conn, card, REASON, outcome="crashed", force_trip=True):
+            raise RuntimeError("card %s would not give up" % card)
+        kind = "gave_up"
+    else:
+        block_kind = "needs_input" if OUTCOME == "question" else None
+        if not kb.block_task(conn, card, reason=REASON, kind=block_kind):
+            raise RuntimeError("card %s would not block" % card)
+        kind = "blocked"
+    # Assigned only once it can no longer be dispatched.
+    if ASSIGNEE and not kb.assign_task(conn, card, ASSIGNEE):
+        raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
+    events = [e for e in kb.list_events(conn, card) if e.kind == kind][-1:]
     if not events:
-        raise RuntimeError("card %s has no blocked event" % card)
-    sub = {"task_id": card, "platform": "slack", "chat_id": CHANNEL, "thread_id": THREAD,
-           "delivery_mode": "notify+wake"}
-    adapter = _Adapter()
-    if moments is not None:
-        asyncio.run(moments.needs_you(adapter, sub, events[0].payload or {}, events[0].id))
+        raise RuntimeError("card %s has no %s event" % (card, kind))
+    if OUTCOME == "question":
+        sub = {"task_id": card, "platform": "slack", "chat_id": CHANNEL, "thread_id": THREAD,
+               "delivery_mode": "notify+wake"}
+        adapter = _Adapter()
+        if moments is not None:
+            asyncio.run(moments.needs_you(adapter, sub, events[0].payload or {}, events[0].id))
+    else:
+        sub = {"task_id": card, "platform": "api_server", "chat_id": CHANNEL, "thread_id": "",
+               "delivery_mode": "notify+wake"}
+        adapter = _ApiServerAdapter()
     wake = notifier._KanbanNotification(
         None, {"sub": sub, "task": kb.get_task(conn, card), "board": kb.DEFAULT_BOARD, "events": events},
         platform_cls=None, sub_fail_counts={})
     wake.adapter = adapter
+    wake.is_push_adapter = OUTCOME == "question"
     for ev in events:
         wake.format_event(ev)
     wake.build_wake_text()
@@ -193,6 +256,16 @@ class Replay:
 
 
 @dataclass(frozen=True)
+class Failure:
+    """A failure prompt's fields: the card, its body, how it ended and why."""
+
+    title: str
+    body: str
+    outcome: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class Planted:
     """What the plant left on the board: the card, its wake, and how many posts the stub took."""
 
@@ -201,26 +274,42 @@ class Planted:
     posted: int
 
 
-def parse(prompt: str) -> Replay | None:
+def _fields(lines: list[str], names: tuple[str, ...]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in lines:
+        key, sep, value = line.partition(":")
+        if sep and key.strip() in names:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def parse(prompt: str) -> Replay | Failure | None:
     """The replay ``prompt`` asks for, or ``None`` when it is an ordinary ask.
 
-    Raises :class:`ValueError` for a replay prompt missing a field: that is a
-    case authoring error, not a run.
+    Raises :class:`ValueError` for a replay prompt missing a field or naming
+    an unknown outcome: that is a case authoring error, not a run.
     """
     lines = prompt.strip().splitlines()
-    if not lines or lines[0].strip() != DIRECTIVE:
+    directive = lines[0].strip() if lines else ""
+    if directive == FAILURE_DIRECTIVE:
+        fields = _fields(lines[1:], _FAILURE_FIELDS)
+        missing = [f for f in _FAILURE_FIELDS if not fields.get(f)]
+        if missing:
+            raise ValueError(f"{directive} prompt is missing {', '.join(missing)}")
+        if fields["outcome"] not in FAILURE_OUTCOMES:
+            raise ValueError(
+                f"{directive} outcome {fields['outcome']!r} is not one of {', '.join(FAILURE_OUTCOMES)}"
+            )
+        return Failure(fields["title"], fields["body"], fields["outcome"], fields["reason"])
+    if directive != QUESTION_DIRECTIVE:
         return None
-    fields: dict[str, str] = {}
-    for line in lines[1:]:
-        key, sep, value = line.partition(":")
-        if sep and key.strip() in _FIELDS:
-            fields[key.strip()] = value.strip()
+    fields = _fields(lines[1:], _QUESTION_FIELDS)
     options = tuple(
         o.strip() for o in fields.get("options", "").split(OPTION_SEPARATOR) if o.strip()
     )
-    missing = [f for f in _FIELDS if not fields.get(f)] + ([] if options else ["options"])
+    missing = [f for f in _QUESTION_FIELDS if not fields.get(f)] + ([] if options else ["options"])
     if missing:
-        raise ValueError(f"{DIRECTIVE} prompt is missing {', '.join(dict.fromkeys(missing))}")
+        raise ValueError(f"{directive} prompt is missing {', '.join(dict.fromkeys(missing))}")
     return Replay(fields["title"], fields["question"], options, fields["answer"])
 
 
@@ -232,8 +321,12 @@ def _command(script: str, args: list[str]) -> str:
     )
 
 
-def plant_command(replay: Replay) -> str:
-    """The ``sh -c`` line that files, blocks and wakes the replay's card in the pod."""
+def plant_command(replay: Replay | Failure) -> str:
+    """The ``sh -c`` line that files, parks and wakes the replay's card in the pod."""
+    if isinstance(replay, Failure):
+        body, outcome, assignee = replay.body, replay.outcome, FAILURE_ASSIGNEE
+    else:
+        body, outcome, assignee = replay.reason, OUTCOME_QUESTION, ""
     return _command(
         _PLANT_SCRIPT,
         [
@@ -246,7 +339,10 @@ def plant_command(replay: Replay) -> str:
             STUB_CHANNEL,
             STUB_THREAD,
             replay.title,
+            body,
             replay.reason,
+            outcome,
+            assignee,
         ],
     )
 
@@ -271,18 +367,19 @@ def _reply(text: str, what: str) -> dict:
     return payload
 
 
-def plant(shell: Callable[[str, float], str], replay: Replay, timeout: float) -> Planted:
-    """File and block the replay's card, and return the wake the image builds for it.
+def plant(shell: Callable[[str, float], str], replay: Replay | Failure, timeout: float) -> Planted:
+    """File the replay's card, park it, and return the wake the image builds for it.
 
     ``shell`` is :func:`harness._agent_shell`. Raises
     :class:`ReplayUnavailable` when the script did not run, its reply is not
     JSON, or it reported an error; the script archives a card it filed
     before failing.
     """
-    payload = _reply(shell(plant_command(replay), timeout), "question wake")
+    what = "failure wake" if isinstance(replay, Failure) else "question wake"
+    payload = _reply(shell(plant_command(replay), timeout), what)
     card, wake = payload.get("card"), payload.get("wake")
     if not isinstance(card, str) or not card or not isinstance(wake, str) or not wake.strip():
-        raise ReplayUnavailable(f"question wake: no card or no wake in {payload!r}")
+        raise ReplayUnavailable(f"{what}: no card or no wake in {payload!r}")
     posted = payload.get("posted")
     return Planted(card, wake, posted if isinstance(posted, int) else 0)
 
@@ -327,5 +424,24 @@ def merge(planted: Planted, wake: AgentResult, answer: AgentResult) -> AgentResu
         trajectory=[*wake.trajectory, *answer.trajectory],
         tokens=tokens,
         errors=[*wake.errors, *answer.errors],
+        metadata=metadata,
+    )
+
+
+def tag(planted: Planted, wake: AgentResult) -> AgentResult:
+    """The failure replay's one turn, with the card and its wake kept in metadata.
+
+    The reply to the wake is already the run's ``final_message``; nothing
+    else about the result changes.
+    """
+    metadata = {
+        **wake.metadata,
+        "failure_wake": {"card": planted.card, "wake": planted.wake, "posted": planted.posted},
+    }
+    return AgentResult(
+        output=wake.output,
+        trajectory=wake.trajectory,
+        tokens=wake.tokens,
+        errors=wake.errors,
         metadata=metadata,
     )
