@@ -514,7 +514,7 @@
 # worker holds a dispatcher slot for most of the stack's wait.
 ./tasks/bootstrap-inventory-ranking-delivery/task.yaml
 
-# SOUL §5: the front door stays silent on a wake for a question the gateway
+# SOUL §2 step 5: the front door stays silent on a wake for a question the gateway
 # already posted, then routes the typed answer to the card. Plants its own
 # card through question_wake.py; reads no cluster.
 ./tasks/chat-question-wake-stays-silent/task.yaml

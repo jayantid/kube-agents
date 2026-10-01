@@ -1,4 +1,4 @@
-# WHAT THIS GRADES: agents/chat/SOUL.md §5's already-posted rule. When a
+# WHAT THIS GRADES: agents/chat/SOUL.md §2 step 5's already-posted rule. When a
 # specialist blocks on a question and KAGE_SLACK_UX is on, the gateway posts
 # the question into the Slack thread itself and the wake the front door gets
 # says so. The front door must answer that wake with exactly [SILENT], not
