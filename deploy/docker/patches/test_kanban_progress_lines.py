@@ -1507,6 +1507,7 @@ def _choices(blocks):
         if slack_presenter.CHOICE_ACTION_ID_PATTERN.search(str(element.get("action_id") or ""))
     ]
 
+
 class ReplayedUnblockTest(TypedAnswerSettlesTheQuestionTest):
     """A rewound claim replays its batch: a replayed ``unblocked`` must not undo the ``blocked`` after it.
 
