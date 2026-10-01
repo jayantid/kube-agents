@@ -3273,6 +3273,21 @@ def test_a_failure_wake_is_the_runs_only_turn_and_its_reply_is_graded(
     assert card_wake.archive_command(_REPLAY_CARD) in scripts
 
 
+def test_a_failure_wake_that_errors_keeps_its_card_and_wake_and_archives_the_card(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+    stub_agent.fail_with = 500
+
+    result = KubeAgentsHarness().run(_FAILURE_PROMPT)
+
+    assert result.has_errors()
+    assert result.metadata["failure_wake"]["card"] == _REPLAY_CARD
+    assert result.metadata["failure_wake"]["wake"] == _REPLAY_WAKE
+    assert card_wake.archive_command(_REPLAY_CARD) in scripts
+
+
 def test_a_failure_wake_needs_the_api_transport(
     monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
 ) -> None:

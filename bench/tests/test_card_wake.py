@@ -69,10 +69,6 @@ def _save(state):
         json.dump(state, fh)
 
 
-def connect():
-    return object()
-
-
 def create_task(conn, *, title, body=None, created_by=None):
     state = _load()
     task_id = "t_%08d" % (len(state["tasks"]) + 1)
@@ -174,6 +170,9 @@ def hermes_root(tmp_path: Path) -> Path:
     (root / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_cli" / "kanban_db.py").write_text(_FAKE_KANBAN_DB)
     (root / "hermes_cli" / "kanban_db_dispatch.py").write_text(_FAKE_DISPATCH)
+    # Only the split module opens the board: a script that reaches for
+    # kanban_db.connect, the compat shim, fails here.
+    (root / "hermes_cli" / "kanban_db_connect.py").write_text("def connect():\n    return object()\n")
     (root / "gateway" / "__init__.py").write_text("")
     (root / "gateway" / "kanban_watchers_notifier.py").write_text(_FAKE_NOTIFIER)
     return root
@@ -369,8 +368,19 @@ def test_the_failure_case_prompt_is_a_blocked_replay() -> None:
 
     assert isinstance(replay, card_wake.Failure)
     assert replay.outcome == card_wake.OUTCOME_BLOCKED
-    assert "checkout-gateway" in replay.title
+    assert "invoice-renderer" in replay.title
     assert replay.reason.startswith("Permission denied.")
+
+
+def test_the_failure_case_says_why_only_from_the_reason() -> None:
+    case = yaml.safe_load(FAILURE_CASE.read_text())
+    replay = card_wake.parse(case["prompt"])
+    (says_why,) = [e for e in case["verification_spec"] if e["name"] == "the-reply-says-why"]
+    phrases = says_why["check"]["any_of_phrases"]
+
+    # The wake carries the title, so a phrase it also holds is answerable unread.
+    assert all(p in replay.reason for p in phrases)
+    assert not any(p in f"{replay.title} {replay.body}" for p in phrases)
 
 
 def test_a_failure_prompt_with_an_unknown_outcome_is_an_authoring_error() -> None:

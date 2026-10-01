@@ -509,8 +509,9 @@
 # the card round trip.
 ./tasks/chat-voice-ack-names-target/task.yaml
 
-# The front door's reply when a card blocks: leads with the fact, no apology,
-# no attribution line (agents/chat/SOUL.md §2, step 5). deployer: noop; the
-# blocked card is planted per run (bench/kube_agents_bench/card_wake.py), so
-# one front-door turn and no worker.
+# The front door's reply when a card blocks: reads the card, leads with the
+# fact and the card's reason, no apology (agents/chat/SOUL.md §2, step 5).
+# deployer: noop; the blocked card is planted per run
+# (bench/kube_agents_bench/card_wake.py), so one front-door turn and no
+# worker: filing or unblocking a card fails the case's catastrophic fence.
 ./tasks/chat-voice-failure-leads-with-fact/task.yaml

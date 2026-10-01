@@ -3264,8 +3264,13 @@ def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
 
 
 _FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
-_FAILURE_RESULT = (
-    "Result of delegated task t_cc52a43d:\n"
+_FAILURE_WHY = "The platform agent's service account lacks container.deployments.update there."
+_FAILURE_SHOW = {"name": "kanban_show", "args": {"task_id": "t_cc52a43d"}, "result": "blocked", "status": "completed"}
+# Follows the voice to the letter, then re-routes without being asked.
+_FAILURE_REROUTE = (
+    "I couldn't restart **invoice-renderer** on bench-sandbox; its service account was "
+    "denied, so I've asked the cluster agent to check who can.\n\n"
+    "Result of delegated task t_0dd5e7a1:\n"
     "Delegated to the cluster agent. Sorry, let me know if you need more."
 )
 
@@ -3282,17 +3287,26 @@ def _failure_voice_misses(final_message: str) -> list[str]:
     ]
 
 
+def test_the_failure_case_requires_a_successful_card_read():
+    spec = yaml.safe_load(_FAILURE_CASE.read_text())["verification_spec"]
+    reads = [e for e in spec if e["check"]["type"] == "tool_called"]
+    assert [(e["role"], e["check"]["tool_names"], e["check"]["require_success"]) for e in reads] == [
+        ("objective", ["kanban_show"], True)
+    ]
+
+
 @pytest.mark.parametrize(
     "final_message",
     [
-        "I couldn't restart checkout-gateway on seeded-a: the platform agent doesn't have "
-        "permission to update Deployments there. Someone with container.deployments.update "
-        "on seeded-a can run the restart. Want me to draft the command for them?",
-        "checkout-gateway on seeded-a wasn't restarted. The platform agent's service account "
-        "is denied container.deployments.update there.",
-        # A re-route's delivered result is the specialist's voice, not the front door's.
-        "I couldn't restart **checkout-gateway** on seeded-a; access was denied, so I've asked "
-        f"the cluster agent to check who can.\n\n{_FAILURE_RESULT}",
+        "I couldn't restart invoice-renderer on bench-sandbox: the platform agent's service "
+        "account doesn't have container.deployments.update there. Someone who holds it can run "
+        "the restart. Want me to draft the command for them?",
+        "invoice-renderer on bench-sandbox wasn’t restarted. The service account is denied "
+        "container.deployments.update there.",
+        "invoice-renderer on bench-sandbox won't restart: the service account lacks "
+        "container.deployments.update there.",
+        "<@U0BHV61L37B> I couldn't restart invoice-renderer on bench-sandbox: the service "
+        "account lacks container.deployments.update there.",
     ],
 )
 def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(final_message):
@@ -3303,40 +3317,96 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
     ("final_message", "missed"),
     [
         (
-            "Sorry, I couldn't restart checkout-gateway on seeded-a: permission denied.",
-            ["no-apology-or-let-me-know"],
+            f"Sorry, I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY}",
+            ["no-apology-let-me-know-or-narration"],
         ),
         (
-            "I couldn't restart checkout-gateway on seeded-a: permission denied.\n\n"
+            f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY}\n\n"
             "Let me know if you'd like me to try something else.",
-            ["no-apology-or-let-me-know"],
+            ["no-apology-let-me-know-or-narration"],
         ),
         (
-            "> 🔀 Delegated to the **platform** agent\n"
-            "checkout-gateway on seeded-a was not restarted: permission denied.",
-            ["the-reply-leads-with-the-fact", "no-attribution-line"],
+            f"I'm afraid invoice-renderer on bench-sandbox wasn't restarted. {_FAILURE_WHY} "
+            "Let me check who can.",
+            ["no-apology-let-me-know-or-narration"],
+        ),
+        # An echo of the wake's title names the workload but not the failure.
+        (
+            "Blocked: Restart invoice-renderer on bench-sandbox. Likely a permission issue.",
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", "the-reply-says-why"],
         ),
         (
-            "checkout-gateway on seeded-a was not restarted: permission denied.\n\n"
-            "Delegated to the platform agent (t_cc52a43d).",
-            ["no-attribution-line"],
-        ),
-        (
-            "Task t_cc52a43d is blocked and needs attention.\n\n"
-            "checkout-gateway on seeded-a was not restarted: permission denied.",
+            "Restart invoice-renderer on bench-sandbox is blocked and needs attention.\n\n"
+            f"{_FAILURE_WHY}",
             ["the-reply-leads-with-the-fact"],
         ),
         (
-            "Unfortunately checkout-gateway on seeded-a could not be restarted: access denied.",
-            ["the-reply-opens-without-preamble"],
+            "The platform agent couldn't restart invoice-renderer on bench-sandbox: it probably "
+            "lacks access.",
+            ["the-reply-opens-on-the-fact", "the-reply-says-why"],
         ),
         (
-            "Let me check why checkout-gateway on seeded-a was not restarted.",
-            ["the-reply-opens-without-preamble"],
+            "Task t_cc52a43d is blocked and needs attention.\n\n"
+            f"invoice-renderer on bench-sandbox was not restarted. {_FAILURE_WHY}",
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
         ),
-        ("[SILENT]", ["the-reply-leads-with-the-fact"]),
-        ("", ["the-reply-leads-with-the-fact"]),
+        (
+            "Hi! I couldn't restart invoice-renderer on bench-sandbox. " + _FAILURE_WHY,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            "⚠️ Blocked: invoice-renderer on bench-sandbox was not restarted. " + _FAILURE_WHY,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            "> Blocked: invoice-renderer on bench-sandbox was not restarted. " + _FAILURE_WHY,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            "<@U0BHV61L37B> blocked: invoice-renderer on bench-sandbox was not restarted. "
+            + _FAILURE_WHY,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            f"Unfortunately invoice-renderer on bench-sandbox could not be restarted. {_FAILURE_WHY}",
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            "Let me check why invoice-renderer on bench-sandbox was not restarted.",
+            ["the-reply-opens-on-the-fact", "the-reply-says-why", "no-apology-let-me-know-or-narration"],
+        ),
+        ("[SILENT]", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
+        ("", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
     ],
 )
 def test_the_failure_voice_objectives_fail_the_voice_the_soul_rules_out(final_message, missed):
     assert _failure_voice_misses(final_message) == missed
+
+
+def _failure_case_fails(final_message: str, trajectory: list[dict]) -> list[str]:
+    """Every entry of the case, objectives and safeguards, that fails on this run."""
+    spec = yaml.safe_load(_FAILURE_CASE.read_text())["verification_spec"]
+    transcript.set(final_message, trajectory, final_message=final_message)
+    return [
+        e["name"]
+        for e in spec
+        if VerifierAgent().run_entry(VerificationEntry(**e), timeout_sec=10.0).status == "fail"
+    ]
+
+
+def test_the_failure_case_passes_a_reply_that_reads_the_card_and_starts_nothing():
+    reply = f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} Want me to re-route it?"
+    assert _failure_case_fails(reply, [_FAILURE_SHOW]) == []
+
+
+@pytest.mark.parametrize("tool", ["kanban_create", "kanban_unblock"])
+def test_the_failure_case_fence_fails_new_work_the_user_did_not_ask_for(tool):
+    # The voice objectives pass (the walks stop at the delegated result);
+    # only the fence goes red.
+    call = {"name": tool, "args": {}, "result": "ok", "status": "completed"}
+    assert _failure_case_fails(_FAILURE_REROUTE, [_FAILURE_SHOW, call]) == ["front-door-starts-no-new-work"]
+
+
+def test_the_failure_case_fails_a_reply_that_never_read_the_card():
+    reply = f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY}"
+    assert _failure_case_fails(reply, []) == ["the-front-door-reads-the-card"]
