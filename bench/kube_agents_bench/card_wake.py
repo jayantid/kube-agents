@@ -1,4 +1,4 @@
-"""Replay the wake a blocked or failed card sends the front door.
+"""Replay the wake a blocked, failed or retried card sends the front door.
 
 The front door's reply to a card's wake is a turn the harness's own asks never
 reach. Two replays produce one. A prompt whose first line is
@@ -39,6 +39,22 @@ builds the wake with the image's notifier through a non-push stub adapter, as
 the API server's is. The harness sends that wake as the run's only turn. The
 wake names the card but not the reason, so the front door reads the card
 (``kanban_show``) as it would in a real thread.
+
+**A worker that crashed or timed out.** The dispatcher retries a ``crashed``
+or ``timed_out`` card until its failure breaker trips
+(``hermes_cli/kanban_db_dispatch.py``, ``_record_task_failure``:
+``DEFAULT_FAILURE_LIMIT`` consecutive failures, or the card's own
+``max_retries``). Below the limit the card goes back to ``ready`` and the
+event wakes the front door alone (``outcome: crashed`` or ``timed_out``). On
+the attempt that trips it, the dispatcher appends ``gave_up`` straight after
+the ``crashed`` or ``timed_out`` event and parks the card in ``blocked``, so
+one wake carries both (``outcome: crashed_final`` or ``timed_out_final``) and
+its status names both: gave up, and that the dispatcher will retry. The plant
+records each attempt as the dispatcher does, the event and then
+``_record_task_failure``, which counts it and trips on its own: one attempt
+for a retry, two for a final one. The card is assigned to
+:data:`WORKER_ASSIGNEE` before it fails, a profile no install has, so a
+retrying card left ``ready`` never starts a worker.
 
 What neither replay reproduces: the turns arrive on the run's own
 ``/v1/responses`` conversation rather than the session that filed the card, so
@@ -91,7 +107,19 @@ OPTION_SEPARATOR = "|"
 OUTCOME_QUESTION = "question"
 OUTCOME_BLOCKED = "blocked"
 OUTCOME_GAVE_UP = "gave_up"
-FAILURE_OUTCOMES = (OUTCOME_BLOCKED, OUTCOME_GAVE_UP)
+# A worker's crash or timeout the dispatcher will retry, and the same on the
+# attempt that trips its failure breaker.
+OUTCOME_CRASHED = "crashed"
+OUTCOME_TIMED_OUT = "timed_out"
+OUTCOME_CRASHED_FINAL = "crashed_final"
+OUTCOME_TIMED_OUT_FINAL = "timed_out_final"
+WORKER_OUTCOMES = (
+    OUTCOME_CRASHED,
+    OUTCOME_TIMED_OUT,
+    OUTCOME_CRASHED_FINAL,
+    OUTCOME_TIMED_OUT_FINAL,
+)
+FAILURE_OUTCOMES = (OUTCOME_BLOCKED, OUTCOME_GAVE_UP, *WORKER_OUTCOMES)
 
 # Line the in-pod scripts print before their JSON. A reply without it means
 # the script never ran to completion.
@@ -110,6 +138,10 @@ FLAG_ON = "1"
 # stub thread a question is posted in. Slack never sees the thread.
 CARD_CREATOR = "devops-bench"
 FAILURE_ASSIGNEE = "platform"
+# Who a crashed or timed-out card says was working it: shaped like a
+# scaffolded cluster agent's profile (cluster_agent_profile.py, profile_name)
+# but never scaffolded, so the dispatcher never takes a card assigned to it.
+WORKER_ASSIGNEE = "cluster-bench-project-bench-sandbox-us-central1"
 STUB_CHANNEL = "C0BENCHWAKE"
 STUB_THREAD = "1700000000.000100"
 
@@ -117,13 +149,17 @@ STUB_THREAD = "1700000000.000100"
 # hermes root, the scripts directory, the flag, its on value, the creator,
 # the stub channel, the stub thread, the card title, its body, the block
 # reason or failure error, the outcome and the assignee (empty for none).
-# The card is archived again if anything after filing it fails.
+# The card is archived again if anything after filing it fails. The worker
+# pid, elapsed time and runtime limit in a crash or timeout's payload are
+# made up; only the front door reads them.
 _PLANT_SCRIPT = r"""
 import asyncio, json, os, sys
 
 (SENTINEL, HERMES_ROOT, SCRIPTS, FLAG, ON, CREATOR,
  CHANNEL, THREAD, TITLE, BODY, REASON, OUTCOME, ASSIGNEE) = sys.argv[1:14]
 STUB_TS = "1700000000.000200"
+STUB_PID = 4242
+STUB_ELAPSED, STUB_LIMIT = 1830, 1800
 out = {"card": None, "wake": None, "posted": 0, "error": None}
 
 
@@ -171,7 +207,39 @@ try:
     conn = connect()
     card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR)
     out["card"] = card
-    if OUTCOME == "gave_up":
+    batch = 1
+    if OUTCOME in ("crashed", "timed_out", "crashed_final", "timed_out_final"):
+        from hermes_cli import kanban_db_dispatch as dispatch
+        trigger, final = OUTCOME.replace("_final", ""), OUTCOME.endswith("_final")
+        # Assigned before it fails, as a real card is: the profile does not
+        # exist, so no dispatcher ever takes it.
+        if not kb.assign_task(conn, card, ASSIGNEE):
+            raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
+        ASSIGNEE = ""
+        # The payloads detect_crashed_workers and enforce_max_runtime write.
+        if trigger == "crashed":
+            payload = {"pid": STUB_PID, "claimer": None, "retry_status": "ready"}
+            extra = {"pid": STUB_PID, "claimer": None}
+        else:
+            payload = {"pid": STUB_PID, "elapsed_seconds": STUB_ELAPSED, "limit_seconds": STUB_LIMIT,
+                       "sigkill": False, "retry_status": "ready"}
+            extra = {"pid": STUB_PID, "sigkill": False, "retry_status": "ready"}
+        # Each attempt as the dispatcher records it: the event, then the
+        # breaker's count, which appends gave_up when it trips. A final
+        # attempt is the second.
+        for _attempt in range(2 if final else 1):
+            with kb.write_txn(conn):
+                kb._append_event(conn, card, trigger, payload)
+            tripped = dispatch._record_task_failure(conn, card, REASON, outcome=trigger,
+                                                    event_payload_extra=extra)
+        if tripped != final:
+            raise RuntimeError("card %s %s its failure breaker"
+                               % (card, "tripped" if tripped else "did not trip"))
+        kind = "gave_up" if final else trigger
+        # The notifier claims every event since its cursor, so a final
+        # attempt's crash or timeout reaches the wake with the gave_up after it.
+        batch = 2 if final else 1
+    elif OUTCOME == "gave_up":
         from hermes_cli import kanban_db_dispatch as dispatch
         # force_trip records gave_up and parks the card on its first failure,
         # where the dispatcher would after exhausting its retries.
@@ -186,8 +254,8 @@ try:
     # Assigned only once it can no longer be dispatched.
     if ASSIGNEE and not kb.assign_task(conn, card, ASSIGNEE):
         raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
-    events = [e for e in kb.list_events(conn, card) if e.kind == kind][-1:]
-    if not events:
+    events = [e for e in kb.list_events(conn, card) if e.kind != "assigned"][-batch:]
+    if not events or events[-1].kind != kind:
         raise RuntimeError("card %s has no %s event" % (card, kind))
     if OUTCOME == "question":
         sub = {"task_id": card, "platform": "slack", "chat_id": CHANNEL, "thread_id": THREAD,
@@ -328,7 +396,8 @@ def _command(script: str, args: list[str]) -> str:
 def plant_command(replay: Replay | Failure) -> str:
     """The ``sh -c`` line that files, parks and wakes the replay's card in the pod."""
     if isinstance(replay, Failure):
-        body, outcome, assignee = replay.body, replay.outcome, FAILURE_ASSIGNEE
+        body, outcome = replay.body, replay.outcome
+        assignee = WORKER_ASSIGNEE if outcome in WORKER_OUTCOMES else FAILURE_ASSIGNEE
     else:
         body, outcome, assignee = replay.reason, OUTCOME_QUESTION, ""
     return _command(

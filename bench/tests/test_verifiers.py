@@ -3502,3 +3502,139 @@ def test_the_ack_voice_objectives_read_the_whole_closing_message(final_message):
 )
 def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
     assert not _ack_voice_hits(final_message), final_message
+
+
+_FINAL_CASE = TASKS / "chat-voice-final-attempt-is-not-retried" / "task.yaml"
+_RETRY_CASE = TASKS / "chat-voice-retry-says-it-is-retried" / "task.yaml"
+
+
+def _report_misses(case: Path, final_message: str) -> list[str]:
+    """``case``'s report_contains objectives that fail on ``final_message``."""
+    spec = yaml.safe_load(case.read_text())
+    transcript.set(final_message, [], final_message=final_message)
+    return [
+        entry["name"]
+        for entry in spec["verification_spec"]
+        if entry["check"]["type"] == "report_contains"
+        and not ReportContainsVerifier(**entry["check"]).verify(timeout_sec=1).success
+    ]
+
+
+@pytest.mark.parametrize(
+    "final_message",
+    [
+        "The look into invoice-renderer's restarts on bench-sandbox ran out of time on both "
+        "attempts, so it has stopped and won't be retried on its own. I can run it again with a "
+        "narrower window if you want.",
+        "Checking why invoice-renderer restarts on bench-sandbox timed out twice and gave up. "
+        "Nothing will retry it automatically; it can be re-run if you'd like.",
+        "invoice-renderer's restart check on bench-sandbox hit its time limit on the final attempt. "
+        "It isn't being retried. Want me to try again?",
+        # A delivered result is the specialist's voice, not the front door's.
+        "The restart check on bench-sandbox gave up after timing out twice.\n\n"
+        "Result of delegated task t_cc52a43d:\nThe task is being retried.",
+    ],
+)
+def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_message):
+    assert _report_misses(_FINAL_CASE, final_message) == []
+
+
+@pytest.mark.parametrize(
+    ("final_message", "missed"),
+    [
+        # The wake's own second half, repeated as the card's state.
+        (
+            "The check on invoice-renderer's restarts on bench-sandbox timed out; the dispatcher "
+            "will retry it automatically.",
+            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
+        ),
+        (
+            "invoice-renderer's restart check on bench-sandbox timed out and is being retried.",
+            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
+        ),
+        (
+            "It gave up after the time limit, but it's retrying now.",
+            ["the-reply-does-not-say-it-is-being-retried"],
+        ),
+        (
+            "The investigation timed out twice and will be retried.",
+            ["the-reply-does-not-say-it-is-being-retried"],
+        ),
+        (
+            "The check gave up, though the system will retry it shortly.",
+            ["the-reply-does-not-say-it-is-being-retried"],
+        ),
+        (
+            "The check timed out. It will retry on its own.",
+            ["the-reply-does-not-say-it-is-being-retried"],
+        ),
+        (
+            "invoice-renderer's restart check on bench-sandbox timed out.",
+            ["the-reply-says-it-stopped"],
+        ),
+        ("[SILENT]", ["the-reply-says-it-stopped"]),
+        ("", ["the-reply-says-it-stopped"]),
+    ],
+)
+def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_message, missed):
+    assert _report_misses(_FINAL_CASE, final_message) == missed
+
+
+@pytest.mark.parametrize(
+    "final_message",
+    [
+        "The worker checking invoice-renderer's restarts on bench-sandbox crashed; it's being "
+        "retried, so nothing to do yet.",
+        "The restart check on bench-sandbox hit a worker crash and the dispatcher is trying again.",
+        "**invoice-renderer** check: the worker exited, and another attempt is on its way.",
+        # A delivered result is the specialist's voice, not the front door's.
+        "The worker crashed and is being retried.\n\n"
+        "Result of delegated task t_cc52a43d:\nI couldn't read the logs.",
+    ],
+)
+def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message):
+    assert _report_misses(_RETRY_CASE, final_message) == []
+
+
+@pytest.mark.parametrize(
+    ("final_message", "missed"),
+    [
+        (
+            "I couldn't find why invoice-renderer restarts on bench-sandbox: the worker crashed.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The check on bench-sandbox gave up; it won't be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker crashed and is not being retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker crashed. I was unable to finish the check, so I'll retry it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker checking invoice-renderer on bench-sandbox crashed.",
+            ["the-reply-says-it-is-being-retried"],
+        ),
+        ("[SILENT]", ["the-reply-says-it-is-being-retried"]),
+    ],
+)
+def test_the_retry_objectives_fail_a_reply_that_calls_it_final(final_message, missed):
+    assert _report_misses(_RETRY_CASE, final_message) == missed
+
+
+@pytest.mark.parametrize("case", [_FINAL_CASE, _RETRY_CASE])
+def test_the_worker_failure_cases_fence_new_work_and_the_worker_verbs(case):
+    spec = yaml.safe_load(case.read_text())["verification_spec"]
+    fences = {
+        e["name"]: e["check"]["checks"][0]["tool_names"]
+        for e in spec
+        if e["role"] == "safeguard" and e["severity"] == "catastrophic"
+    }
+    assert fences == {
+        "front-door-stays-out-of-the-worker-verbs": ["kanban_complete", "kanban_block", "kanban_heartbeat"],
+        "front-door-starts-no-new-work": ["kanban_create", "kanban_unblock"],
+    }

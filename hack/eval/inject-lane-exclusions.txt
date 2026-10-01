@@ -35,3 +35,15 @@
 # Returns to the lane when the door routes through the chat profile, or
 # when the case is rewritten for a transport-neutral premise.
 agent-kanban-smoke
+
+# #2039: grades the chat front door's reply to the wake a crashed card sends
+# it (bench/kube_agents_bench/card_wake.py replays that wake as the run's
+# only turn). The inject door addresses `platform` directly, so the wake
+# would reach the specialist, which never receives one, and no front door
+# answers it. Returns to the lane when the door routes through the chat
+# profile.
+chat-voice-retry-says-it-is-retried
+
+# #2039: grades the chat front door's reply to the wake a card sends on its
+# last attempt, replayed and excluded as the case above.
+chat-voice-final-attempt-is-not-retried
