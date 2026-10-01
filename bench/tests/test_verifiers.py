@@ -3261,3 +3261,82 @@ def test_the_ack_voice_objectives_read_the_whole_closing_message(final_message):
 )
 def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
     assert not _ack_voice_hits(final_message), final_message
+
+
+_FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
+_FAILURE_RESULT = (
+    "Result of delegated task t_cc52a43d:\n"
+    "Delegated to the cluster agent. Sorry, let me know if you need more."
+)
+
+
+def _failure_voice_misses(final_message: str) -> list[str]:
+    """The case's report_contains objectives that fail on ``final_message``."""
+    spec = yaml.safe_load(_FAILURE_CASE.read_text())
+    transcript.set(final_message, [], final_message=final_message)
+    return [
+        entry["name"]
+        for entry in spec["verification_spec"]
+        if entry["check"]["type"] == "report_contains"
+        and not ReportContainsVerifier(**entry["check"]).verify(timeout_sec=1).success
+    ]
+
+
+@pytest.mark.parametrize(
+    "final_message",
+    [
+        "I couldn't restart checkout-gateway on seeded-a: the platform agent doesn't have "
+        "permission to update Deployments there. Someone with container.deployments.update "
+        "on seeded-a can run the restart. Want me to draft the command for them?",
+        "checkout-gateway on seeded-a wasn't restarted. The platform agent's service account "
+        "is denied container.deployments.update there.",
+        # A re-route's delivered result is the specialist's voice, not the front door's.
+        "I couldn't restart **checkout-gateway** on seeded-a; access was denied, so I've asked "
+        f"the cluster agent to check who can.\n\n{_FAILURE_RESULT}",
+    ],
+)
+def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(final_message):
+    assert _failure_voice_misses(final_message) == []
+
+
+@pytest.mark.parametrize(
+    ("final_message", "missed"),
+    [
+        (
+            "Sorry, I couldn't restart checkout-gateway on seeded-a: permission denied.",
+            ["no-apology-or-let-me-know"],
+        ),
+        (
+            "I couldn't restart checkout-gateway on seeded-a: permission denied.\n\n"
+            "Let me know if you'd like me to try something else.",
+            ["no-apology-or-let-me-know"],
+        ),
+        (
+            "> 🔀 Delegated to the **platform** agent\n"
+            "checkout-gateway on seeded-a was not restarted: permission denied.",
+            ["the-reply-leads-with-the-fact", "no-attribution-line"],
+        ),
+        (
+            "checkout-gateway on seeded-a was not restarted: permission denied.\n\n"
+            "Delegated to the platform agent (t_cc52a43d).",
+            ["no-attribution-line"],
+        ),
+        (
+            "Task t_cc52a43d is blocked and needs attention.\n\n"
+            "checkout-gateway on seeded-a was not restarted: permission denied.",
+            ["the-reply-leads-with-the-fact"],
+        ),
+        (
+            "Unfortunately checkout-gateway on seeded-a could not be restarted: access denied.",
+            ["the-reply-opens-without-preamble"],
+        ),
+        (
+            "Let me check why checkout-gateway on seeded-a was not restarted.",
+            ["the-reply-says-why", "the-reply-opens-without-preamble"],
+        ),
+        ("[SILENT]", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
+        ("", ["the-reply-leads-with-the-fact", "the-reply-says-why"]),
+    ],
+)
+def test_the_failure_voice_objectives_fail_the_voice_the_soul_rules_out(final_message, missed):
+    assert _failure_voice_misses(final_message) == missed

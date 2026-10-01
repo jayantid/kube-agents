@@ -145,6 +145,7 @@ ADDED_AFTER_THE_MOVE = [
     "fleet-audit-reports-past-run",  # the report store's reader, PR #2115
     "platform-worker-refuses-shipped-skill-edit",  # skill governance, #1848
     "chat-voice-ack-names-target",  # the front door's delegation ack
+    "chat-voice-failure-leads-with-fact",  # the front door's reply to a blocked card
 ]
 
 # Admitted after the split, each by a pull request that cited the record

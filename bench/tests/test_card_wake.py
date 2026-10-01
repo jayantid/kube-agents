@@ -21,12 +21,14 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from devops_bench.agents import AgentResult
 from kube_agents_bench import card_wake
 
 REPO = Path(__file__).resolve().parents[2]
 MOMENTS = REPO / "deploy" / "docker" / "patches" / "slack_ux_moments.py"
 SCRIPTS = REPO / "agents" / "platform" / "scripts"
+FAILURE_CASE = REPO / "bench" / "tasks" / "chat-voice-failure-leads-with-fact" / "task.yaml"
 
 PROMPT = """[bench:slack-question-wake]
 title: Check checkout-gateway's restarts
@@ -360,6 +362,15 @@ def test_a_failure_prompt_missing_a_field_is_an_authoring_error(field: str) -> N
     )
     with pytest.raises(ValueError, match=field):
         card_wake.parse(prompt)
+
+
+def test_the_failure_case_prompt_is_a_blocked_replay() -> None:
+    replay = card_wake.parse(yaml.safe_load(FAILURE_CASE.read_text())["prompt"])
+
+    assert isinstance(replay, card_wake.Failure)
+    assert replay.outcome == card_wake.OUTCOME_BLOCKED
+    assert "checkout-gateway" in replay.title
+    assert replay.reason.startswith("Permission denied.")
 
 
 def test_a_failure_prompt_with_an_unknown_outcome_is_an_authoring_error() -> None:
