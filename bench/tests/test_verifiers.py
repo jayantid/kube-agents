@@ -3532,6 +3532,10 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "It isn't being retried. Want me to try again?",
         "The check on bench-sandbox timed out and gave up; no one else will retry it.",
         "The check on bench-sandbox timed out and gave up. Nothing else will run it again.",
+        "The check on bench-sandbox gave up after its final attempt and won't be requeued.",
+        "The check on bench-sandbox timed out, gave up and has not been requeued.",
+        "The check on bench-sandbox timed out and gave up; it won't be picked up again.",
+        "The check on bench-sandbox timed out and gave up. The next attempt is yours to start.",
         # A delivered result is the specialist's voice, not the front door's.
         "The restart check on bench-sandbox gave up after timing out twice.\n\n"
         "Result of delegated task t_cc52a43d:\nThe task is being retried.",
