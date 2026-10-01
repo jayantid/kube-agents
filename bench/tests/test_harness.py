@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from devops_bench.agents import AGENTS, AgentResult
-from kube_agents_bench import board, harness, question_wake, transcript, worker_trajectory
+from kube_agents_bench import board, card_wake, harness, transcript, worker_trajectory
 from kube_agents_bench.cases import CaseSpec
 from kube_agents_bench.harness import KubeAgentsHarness
 from kube_agents_bench.parsing import merge_new as _merge_new
@@ -3133,7 +3133,7 @@ def test_an_errored_run_still_stamps_a_start(
     assert transcript.get().started_at > 0.0
 
 
-# --- The question-wake replay (kube_agents_bench.question_wake) ---------------
+# --- The card-wake replays (kube_agents_bench.card_wake) ----------------------
 
 _REPLAY_PROMPT = """[bench:slack-question-wake]
 title: Check checkout-gateway's restarts
@@ -3152,11 +3152,11 @@ def _replay_shell(scripts: list[str], plant_reply: str | None = None):
 
     def shell(script: str, timeout: float) -> str:
         scripts.append(script)
-        if question_wake.REPLAY_PRESENT not in script:
+        if card_wake.REPLAY_PRESENT not in script:
             return ""
         if "create_task" in script:
-            return plant_reply if plant_reply is not None else f"{question_wake.REPLAY_PRESENT}\n{planted}"
-        return f"{question_wake.REPLAY_PRESENT}\n{archived}"
+            return plant_reply if plant_reply is not None else f"{card_wake.REPLAY_PRESENT}\n{planted}"
+        return f"{card_wake.REPLAY_PRESENT}\n{archived}"
 
     return shell
 
@@ -3187,7 +3187,7 @@ def test_a_question_wake_sends_the_wake_then_the_answer_on_one_conversation(
     snap = transcript.get()
     assert snap.final_message == "[SILENT]"
     assert result.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
-    assert any(question_wake.archive_command(_REPLAY_CARD) == s for s in scripts)
+    assert any(card_wake.archive_command(_REPLAY_CARD) == s for s in scripts)
 
 
 def test_the_next_run_gets_a_fresh_conversation_after_a_question_wake(
@@ -3226,7 +3226,7 @@ def test_a_question_wake_archives_its_card_when_the_wake_turn_errors(
 
     assert result.has_errors()
     assert len(stub_agent.requests) == 1
-    assert question_wake.archive_command(_REPLAY_CARD) in scripts
+    assert card_wake.archive_command(_REPLAY_CARD) in scripts
 
 
 def test_a_question_wake_missing_its_answer_errors_without_planting(
@@ -3237,6 +3237,50 @@ def test_a_question_wake_missing_its_answer_errors_without_planting(
 
     result = KubeAgentsHarness().run(_REPLAY_PROMPT.replace("answer: seeded-b\n", ""))
 
-    assert result.errors == [f"{question_wake.DIRECTIVE} prompt is missing answer"]
+    assert result.errors == [f"{card_wake.QUESTION_DIRECTIVE} prompt is missing answer"]
     assert scripts == []
     assert stub_agent.requests == []
+
+
+_FAILURE_PROMPT = """[bench:card-failure-wake]
+title: Restart checkout-gateway on seeded-a
+body: Roll the checkout-gateway Deployment on seeded-a.
+outcome: blocked
+reason: Permission denied: container.deployments.update on seeded-a.
+"""
+
+
+def test_a_failure_wake_is_the_runs_only_turn_and_its_reply_is_graded(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+    stub_agent.turns = [
+        _turn(
+            *_call("kanban_show", {"task_id": _REPLAY_CARD}, {"status": "blocked"}, "c1"),
+            _text("I couldn't restart checkout-gateway on seeded-a."),
+        )
+    ]
+
+    result = KubeAgentsHarness().run(_FAILURE_PROMPT)
+
+    assert not result.has_errors()
+    assert [r["input"] for r in stub_agent.requests] == [_REPLAY_WAKE]
+    assert result.output == "I couldn't restart checkout-gateway on seeded-a."
+    assert [s["name"] for s in result.trajectory] == ["kanban_show"]
+    assert transcript.get().final_message == "I couldn't restart checkout-gateway on seeded-a."
+    assert result.metadata["failure_wake"]["card"] == _REPLAY_CARD
+    assert card_wake.archive_command(_REPLAY_CARD) in scripts
+
+
+def test_a_failure_wake_needs_the_api_transport(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell(scripts))
+    monkeypatch.setenv("AGENT_TRANSPORT", "inject")
+
+    result = KubeAgentsHarness().run(_FAILURE_PROMPT)
+
+    assert result.errors == [f"{card_wake.FAILURE_DIRECTIVE} needs AGENT_TRANSPORT=api, got 'inject'"]
+    assert scripts == []
