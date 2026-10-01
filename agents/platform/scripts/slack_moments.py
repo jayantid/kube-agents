@@ -112,6 +112,10 @@ OPTIONS_MAX = _presenter.BUTTONS_PER_ROW
 DETAIL_MAX = 2000
 NEEDS_YOU_ACTION_PREFIX = "kage_needs"
 WAITING = "⏸ waiting on you"
+#: Markup characters a line can hold with no text: a bare fence or emphasis run.
+BARE_MARKUP = "*_`~ "
+#: Slack mrkdwn has no escape for it, so a headline holding one cannot be bolded.
+MRKDWN_UNESCAPABLE = "*"
 
 
 def opened_pr(text: str) -> tuple[str, str, str, str] | None:
@@ -190,7 +194,7 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
     evidence = _presenter._clip(span.sub(PR_REF.format(number=number), line).strip(), EVIDENCE_MAX)
     links = [(OPEN_PR, url), (FILES_CHANGED, url + FILES_PATH)]
     blocks = _presenter.blocks_answer(headline, links=links, action_id_prefix=PR_ACTION_PREFIX)
-    first, *rest = _presenter.fallback_text(headline, links=links).split("\n")
+    first, *rest = _presenter.fallback_text(_presenter._plain(headline), links=links).split("\n")
     return _with_subline(blocks, evidence), "\n".join([_text(first, evidence), *rest])
 
 
@@ -201,7 +205,7 @@ def _unmarked(option: str) -> str:
 def _headline_text(headline: str) -> str:
     """``headline`` as plain text, stripped of paired markup only, so a glob
     (``app=web-*``) or a dunder name keeps its characters; the presenter's
-    ``_plain`` drops every ``*`` and collapses ``__name__``."""
+    ``_plain`` collapses ``__name__``."""
     text = _presenter.HEADING.sub("", headline.strip())
     text = _presenter.LIST_MARKER.sub("", text)
     text = _presenter.MD_LINK.sub(r"\1", text)
@@ -225,7 +229,7 @@ def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     """The reason's first line, the lines after it, and its options when they can be buttons."""
     lines = str(reason or "").strip().splitlines()
     # A line of markup alone (a bare "```") has no text to head the question.
-    while lines and not _presenter._plain(lines[0]):
+    while lines and not _presenter._plain(lines[0]).strip(BARE_MARKUP):
         lines.pop(0)
     if not lines:
         return "", [], []
@@ -266,9 +270,9 @@ def needs_you(reason: str, buttons: bool = True) -> tuple[list[dict], str] | Non
         "block_id": _presenter.WAITING_BLOCK_ID,
         "elements": [{"type": "mrkdwn", "text": WAITING}],
     })
-    first, *more = _presenter.fallback_text(headline, choices=options).split("\n")
+    first, *more = _presenter.fallback_text(_presenter._plain(headline), choices=options).split("\n")
     title = _headline_text(headline)
-    if title != _presenter._plain(headline):
+    if title != _presenter._plain(headline) or MRKDWN_UNESCAPABLE in title:
         # Slack mrkdwn has no escape for "*", so a headline the presenter would
         # change goes out as plain text, unbolded but with its characters.
         title = _presenter._clip(title, _presenter.HEADLINE_MAX)
