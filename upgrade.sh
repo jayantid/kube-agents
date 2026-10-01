@@ -64,6 +64,16 @@ readonly KUBE_AGENTS_RELEASE_BUNDLE_MARKER=".release-bundle"
 # The schema the re-tag modes filter the release's recorded values against,
 # relative to the sources this run applies.
 readonly KUBE_AGENTS_VALUES_SCHEMA="charts/kube-agents/values.schema.json"
+# The Slack manifest record and the tool that compares a running install's
+# manifest against it, relative to the sources this run applies. A target that
+# predates them skips the comparison.
+readonly SLACK_MANIFEST_TOOL="deploy/docker/patches/slack_manifest.py"
+readonly SLACK_MANIFEST_RECORD="deploy/docker/patches/slack_manifest.json"
+# slack_manifest.py compare's exit status when the two manifests differ.
+readonly SLACK_MANIFEST_DIFFERS=1
+# Bounds the exec that reads the running manifest: a wedged pod must not hold
+# up an upgrade over a check that is advisory.
+readonly SLACK_MANIFEST_READ_TIMEOUT="60s"
 
 # Default CLI Configuration
 PARAM_UPGRADE_MODE="full"
@@ -449,6 +459,10 @@ SANDBOX_KEYS_PATCHED="false"
 # volume: the new pod cannot attach until the old one has detached, so its
 # rollout serialises where a Deployment's overlaps.
 SANDBOX_ROLLOUT_TIMEOUT="180s"
+
+# Set by check_slack_manifest when the target's Slack manifest differs from the
+# running one, so the end of the run can repeat the re-apply steps.
+SLACK_MANIFEST_CHANGED="false"
 
 backfill_sandbox_ssh_key() {
   local namespace="$1"
@@ -1454,6 +1468,59 @@ acquire_upgrade_sources() {
   printf -v "$checkout_var" '%s' "$found_checkout"
 }
 
+# The Slack app is the one part of an install no upgrade reaches. The manifest
+# `hermes slack manifest` prints is pasted into Slack once, when the app is
+# created, and nothing pastes it again, so a scope, event or setting a later
+# image's manifest adds is missing from the app and the feature that needs it
+# fails without an error: Slack answers missing_scope, or never delivers the
+# event. This reads the running image's manifest, compares it with the record
+# in the sources being upgraded to, and when they differ prints the difference,
+# the record's release notes since the running version, and the steps.
+#
+# Read-only and never fatal. An install without Slack, a target whose sources
+# predate the record, and a pod it cannot exec into each get one line, and the
+# upgrade goes on.
+check_slack_manifest() {
+  local namespace="$1" repo_dir="$2"
+  if ! is_truthy "${SLACK_ENABLED:-$DEFAULT_SLACK_ENABLED}"; then
+    return 0
+  fi
+  local tool="${repo_dir}/${SLACK_MANIFEST_TOOL}" record="${repo_dir}/${SLACK_MANIFEST_RECORD}"
+  if [ ! -f "$tool" ] || [ ! -f "$record" ]; then
+    print_info "These sources carry no Slack manifest record, so the Slack app's manifest is not compared."
+    return 0
+  fi
+  local installed=""
+  # `trap - ERR` for the bash 3.2 reason write_tfvars_from_state gives.
+  if ! installed="$(trap - ERR; kubectl exec "deployment/${PLATFORM_AGENT_DEPLOYMENT}" \
+    -c "$PLATFORM_AGENT_CONTAINER" -n "$namespace" --request-timeout="$SLACK_MANIFEST_READ_TIMEOUT" \
+    -- hermes slack manifest 2>/dev/null)"; then
+    print_warning "Could not read the running Slack manifest from deployment/${PLATFORM_AGENT_DEPLOYMENT}, so it is not compared. After the upgrade, compare the app's manifest with what \`hermes slack manifest\` prints."
+    return 0
+  fi
+  local report="" status=0
+  report="$(trap - ERR; printf '%s' "$installed" | python3 "$tool" compare "$record" 2>&1)" || status=$?
+  if [ "$status" -eq 0 ]; then
+    print_success "The Slack app's manifest is the same in this version."
+  elif [ "$status" -eq "$SLACK_MANIFEST_DIFFERS" ]; then
+    SLACK_MANIFEST_CHANGED="true"
+    print_warning "This version changes the Slack app's manifest. The app keeps its old one until you re-apply it."
+    sed 's/^/    /' <<<"$report"
+    print_slack_manifest_steps "$namespace"
+  else
+    print_warning "Could not compare the Slack manifest: ${report}"
+  fi
+}
+
+print_slack_manifest_steps() {
+  local namespace="$1"
+  print_info "Once the upgrade completes, re-apply the manifest:"
+  echo "    1. kubectl exec deploy/${PLATFORM_AGENT_DEPLOYMENT} -c ${PLATFORM_AGENT_CONTAINER} -n ${namespace} -- hermes slack manifest"
+  echo "       Add --name and --description to keep your app's own, and --agent-view if it uses the agent view."
+  echo "    2. In the Slack App Console, open the app's Features -> App Manifest, replace the JSON with that output, and save."
+  echo "    3. Reinstall the app to the workspace when Slack prompts, which grants any new scope."
+}
+
 main() {
   parse_args "$@"
   print_banner
@@ -1710,6 +1777,12 @@ main() {
   local target_namespace="${PARAM_AGENT_NAMESPACE:-${NAMESPACE:-$DEFAULT_NAMESPACE}}"
   export NAMESPACE="$target_namespace"
 
+  # Empty here means the run keeps the tag the install already serves (a plan
+  # without --image-tag, or --keep-image-tag), so the agent's image, and with it
+  # the Slack manifest, does not move.
+  local image_moves="true"
+  [ -n "$PARAM_IMAGE_TAG" ] || image_moves="false"
+
   if [ -z "$PARAM_IMAGE_TAG" ] && [ "$PARAM_PLAN" = "true" ]; then
     # A PLAN's reference point is Terraform state, not the cluster, so the tag
     # it plans at has to be the one the last apply RECORDED. The two differ by
@@ -1751,6 +1824,10 @@ main() {
     # reason to trust it any further.
     validate_immutable_ref "$PARAM_IMAGE_TAG"
     print_success "Using the tag this install is running: ${PARAM_IMAGE_TAG}"
+  fi
+
+  if [ "$image_moves" = "true" ] && [ "$PARAM_UPGRADE_MODE" != "operator" ]; then
+    check_slack_manifest "$target_namespace" "$repo_dir"
   fi
 
   if [ "$PARAM_PLAN" = "true" ]; then
@@ -2014,6 +2091,10 @@ main() {
   write_report "SUCCESS"
 
   print_step "🎉 Upgrade Complete!"
+  if [ "$SLACK_MANIFEST_CHANGED" = "true" ]; then
+    print_warning "The Slack app still has the previous version's manifest."
+    print_slack_manifest_steps "$target_namespace"
+  fi
 }
 
 if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ]; then
