@@ -442,7 +442,7 @@ def test_a_failure_prompt_with_an_unknown_outcome_is_an_authoring_error() -> Non
         card_wake.parse(FAILURE_PROMPT.replace("outcome: blocked", "outcome: crashed"))
 
 
-def test_a_blocked_failure_wakes_through_the_api_server_with_the_card_assigned(
+def test_a_blocked_failure_wakes_through_the_api_server_with_only_the_wake_assigned(
     hermes_root: Path, tmp_path: Path
 ) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT)
@@ -458,9 +458,9 @@ def test_a_blocked_failure_wakes_through_the_api_server_with_the_card_assigned(
     card = board["tasks"][planted.card]
     assert card["status"] == "blocked"
     assert card["body"] == "Roll the checkout-gateway Deployment on seeded-a."
-    assert card["assignee"] == card_wake.WAKE_ASSIGNEE
-    # Blocked first, assigned after, so the dispatcher never sees it ready.
-    assert [e["kind"] for e in board["events"]] == ["blocked", "assigned"]
+    # Only the notifier's copy is assigned, so an unblock hands no worker the card.
+    assert card["assignee"] is None
+    assert [e["kind"] for e in board["events"]] == ["blocked"]
     assert board["events"][0]["payload"] == {"reason": FAILURE_REASON, "kind": None}
 
 
@@ -474,7 +474,7 @@ def test_a_gave_up_failure_trips_the_breaker_with_the_reason_as_its_error(
 
     assert planted.wake.startswith(f"[kanban] Task {planted.card} gave up (retries exhausted).\n")
     board = _board(tmp_path)
-    assert [e["kind"] for e in board["events"]] == ["gave_up", "assigned"]
+    assert [e["kind"] for e in board["events"]] == ["gave_up"]
     assert board["events"][0]["payload"] == {
         "error": FAILURE_REASON,
         "trigger_outcome": "crashed",

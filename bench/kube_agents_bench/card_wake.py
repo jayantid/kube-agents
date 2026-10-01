@@ -22,10 +22,7 @@ question through ``needs_you`` with a stub Slack client where the image has
 that module, and builds the wake with the image's own notifier. An image that
 has the module but posts nothing is broken, not red. The harness then sends
 that wake as the first turn and the case's typed answer as the second, on one
-conversation (:meth:`KubeAgentsHarness._execute_card_wake`). The card stays
-unassigned, so unblocking it hands no worker anything; the notifier is given
-a copy naming :data:`WAKE_ASSIGNEE`, as a delegated card would carry, so the
-wake does not read ``@None``.
+conversation (:meth:`KubeAgentsHarness._execute_card_wake`).
 
 **A card that blocked or gave up.** On the API server a ``blocked`` or
 ``gave_up`` card wakes the conversation that filed it through the notifier's
@@ -34,13 +31,11 @@ non-push adapter always wakes for the failure kinds), and the reply to that
 wake is the user's only announcement of the failure (``agents/chat/SOUL.md``
 §2, step 5). The harness never reads it: its own poll turns ask for a status
 recital, and no prompt makes a specialist fail every time. For
-:data:`FAILURE_DIRECTIVE` the in-pod script files the card assigned to
-:data:`WAKE_ASSIGNEE`, blocks it with the case's reason (``outcome:
+:data:`FAILURE_DIRECTIVE` the in-pod script files the card, blocks it with the case's reason (``outcome:
 blocked``) or trips its failure breaker with it as the error (``outcome:
 gave_up``, the event the dispatcher records when its retries run out), and
 builds the wake with the image's notifier through a non-push stub adapter, as
-the API server's is. The card is assigned to :data:`WAKE_ASSIGNEE` only once it
-can no longer be dispatched. The harness sends that wake as the run's only turn. The
+the API server's is. The harness sends that wake as the run's only turn. The
 wake names the card but not the reason, so the front door reads the card
 (``kanban_show``) as it would in a real thread.
 
@@ -50,6 +45,11 @@ the front door has not seen the ask that led to it; for a question, the flag is
 set in the script's process whatever the install's setting and no message
 reaches Slack. The wake under test is the notifier's, built by the image's own
 code.
+
+Either replay's card stays unassigned on the board, so unblocking it hands
+no worker anything; the notifier is given a copy naming
+:data:`WAKE_ASSIGNEE`, as a delegated card would carry, so the wake does not
+read ``@None``.
 
 Every replay's card carries a key minted for the run
 (:data:`REPLAY_KEY_PREFIX`, the card's ``idempotency_key``). :func:`archive`
@@ -210,11 +210,6 @@ try:
         if not kb.block_task(conn, card, reason=REASON, kind=block_kind):
             raise RuntimeError("card %s would not block" % card)
         kind = "blocked"
-    # A failed card is assigned only once it can no longer be dispatched. A
-    # question's is never: the front door unblocks it, and a ready assigned
-    # card is one the dispatcher hands a worker.
-    if OUTCOME != "question" and not kb.assign_task(conn, card, ASSIGNEE):
-        raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
     events = [e for e in kb.list_events(conn, card) if e.kind == kind][-1:]
     if not events:
         raise RuntimeError("card %s has no %s event" % (card, kind))
@@ -226,12 +221,13 @@ try:
             asyncio.run(moments.needs_you(adapter, sub, events[0].payload or {}, events[0].id))
             if not adapter.posts:
                 raise RuntimeError("the image has slack_ux_moments but it posted nothing for card %s" % card)
-        task = dataclasses.replace(kb.get_task(conn, card), assignee=ASSIGNEE)
     else:
         sub = {"task_id": card, "platform": "api_server", "chat_id": CHANNEL, "thread_id": "",
                "delivery_mode": "notify+wake"}
         adapter = _ApiServerAdapter()
-        task = kb.get_task(conn, card)
+    # The board's card stays unassigned, so an unblock hands no worker
+    # anything; the notifier's copy names the assignee a delegated card carries.
+    task = dataclasses.replace(kb.get_task(conn, card), assignee=ASSIGNEE)
     wake = notifier._KanbanNotification(
         None, {"sub": sub, "task": task, "board": kb.DEFAULT_BOARD, "events": events},
         platform_cls=None, sub_fail_counts={})
