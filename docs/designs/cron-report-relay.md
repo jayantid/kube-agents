@@ -55,6 +55,8 @@ chat roster: profile-cron-tick  (no_agent, * * * * *)
                           │        message = the report, system_message = relay instructions
                           │
                           ├── hermes send                     → what the Chat Agent composed
+                          │   or slack_blocks_post            → a fleet-audit headline as Block Kit
+                          │                                     (Slack, KAGE_SLACK_UX on; below)
                           │
                           └── INSERT INTO incidents (chat_id, thread_id, report)
                                        │
@@ -68,6 +70,69 @@ an out-of-band signal starts an agent turn that investigates and reports; here
 the investigation already happened and the turn only presents. The three pieces
 that make an alert answerable — a thread, a session bound to it, and the report
 stored against that thread — are reused unchanged.
+
+With `KAGE_SLACK_UX` on, the Slack leg of a fleet-audit job's report sends a
+headline in place of the composed message (`slack_audit_report.py`, called from
+`relay_cron_report`), provided the Chat Agent composed it, a chat id or a Slack
+home channel is known, the job's `skills` (a list or one string, or the legacy `skill`) include
+`fleet-audit`, the message ends
+with a link to an issue in a managed repository, and enough of the posts' budget is
+left to read that issue. The headline reads the finding and critical counts and
+the top two findings from that issue if it is open and labelled `agent:audit`;
+held rows are not findings, a `#` line inside a finding's fenced evidence ends no
+section, and a finding title or the audit name keeps a link's text but not its
+target. It leads with the counts, joined by the relayed line's "<n> new" count;
+then the relayed line, which alone carries coverage, resolved counts and
+remediation pull requests; then the top two findings; then the ledger link. The
+relayed line is the report's last line; when that line is only the ledger link,
+the first unindented line that carries a count and is not a list item stands in
+for it. When the issue cannot be read, is closed (a clean run closes it without
+rewriting its title), or does not parse, the leg posts the relayed line in bold
+with the link. Not parsing includes a title of 0 findings, a "<n> new" above the
+title's count, a title whose count disagrees with the finding total the relayed
+line states, and a relayed line with no total that counts no non-zero new,
+resolved or severity count or calls the run clean, held, carried or nothing
+reproduced (a zero-finding partial or held run leaves the ledger open over its old
+title). A report whose last line is only the link and with no line carrying a
+count has no headline and goes out unchanged. A truncation notice leads the leg's
+message but is never read as the relayed line. The full report is also posted into the
+headline's thread when it is longer than one line or the headline lost part of
+its line (a link target, a clipped tail), and the incident row stores the full
+report either way, so a reply in the thread is answered with the whole report.
+Every other report (Google Chat, an unrelayed report, one that does not end with
+a managed-repository issue link, a job the scheduler already delivered to Slack
+itself when it also left another platform to the relay, or any report with the
+flag off) gets the composed message unchanged. A job whose `deliver` value claims
+every platform is relayed to all of them anyway, so its Slack leg gets the
+headline beside the scheduler's raw copy.
+
+When the credential proxy's Slack relay is also in the environment and the issue
+parses, the headline goes out as Block Kit instead of text. `_post_audit_blocks`
+builds it with `slack_audit_report.blocks_from_issue` (the counts, the relayed
+line, the top two findings, a button to look at the top finding, a link button to
+the ledger, and the listed findings folded in a collapsible container) and posts it
+through `slack_blocks_post` to the relay's `chat.postMessage`, because
+`hermes send` takes text only. A click on the look-at button runs as the clicker's
+turn in the thread, and posts only what the button shows. Slack refusing the blocks
+themselves (`invalid_blocks`) is retried once without the fold, and the findings
+then go in the headline's thread. The leg posts the text headline through
+`hermes send` instead when there is no relay, when the report carries a truncation
+notice (the blocks have no place for it), when the issue was not read, is closed or
+does not parse, when Slack refuses the blocks without the fold too or refuses the
+message for any other reason, when too little of the posts' budget is left, and
+when the relay call fails. That last case includes a failure that may have posted,
+such as a timeout after the request was sent: nothing posts the report again, since
+a Slack leg that posts nothing is only recorded as undelivered (the route fails
+when it is the only leg, and answers 200 with Slack in `undelivered` beside another),
+so declining to post the text would trade a possible second headline for a missing
+report. A post Slack accepted without returning a message ts counts as delivered,
+with nothing threaded under it. The caller gives up after the relay plugin's
+`RELAY_TIMEOUT_SECONDS` (360 s), its clock starting first, and the relay turn alone
+can take most of that. So the ledger read, the Block Kit posts and the posts into
+the headline's thread share a budget of half that timeout from the route's start:
+the Block Kit posts stop short of it with room left for the text send, a thread
+post with too little of it left is skipped and logged, and when too little is left
+to read the ledger the composed message goes out as text in one send.
 
 ## Why the Chat Agent composes but does not send
 
@@ -208,7 +273,7 @@ flag re-homes the gateway onto the platform profile.
 
 Mechanically the relay route is unaffected: it is one more turn on one more
 gateway, the session is created the same way, and `hermes send` still does the
-posting. What changes is whether anything reaches the route at all, and who is
+posting, apart from a Slack fleet-audit headline posted as Block Kit (above). What changes is whether anything reaches the route at all, and who is
 composing when it does. Three things, all worth stating rather than discovering.
 
 - **The composer is no longer the locked-down one.** The Chat Agent's

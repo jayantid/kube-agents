@@ -8,7 +8,11 @@ gateway patches for reactions (``slack_ux_reactions``, which the kanban
 notifier also reaches), plan and session status (``slack_ux_status``, which
 reads only :func:`enabled`), moments (``slack_ux_moments``, which reads
 :func:`enabled` and lays out through ``slack_moments``), incident triage
-(``slack_ux_incident``) and button clicks (``slack_ux_clicks``).
+(``slack_ux_incident``) and button clicks (``slack_ux_clicks``), which uses
+the action ids and the link ack; the Chat Agent's ``bootstrap_delivery``,
+which lays out the first inventory report through ``inventory_presenter``;
+and ``session_kv_server``'s cron relay, which gates the fleet-audit report on
+:func:`enabled` and lays it out through ``slack_audit_report``.
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
@@ -22,7 +26,16 @@ built by ``_button`` and wrapped into rows by ``_actions``.
 :func:`blocks_answer` lays out a bold headline with both kinds of button,
 for ``slack_moments``, which lays out the messages ``slack_ux_moments``
 posts. :func:`fallback_text` is the headline, links and choices as plain
-mrkdwn, for the message's ``text`` field.
+mrkdwn, for the message's ``text`` field, with any report rows led by their
+severity as inline code (a bullet when they have none).
+
+Reports (:func:`blocks_report`): a headline, the top findings as one group
+between dividers headed by their count ("2 critical"), the choice buttons then
+the link buttons, and the rest in Slack's collapsible
+``container`` block, which Slack opens and closes itself. Block Kit has no
+bordered box a message can draw, so the dividers stand in for a border.
+Where Slack refuses the container, ``fold_in_place=False`` leaves it out and
+the caller posts the rest in the thread.
 
 Reactions (:func:`arrival_reaction`, :func:`settle_reaction`): the first
 reaction says what kind of ask arrived, chosen by keyword before any model
@@ -138,6 +151,28 @@ WAITING_BLOCK_ID = "kage_waiting"
 
 CHOICES_LEAD = "Reply with one of: "
 CHOICE_SEPARATOR = " · "
+BULLET = "• "
+
+#: A row's severity, as inline code ahead of its text: "`critical` text".
+SEVERITY_TAG = "`{severity}` {text}"
+BACKTICK = "`"
+
+#: A report's group header: the shown rows counted per severity, in the order
+#: first seen ("2 critical", "1 critical, 1 major"); rows with no severity are
+#: counted as findings.
+GROUP_COUNT = "{count} {severity}"
+GROUP_SEPARATOR = ", "
+UNTAGGED = "finding"
+UNTAGGED_PLURAL = "findings"
+#: Bounds on a report's fold: rows shown in it, and characters per row.
+FOLD_ROWS_MAX = 50
+ROW_TEXT_MAX = 300
+PRIMARY_STYLE = "primary"
+#: Slack's collapsible block, the report's fold, and its title when none is given.
+FOLD_BLOCK = "container"
+DEFAULT_FOLD_TITLE = "Why"
+
+CODE_FENCE = "```"
 
 #: A code fence line; nothing between an opener and its closer is a heading, a bullet or markup.
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -156,7 +191,8 @@ STAR_BOLD_IN_WORD = r"(?<=\w)\*\*([^\s*]+)\*\*"
 UNDERSCORE_BOLD = BOLD_OPEN.format(re.escape("__")) + "(.+?)" + BOLD_CLOSE.format(re.escape("__"))
 MD_BOLD = re.compile(f"{STAR_BOLD}|{STAR_BOLD_IN_WORD}|{UNDERSCORE_BOLD}")
 #: A markdown link; the url may hold balanced parentheses, as a Logs Explorer query does.
-MD_LINK = re.compile(r"\[([^\]]+)\]\(([^()\s]+(?:\([^()\s]*\)[^()\s]*)*)\)")
+MD_LINK_URL = r"[^()\s]+(?:\([^()\s]*\)[^()\s]*)*"
+MD_LINK = re.compile(rf"\[([^\[\]]+)\]\(({MD_LINK_URL})\)")
 #: ``*italic*`` and ``_italic_``; a ``*`` inside a word (``2*3``) or unpaired (``*.tmp``) is text.
 MD_ITALIC = re.compile(r"(?<![\w*])\*(?=[^\s.])([^*\n]+?)(?<=\S)\*(?![\w*])|(?<![\w_])_(?=[^\s.])([^_\n]+?)(?<=\S)_(?![\w_])")
 #: A code span: a backtick run, then content, then a run of the same length (CommonMark).
@@ -189,6 +225,13 @@ URL_MAX = 3000
 SAFE_URL = re.compile(rf"https?://[^\s<>|]{{1,{URL_MAX - len('https://')}}}", re.IGNORECASE)
 #: A space-aligned clip shorter than this share of the limit drops too much; it cuts hard instead.
 CLIP_MIN_SHARE = 2
+INLINE_CODE = re.compile(r"`[^`]*`")
+#: :func:`to_mrkdwn` holds a code span's place with this; :data:`CODE_PLACEHOLDER` finds it again.
+CODE_HOLD = "\x00{}\x00"
+RICH_SPAN = re.compile(rf"`(?P<code>[^`]+)`|\*\*(?P<bold>.+?)\*\*|\[(?P<label>[^\[\]]+)\]\((?P<url>{MD_LINK_URL})\)")
+#: A bare url in :func:`to_mrkdwn`'s input, held out of the bold pass like a code span. Its last
+#: character is not markup or punctuation, so ``**https://x.io**`` still bolds the url.
+BARE_URL = re.compile(r"https?://[^\s<>|\x00]*[^\s<>|\x00*_.,;:!?'\"]", re.IGNORECASE)
 
 
 def enabled() -> bool:
@@ -432,19 +475,106 @@ def blocks_answer(
     return blocks
 
 
-def fallback_text(headline: str, links: Iterable[Any] = (), choices: Iterable[str] = ()) -> str:
+def to_mrkdwn(markdown: str) -> str:
+    """Standard markdown to Slack mrkdwn: bold, links and headings; code and urls left alone.
+
+    The input must already be escaped (``&``, ``<``, ``>``), as :func:`_row_line`
+    does: this adds brackets but escapes nothing. Only a link to a ``SAFE_URL``
+    is then written as ``<url|label>``; any other target, ``@U…``, ``!channel``,
+    ``#C…`` or a url Slack would refuse, keeps its label alone.
+    """
+    spans: list[str] = []
+
+    def keep(text: str) -> str:
+        spans.append(text)
+        return CODE_HOLD.format(len(spans) - 1)
+
+    def hold(m: re.Match) -> str:
+        return keep(m.group(0))
+
+    def link(m: re.Match) -> str:
+        return f"<{keep(m.group(2))}|{m.group(1)}>" if SAFE_URL.fullmatch(m.group(2)) else m.group(1)
+
+    def restore(text: str) -> str:
+        return CODE_PLACEHOLDER.sub(lambda m: restore(spans[int(m.group(1))]), text)
+
+    lines = []
+    in_fence = False
+    for line in markdown.replace("\x00", "").split("\n"):
+        if line.strip().startswith(CODE_FENCE):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if in_fence:
+            lines.append(line)
+            continue
+        held = INLINE_CODE.sub(hold, line)
+        heading = HEADING.match(held)
+        if heading:
+            held = "**" + held[heading.end():].strip() + "**"
+        held = MD_LINK.sub(link, held)
+        held = BARE_URL.sub(hold, held)
+        held = MD_BOLD.sub(lambda m: "*" + next(g for g in m.groups() if g is not None) + "*", held)
+        lines.append(restore(held))
+    return "\n".join(lines)
+
+
+def _row_parts(row: Any) -> tuple[str, str]:
+    """``(severity, text)`` from a ``{"text", "severity"?}`` mapping or a plain string."""
+    if isinstance(row, Mapping):
+        text, severity = str(row.get("text") or ""), row.get("severity")
+    else:
+        text, severity = str(row), None
+    return str(severity or "").replace(BACKTICK, "").strip().lower(), text
+
+
+def _row_detail(row: Any) -> str:
+    """A row's optional second line, from a mapping's ``detail``; empty for a plain string."""
+    return str(row.get("detail") or "").strip() if isinstance(row, Mapping) else ""
+
+
+def _shown(rows: Iterable[Any]) -> list[Any]:
+    """``rows`` without those that have neither text nor a severity, which would render empty."""
+    return [row for row in rows or () if any(part.strip() for part in _row_parts(row))]
+
+
+def severity_row(severity: str, text: str) -> str:
+    """``text`` led by ``severity`` as inline code; the same in markdown and mrkdwn."""
+    return SEVERITY_TAG.format(severity=severity, text=text)
+
+
+def _row_line(row: Any) -> str:
+    """A row as one mrkdwn line, so a row can no more mention anyone than a label can.
+
+    Escaping neutralises the brackets already there; ``to_mrkdwn`` then writes
+    new ones only for a link to a ``SAFE_URL``.
+    """
+    severity, text = _row_parts(row)
+    line = to_mrkdwn(_escape(_clip(text.strip(), ROW_TEXT_MAX)))
+    line = severity_row(_escape(severity), line) if severity else f"{BULLET}{line}"
+    detail = _row_detail(row)
+    return f"{line}\n{to_mrkdwn(_escape(_clip(detail, ROW_TEXT_MAX)))}" if detail else line
+
+
+def fallback_text(
+    headline: str, links: Iterable[Any] = (), choices: Iterable[str] = (), rows: Sequence[Any] = ()
+) -> str:
     """The same layout as plain mrkdwn, with no buttons.
 
     Used as the ``text`` of a blocks message (notifications, screen readers).
     ``headline`` is already plain, as :func:`split_answer` gives it; a second
-    plain pass would strip markup a code span had kept. Links become inline
-    ``<url|label>``; choices become one "Reply with one of:" line. Every label
-    is escaped and every url is a ``SAFE_URL``, so none can mention anyone.
+    plain pass would strip markup a code span had kept. ``rows`` follow the
+    headline, one line each, led by their severity as inline code or, with
+    none, a bullet, and any ``detail`` on the line under its row, each clipped
+    as the rich view clips it; links become inline ``<url|label>``; choices
+    become one "Reply with one of:" line. Every label and row is escaped and every url,
+    in a row or a link, is a ``SAFE_URL``, so none can mention anyone.
     """
     parts: list[str] = []
     title = _clip((headline or "").strip(), HEADLINE_MAX)
     if title:
         parts.append(f"*{_escape(title)}*")
+    parts.extend(_row_line(row) for row in _shown(rows))
     pairs = _link_pairs(links)
     if pairs:
         parts.append(CHOICE_SEPARATOR.join(f"<{url}|{_escape(label)}>" for label, url in pairs))
@@ -452,6 +582,132 @@ def fallback_text(headline: str, links: Iterable[Any] = (), choices: Iterable[st
     if labels:
         parts.append(CHOICES_LEAD + CHOICE_SEPARATOR.join(labels))
     return "\n".join(parts)
+
+
+def _rich_elements(markdown: str) -> list[dict]:
+    """One line of markdown as rich_text elements: code spans, bold and links kept, the rest text."""
+    elements: list[dict] = []
+    at = 0
+    for span in RICH_SPAN.finditer(markdown):
+        if span.start() > at:
+            elements.append({"type": "text", "text": markdown[at : span.start()]})
+        if span.group("code") is not None:
+            elements.append({"type": "text", "text": span.group("code"), "style": {"code": True}})
+        elif span.group("bold") is not None:
+            elements.append({"type": "text", "text": span.group("bold"), "style": {"bold": True}})
+        elif SAFE_URL.fullmatch(span.group("url")):
+            elements.append({"type": "link", "url": span.group("url"), "text": span.group("label")})
+        else:
+            elements.append({"type": "text", "text": span.group("label")})
+        at = span.end()
+    if at < len(markdown):
+        elements.append({"type": "text", "text": markdown[at:]})
+    return elements
+
+
+def _rich_row(row: Any) -> dict:
+    """A report row: its severity as inline code, then its text, with no bullet; any detail below it."""
+    severity, text = _row_parts(row)
+    elements = _rich_elements(_clip(text.strip(), ROW_TEXT_MAX))
+    if severity:
+        elements = [{"type": "text", "text": severity, "style": {"code": True}}, {"type": "text", "text": " "}, *elements]
+    detail = _row_detail(row)
+    if detail:
+        elements += [{"type": "text", "text": "\n"}, *_rich_elements(_clip(detail, ROW_TEXT_MAX))]
+    return {"type": "rich_text_section", "elements": elements}
+
+
+def group_header(rows: Sequence[Any]) -> str:
+    """The shown rows counted per severity, in the order first seen: "2 critical", "1 critical, 1 major"."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        severity, _ = _row_parts(row)
+        counts[severity] = counts.get(severity, 0) + 1
+    parts = []
+    for severity, count in counts.items():
+        if not severity:
+            severity = UNTAGGED if count == 1 else UNTAGGED_PLURAL
+        parts.append(GROUP_COUNT.format(count=count, severity=severity))
+    return GROUP_SEPARATOR.join(parts)
+
+
+def blocks_report(
+    headline: str,
+    note: str = "",
+    rows: Sequence[Any] = (),
+    choices: Iterable[str] = (),
+    links: Iterable[Any] = (),
+    fold_title: str | None = None,
+    fold_rows: Sequence[Any] = (),
+    action_id_prefix: str = "kage",
+    fold_in_place: bool = True,
+    fold_first: bool = False,
+    detail: str = "",
+) -> list[dict]:
+    """Block Kit for a report: headline, the top rows between dividers, buttons, the fold.
+
+    ``headline`` is bold and ``note`` follows it plain, both one line;
+    ``detail``, when given, is one more plain line under them, clipped like a
+    row. ``rows``
+    and ``fold_rows`` are ``{"text": <markdown>, "severity"?: str, "detail"?:
+    <markdown>}`` mappings or plain strings, a ``detail`` being a second line
+    under its row, clipped like it; ``rows`` sit between two dividers under their
+    :func:`group_header`. The first choice is the primary button and the links
+    follow the choices. A choice is clipped to the button label before it
+    becomes the value too, so a click posts only what the button showed. ``fold_rows`` go in a collapsed container titled
+    ``fold_title``, or nowhere when ``fold_in_place`` is False, for the caller
+    to post in the thread; ``fold_first`` puts it above the buttons, for a report
+    whose buttons answer what the fold explains. Any part left empty, a row
+    with no text and no severity included, is omitted.
+    """
+    rows, fold_rows = _shown(rows), _shown(fold_rows)
+    blocks: list[dict] = []
+    head: list[dict] = []
+    title = _clip(_plain(headline or ""), HEADLINE_MAX)
+    if title:
+        head.append({"type": "text", "text": title, "style": {"bold": True}})
+    if note and note.strip():
+        head.append({"type": "text", "text": " " + _plain(note)})
+    sections = [{"type": "rich_text_section", "elements": head}] if head else []
+    detail_line = _clip(_plain(detail or "").strip(), ROW_TEXT_MAX)
+    if detail_line:
+        sections.append({"type": "rich_text_section", "elements": [{"type": "text", "text": detail_line}]})
+    if sections:
+        blocks.append({"type": "rich_text", "elements": sections})
+    if rows:
+        header = {"type": "rich_text_section", "elements": [{"type": "text", "text": group_header(rows), "style": {"bold": True}}]}
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "rich_text", "elements": [header, *(_rich_row(row) for row in rows)]})
+        blocks.append({"type": "divider"})
+    choice_buttons = [
+        _button(label, f"{action_id_prefix}.{CHOICE_ACTION}.{i}", value=label)
+        for i, label in enumerate(_clip(str(c), BUTTON_TEXT_MAX) for c in choices or () if str(c).strip())
+    ]
+    if choice_buttons:
+        choice_buttons[0]["style"] = PRIMARY_STYLE
+    link_buttons = [
+        _button(label, f"{action_id_prefix}.{LINK_ACTION}.{i}", url=url)
+        for i, (label, url) in enumerate(_link_pairs(links))
+    ]
+    fold: list[dict] = []
+    if fold_in_place and fold_rows:
+        fold.append({
+            "type": FOLD_BLOCK,
+            "title": {"type": "plain_text", "text": _clip(_plain(fold_title or "").strip() or DEFAULT_FOLD_TITLE, BUTTON_TEXT_MAX)},
+            "is_collapsible": True,
+            "default_collapsed": True,
+            "child_blocks": [
+                {"type": "rich_text", "elements": [_rich_row(row) for row in fold_rows[:FOLD_ROWS_MAX]]}
+            ],
+        })
+    actions = _actions(choice_buttons + link_buttons)
+    blocks.extend(fold + actions if fold_first else actions + fold)
+    return blocks
+
+
+def has_fold(blocks: Sequence[dict]) -> bool:
+    """Whether ``blocks`` fold in place, so leaving the fold out is worth a retry."""
+    return any(block.get("type") == FOLD_BLOCK for block in blocks)
 
 
 # --- link-button ack -------------------------------------------------------
