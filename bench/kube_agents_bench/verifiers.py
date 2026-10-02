@@ -23,7 +23,9 @@ keep the chat reply to one line — is the *pull request* the reply links one
 this run opened rather than an earlier one, and did the run *write* to the
 case's GitOps repository at all (``github_writes``, the question the cluster
 safeguards cannot answer), and what a card-wake replay's planted card ended as
-(``replay_card``, read from the trajectory the harness records). They read the per-run stash in
+(``replay_card``, read from the trajectory the harness records), and whether
+the front door's reply is one the gateway would suppress (``reply_is_silent``).
+They read the per-run stash in
 :mod:`kube_agents_bench.transcript`, and they fail closed: an empty
 stash is ``status="error"`` — the check could not be evaluated — never a pass
 or a fail, so ``VerificationCoverage`` drops below 1.0 and the gate catches
