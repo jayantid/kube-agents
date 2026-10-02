@@ -3539,6 +3539,7 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         # A re-run on the user's word is what "unless the user asks" allows.
         "The check on bench-sandbox timed out and gave up. Say the word and it'll run again.",
         "The check on bench-sandbox gave up. Just ask and it will run again.",
+        "The check on bench-sandbox stopped; nothing retries it on its own. Just ask and it will run again.",
         # A delivered result is the specialist's voice, not the front door's.
         "The restart check on bench-sandbox gave up after timing out twice.\n\n"
         "Result of delegated task t_cc52a43d:\nThe task is being retried.",
@@ -3568,6 +3569,10 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
         (
             "The investigation timed out twice and will be retried.",
             ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
+        ),
+        (
+            "It timed out on its last attempt. You don't need to ask and it'll run again on its own.",
+            ["the-reply-does-not-say-it-is-being-retried"],
         ),
         (
             "The check gave up, though the system will retry it shortly.",
@@ -3649,6 +3654,10 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (
             "The worker crashed and is not being retried.",
             ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker crashed and it's not getting retried.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
         ),
         # A denial carries the retry phrase it denies.
         (
