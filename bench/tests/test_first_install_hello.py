@@ -196,10 +196,23 @@ def test_a_lead_in_holding_a_results_word_fails_the_invitation_check(case, invit
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize(
     "invitation",
-    [" No pressure, but share your team's runbooks here.", " Not required, but share your team's runbooks here."],
+    [
+        " No pressure, but share your team's runbooks here.",
+        " Not required, but share your team's runbooks here.",
+        " Don't hesitate to share your team's runbooks here.",
+    ],
 )
 def test_a_qualifying_negation_before_the_invitation_fails_it(case, invitation):
     assert "invites-runbooks" in _failing(case, _example(case).replace(INVITATION, invitation))
+
+
+# A known cost the cases' comment names: a join that opens no sentence leaves point 4 in the lead-in.
+@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("join", [", so share", ", but share", "—share"])
+def test_a_long_clause_before_a_join_that_opens_no_sentence_fails_the_invitation(case, join):
+    example = _example(case)
+    joined = POINT4.removesuffix(".") + join + INVITATION.removeprefix(" Share")
+    assert "invites-runbooks" in _failing(case, example.replace(POINT4 + INVITATION, joined))
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -280,6 +293,20 @@ def test_the_invitation_alone_does_not_say_where_results_go(invitation):
     # checks must not see the invitation's "share" and "here" either way.
     results = ["says-results-will-be-posted", "says-results-come-to-this-chat"]
     assert [name for name in _failing("first-install-hello-running", reply) if name in results] == results
+
+
+def test_a_results_word_before_a_colon_join_is_read_by_the_results_check():
+    # A known limit the cases' comment names: the word sits outside the lead-in.
+    reply = (
+        "Hi there, I'm kube-agents 👋 I'm taking a first look at your GKE fleet."
+        " I'm only reading, so nothing in your clusters changes."
+        " Fixes come as pull requests for your team to review."
+        " In this chat: share your team's runbooks here."
+        " Is there anything you want me to look at first?"
+    )
+    failing = _failing("first-install-hello-running", reply)
+    assert "invites-runbooks" not in failing
+    assert "says-results-come-to-this-chat" not in failing
 
 
 @pytest.mark.parametrize(

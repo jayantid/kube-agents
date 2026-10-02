@@ -100,7 +100,8 @@ verification_spec:
   # The two results checks read the reply with the invitation, "Share your
   # team's runbooks here", taken out: the patterns step over it whole,
   # so a word inside it is never reached however it is joined to the rest,
-  # and invites-runbooks refuses those words in its lead-in.
+  # and invites-runbooks refuses those words in its lead-in, though not
+  # before a ": ", "; " or dash join ("In this chat: share...").
   # It carries "share" and "here", so on the whole reply it satisfied both
   # with no results sentence present. Each pattern is forbidden when its word
   # appears nowhere else, which is a required pattern.
@@ -138,15 +139,18 @@ verification_spec:
   # share..."), and none of the results checks' words (here, or a word
   # starting post, shar, send or chat), because the results checks read the
   # lead-in ("Here you can post or share...", "In this chat, share..."). A
-  # negation that only qualifies it ("No pressure, but share...") fails it,
-  # a known cost, and so does a results word in the lead-in of a reply that
+  # negation that only qualifies it ("No pressure, but share...", "Don't
+  # hesitate to share...") fails it, a known cost, and so does a results word in the lead-in of a reply that
   # also has a results sentence. A sentence opens at the start of the reply, after ".", "!",
   # "?" or "…" past any closing bracket or quote and a space, at a line
   # break, after "; ", ": " or ", and", or at a dash with a space on each
-  # side. A longer lead-in fails it, a known cost; a lead-in that withdraws
+  # side. A longer lead-in fails it, a known cost, and so does a long clause
+  # before a join that opens no sentence ("Fixes come as pull requests for
+  # your team to review, so share...", a dash with no spaces); a lead-in that withdraws
   # it without a listed negation ("Only if you must, share..."), or a
   # negation before the join ("One thing you needn't do: share..."), passes,
-  # a known limit. It ends with ".", "!" or "…" past any closing bracket or
+  # a known limit. A results word before the join ("In this chat: share...")
+  # is outside the lead-in, so the results checks read it, a known limit. It ends with ".", "!" or "…" past any closing bracket or
   # quote, and no "?" in the run of marks that follows ("here...?" and
   # "here!?" fail); rejecting
   # "here anytime" is intended, and so is the invitation joined to the
