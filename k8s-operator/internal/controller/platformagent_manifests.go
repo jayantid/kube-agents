@@ -4217,10 +4217,10 @@ func mergeCredentialProxyEnv(managed, custom []corev1.EnvVar) []corev1.EnvVar {
 func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 	// An allowlist, not a denylist: this env reaches the agent sandbox, so a
 	// variable earns a place here only if an arbitrary value for it cannot
-	// redirect state, grant access, or change what code runs. Telemetry
-	// destinations qualify, and so do the alert ceilings — they bound how many
-	// notifications the session server posts in a day and nothing else. A
-	// path, a credential or an image reference would not.
+	// redirect state, grant access, or run code the image does not already
+	// ship. Telemetry destinations qualify, and so do the alert ceilings —
+	// they bound how many notifications the session server posts in a day
+	// and nothing else. A path, a credential or an image reference would not.
 	//
 	// EOD_EXCLUDE_NAMESPACES is the end-of-day recap's only tunable. It
 	// narrows what its listing prints and reaches nothing the notifier does: no
@@ -4258,12 +4258,21 @@ func safeSandboxEnvOverrides(custom []corev1.EnvVar) []corev1.EnvVar {
 	// KAGE_SLACK_UX switches between code paths already in the image, all of
 	// them about Slack. It is compared against `FLAG_ON_VALUES` in
 	// `slack_presenter.py`; any other value is off, the image default. It names
-	// no path, URL, credential or image, and no value of it adds a destination,
-	// a write or a credential. Each effect it switches, one per change that
-	// ships it:
+	// no path, URL, credential or image, and no value of it adds a destination
+	// or a credential. Its writes go only to Slack, in the thread they answer,
+	// among them a reaction on an ask, a click's rewrite of the clicked message
+	// and its echo, and an incident alert's edit into its options. Each effect
+	// it switches, one per change that ships it:
 	//
 	//   - Clicks: a click on a choice runs as the clicker's turn under the
 	//     adapter's own authorization, echoed in the same thread.
+	//   - Incident alerts: an incident alert's triage options post as an edit
+	//     of the alert, with a button per option and the report folded; the
+	//     Session KV database is read, read-only, to tell an alert's thread
+	//     from any other; and before an option click counts, the alert's
+	//     thread is read once (conversations.replies, the existing token and
+	//     scopes) to see whether someone the agent answers typed apply since
+	//     the options appeared, which drops the click.
 	//   - Pull requests and questions: an opened pull request and a question a
 	//     card waits on post in the thread as messages of their own, with
 	//     buttons; the wake for a question already posted carries a note
