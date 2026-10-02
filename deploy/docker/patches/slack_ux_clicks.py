@@ -15,9 +15,13 @@ click does nothing.
 With the flag on, :func:`register` adds two listeners:
 
 * A choice button (``<prefix>.choice.<n>``) is the clicker answering in the
-  thread with the button's text as Slack showed it. Never its ``value``: the
+  thread with the button's text as Slack showed it. Not its ``value``: the
   presenter clips the text to Slack's 75 characters but keeps up to 2000 in
-  the value, and a click must not send words the clicker did not see. A
+  the value, and a click must not send words the clicker did not see.
+  The one exception keeps that rule: a value that is the label, ": ", and a
+  line the message itself shows ("Fix the first one: <the first row>") is
+  the turn, so a session that never read the message is told what the click
+  is about. The echo and the answered line still show the label. A
   label that starts like a command (``/`` or ``!``) is sent as text, since a
   choice is an answer. The click goes through the adapter's own interactive
   authorization; an unlisted user's click is logged and changes nothing, and
@@ -32,7 +36,8 @@ With the flag on, :func:`register` adds two listeners:
   Slack has already opened the url.
 
 When the clicked message is a card's question (``gateway/slack_ux_moments.py``),
-the turn also names the card, so with two cards blocked in one thread the
+the turn also names the card, after the label or the shown line its value
+names, so with two cards blocked in one thread the
 answer reaches the right one, and the rewrite drops its "waiting on you" line.
 
 A message is answered once: the first authorized click wins, and a second
@@ -78,6 +83,9 @@ CHOICE_KIND = "kage choice"
 ECHO = "↳ <@{user}>: {label}"
 ANSWERED = "✓ <@{user}>: {label}"
 
+#: Joins a label to the shown line its value names.
+TURN_JOIN = ": "
+
 #: Slack mrkdwn control characters in a label, escaped before it is echoed so a
 #: label cannot mention a user or a channel.
 MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
@@ -121,7 +129,12 @@ def enabled() -> bool:
 
 
 def register(adapter: Any) -> None:
-    """Add the choice and link listeners to ``adapter._app``."""
+    """Add the choice and link listeners to ``adapter._app``.
+
+    A choice click's turn is the label Slack showed, or the value when it is
+    that label naming a line the message shows; either way, a click on a
+    card's question then names the card.
+    """
 
     async def on_choice(ack, body, action):
         await answer(adapter, ack, body, action, CHOICE_KIND)
@@ -176,6 +189,29 @@ def _shown_text(action: dict) -> str:
     return str(text.get("text") or "").strip() if isinstance(text, dict) else ""
 
 
+def _shown_lines(blocks: Any) -> list[str]:
+    """Each rich_text line ``blocks`` show, its elements' text joined."""
+    lines: list[str] = []
+    for block in blocks or ():
+        if not (isinstance(block, dict) and block.get("type") == "rich_text"):
+            continue
+        for section in block.get("elements") or ():
+            elements = (section or {}).get("elements") or () if isinstance(section, dict) else ()
+            lines.append("".join(str((e or {}).get("text") or "") for e in elements if isinstance(e, dict)))
+    return lines
+
+
+def _turn(label: str, value: Any, message: dict) -> str:
+    """The clicker's turn: ``value`` when it is ``label`` naming a line the message shows, else ``label``."""
+    prefix = label + TURN_JOIN
+    if not (isinstance(value, str) and value.startswith(prefix)):
+        return label
+    named = value[len(prefix):].strip()
+    if named and "\n" not in named and any(named in line for line in _shown_lines(message.get("blocks"))):
+        return label + TURN_JOIN + named
+    return label
+
+
 def _gated_out(adapter: Any, channel_id: str) -> bool:
     """Whether the adapter would ignore a typed message in ``channel_id``: outside
     ``allowed_channels``, or a DM with DMs disabled. Checked before anything is shown."""
@@ -217,7 +253,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     started = await adapter._begin_interaction(ack, body, action, kind)
     if started is None:
         return
-    team_id, action_id, _value, message, msg_ts, channel_id, _user_name, user_id = started
+    team_id, action_id, value, message, msg_ts, channel_id, _user_name, user_id = started
     label = _shown_text(action)
     if not (label and msg_ts and channel_id and user_id):
         return
@@ -262,7 +298,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     synthetic = {
         "type": "message",
         "user": user_id,
-        "text": _turn_text(label, card),
+        "text": _turn_text(_turn(label, value, message), card),
         "channel": channel_id,
         # The click's own ts keeps the deduplicator from conflating this turn
         # with the echo or the clicked message, as a reaction trigger's does.
