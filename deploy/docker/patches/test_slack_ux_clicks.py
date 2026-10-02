@@ -269,6 +269,10 @@ class ApplierTest(unittest.TestCase):
              "_slack_disable_dms is no longer a method"),
             ("    def getter(self):\n        return False", "    def getter(self, extra):\n        return False",
              "_slack_disable_dms no longer accepts"),
+            ("    def getter(self):\n        return False", "    async def getter(self):\n        return False",
+             "_slack_disable_dms is now async"),
+            ("    def getter(self):\n        return set()", "    async def getter(self):\n        return set()",
+             "_slack_allowed_channels is now async"),
         ):
             with self.subTest(named=named, new=new):
                 self.assertEqual(patched.count(old), 1, old)

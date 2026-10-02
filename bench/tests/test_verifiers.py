@@ -277,6 +277,14 @@ def test_replay_card_errors_when_the_card_was_not_read():
     assert "unknown" in res.reason
 
 
+@pytest.mark.parametrize("status", [None, 3])
+def test_replay_card_errors_when_the_cards_status_was_not_read(status):
+    _stash_settled({"status": status, "comments": [{"author": "default", "body": "seeded-b"}]})
+    res = _replay_card(status_not_in=["blocked"], comment_phrases=["seeded-b"]).verify(5.0)
+    assert res.status == "error"
+    assert "unknown" in res.reason
+
+
 def test_replay_card_must_assert_something():
     with pytest.raises(ValidationError):
         _replay_card()

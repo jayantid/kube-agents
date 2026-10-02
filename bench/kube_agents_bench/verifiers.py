@@ -786,6 +786,9 @@ class ReplayCardVerifier(BaseVerifier):
         if not isinstance(settled, dict):
             return error(_REPLAY_CARD_UNREAD_REASON)
         status = settled.get("status")
+        if not isinstance(status, str):
+            # A card found but not read back: ``status_not_in`` would pass it.
+            return error(_REPLAY_CARD_UNREAD_REASON)
         comments = [str(c.get("body", "")) for c in settled.get("comments") or [] if isinstance(c, dict)]
         problems = []
         if self.status_in and status not in self.status_in:

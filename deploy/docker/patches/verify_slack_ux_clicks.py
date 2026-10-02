@@ -157,9 +157,15 @@ def _members(cls: ast.ClassDef) -> dict[str, ast.AST]:
 
 def _method_args(tree: ast.Module, member: ast.AST) -> ast.arguments | None:
     """The arguments of a method, or of the function a module-level factory returns for it."""
+    function = _method_function(tree, member)
+    # A decorator (``@property``, ``@staticmethod``) changes how the call binds.
+    return None if function is None or (function is member and function.decorator_list) else function.args
+
+
+def _method_function(tree: ast.Module, member: ast.AST) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """A method, or the function a module-level factory returns for it."""
     if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        # A decorator (``@property``, ``@staticmethod``) changes how the call binds.
-        return None if member.decorator_list else member.args
+        return member
     if not (isinstance(member, ast.Assign) and isinstance(member.value, ast.Call)
             and isinstance(member.value.func, ast.Name)):
         return None
@@ -170,7 +176,7 @@ def _method_args(tree: ast.Module, member: ast.AST) -> ast.arguments | None:
         return None
     nested = {n.name: n for n in factory.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     returned = [n.value.id for n in factory.body if isinstance(n, ast.Return) and isinstance(n.value, ast.Name)]
-    return nested[returned[0]].args if len(returned) == 1 and returned[0] in nested else None
+    return nested[returned[0]] if len(returned) == 1 and returned[0] in nested else None
 
 
 def _signature(args: ast.arguments) -> inspect.Signature:
@@ -250,11 +256,12 @@ def check_members(tree: ast.Module) -> None:
                     f" and {keywords!r}, as the runtime calls it"
                 )
     for name in RUNTIME_MEMBERS:
-        member = members[name]
-        if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # A getter built by assignment is checked as the function its factory returns.
+        function = _method_function(tree, members[name])
+        if function is None:
             continue
         awaited = name in ASYNC_MEMBERS
-        if isinstance(member, ast.AsyncFunctionDef) != awaited:
+        if isinstance(function, ast.AsyncFunctionDef) != awaited:
             state, use = ("no longer", "awaits") if awaited else ("now", "calls")
             raise _fail(f"{ADAPTER_CLASS}.{name} is {state} async; the runtime {use} it")
     begin = members[BEGIN_INTERACTION]

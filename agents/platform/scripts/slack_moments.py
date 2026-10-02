@@ -17,7 +17,8 @@ Pure functions only, like ``slack_presenter``, whose layout this reuses.
   answer in the thread (``gateway/slack_ux_clicks.py``), the same path as
   typing it. The options are buttons only when there are two to five, each
   fits on a button, they end the reason, and the line right before them is a
-  question; otherwise, and with no thread for a click to answer in, the
+  question that is not a yes/no ask to go on ("Shall I proceed?", whose list is
+  the plan); otherwise, and with no thread for a click to answer in, the
   question is text only and a typed reply is the answer.
 """
 
@@ -38,11 +39,12 @@ PR_URL = re.compile(r"https://github\.com/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: What must sit right before the url for a line to announce the PR as ours:
 #: the verb, then optionally "a"/"the", "new", "PR"/"pull request" with its
 #: number, a colon, dash or "(", and the opening of a ``[label](`` or ``<`` link.
-#: A label's colon may follow the verb ("Opened: <url>"), and its closing bold
-#: or code may sit before the url ("**Opened PR:** <url>").
+#: A label's colon may follow the verb ("Opened: <url>"), its closing bold or
+#: code may sit before the url ("**Opened PR:** <url>"), and so may bold or code
+#: around the url itself ("Opened PR **<url>**"). "draft" may join "new".
 OPENED_BEFORE_URL = re.compile(
-    r"\b(?:opened|created|raised|filed|submitted)(?:[*_`]*:)?[*_`]*\s+(?:(?:an?|the)\s+)?(?:new\s+)?"
-    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?[*_`]*\s*)?(?:\[[^\]]*\]\(|<)?$",
+    r"\b(?:opened|created|raised|filed|submitted)(?:[*_`]*:)?[*_`]*\s+(?:(?:an?|the)\s+)?(?:(?:new|draft)\s+){0,2}"
+    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?[*_`]*\s*)?[*_`]*(?:\[[^\]]*\]\(|<)?$",
     re.IGNORECASE,
 )
 #: A negation just before the verb: "not opened", "haven't yet opened".
@@ -104,21 +106,32 @@ PR_REF = "PR #{number}"
 #: around it goes too, and so does a tail after the number (``/files``).
 PR_URL_TAIL = r"(?:[/?#][^\s<>|()\[\]]*)?"
 PR_REF_URL = r"(?:<{url}{tail}(?:\|[^>]*)?>|\[[^\]]*\]\({url}{tail}\)|{url}{tail})"
-PR_REF_SPAN = r"(?:\bPR(?:\s+#{number})?\s*[:—–-]?(?P<mark>[*_`]*)\s*)?(?:\(\s*{ref}\s*\)|{ref})"
+PR_REF_SPAN = (
+    r"(?:\bPR(?:\s+#{number})?\s*[:—–-]?(?P<mark>[*_`]*)\s*)?(?P<open>[*_`]*)"
+    r"(?:\(\s*{ref}\s*\)|{ref})(?P<close>[*_`]*)"
+)
 OPEN_PR = "Open PR ↗"
 FILES_CHANGED = "Files changed ↗"
 FILES_PATH = "/files"
 PR_ACTION_PREFIX = "kage_pr"
 
-#: An option line in a block reason: a bullet or a numbered item.
-OPTION_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+#: An option line in a block reason: a bullet, a numbered item or a lettered one ("a)", "B.").
+OPTION_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)]|[A-Za-z][.)])\s+(.+?)\s*$")
 #: How the line right before the options must end for them to be choices; a
 #: list after "I found:" is evidence, not answers.
 QUESTION_END = "?"
-#: A question asking leave to go on: a list after it is the plan, not answers,
-#: unless the question also offers a choice ("Which step should I proceed with?").
-PROCEED_QUESTION = re.compile(r"\b(?:proceed|go ahead|continue|approve)\b", re.IGNORECASE)
-CHOICE_WORD = re.compile(r"\b(?:which|or|what)\b", re.IGNORECASE)
+#: A yes/no question asking leave to go on ("Shall I proceed?", "OK to continue?"):
+#: a list after it is the plan, not answers, unless the question also offers a
+#: choice ("Shall I proceed with A or B?"). "How would you like to proceed?" asks
+#: for one of the options, so it is not one.
+PROCEED_QUESTION = re.compile(
+    r"^(?:(?:shall|should|can|may)\s+(?:i|we)|(?:is\s+it\s+)?ok(?:ay)?\s+to)\b.*?\b(?:proceed|continue|go\s+ahead)\b"
+    r"|^do\s+you\s+approve\b",
+    re.IGNORECASE,
+)
+#: Where the question's last sentence starts: "Here is the fix. Shall I proceed?"
+SENTENCE_START = re.compile(r"(?<=[.!:;])\s+")
+CHOICE_WORD = re.compile(r"\b(?:which|or)\b", re.IGNORECASE)
 #: Buttons only for two to five options that end the reason, right after a
 #: question, each short enough that Slack shows all of it; otherwise the
 #: options stay in the text.
@@ -204,13 +217,19 @@ def _text(headline_text: str, subline: str) -> str:
     return "\n".join(part for part in (headline_text, _escape(subline)) if part)
 
 
+def _ref_markup(match: re.Match) -> str:
+    """The markup to keep after the url's reference: a label's closing bold ("**Opened PR:**
+    <url>") stays; bold or code wrapped round the url ("**<url>**") goes with it."""
+    before, close = (match.group("mark") or "") + (match.group("open") or ""), match.group("close") or ""
+    return before[: -len(close)] if close and before.endswith(close) else before + close
+
+
 def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], str]:
     """Blocks and fallback text for an opened PR; ``line`` is the worker's, the url shortened."""
     headline = PR_HEADLINE.format(number=number, repo=repo)
     ref = PR_REF_URL.format(url=re.escape(url), tail=PR_URL_TAIL)
     span = re.compile(PR_REF_SPAN.format(number=number, ref=ref), re.IGNORECASE)
-    # A label's closing markup ("**Opened PR:** <url>") stays after the reference.
-    shortened = span.sub(lambda m: PR_REF.format(number=number) + (m.group("mark") or ""), line)
+    shortened = span.sub(lambda m: PR_REF.format(number=number) + _ref_markup(m), line)
     evidence = _presenter._clip(shortened.strip(), EVIDENCE_MAX)
     links = [(OPEN_PR, url), (FILES_CHANGED, url + FILES_PATH)]
     blocks = _presenter.blocks_answer(headline, links=links, action_id_prefix=PR_ACTION_PREFIX)
@@ -240,10 +259,12 @@ def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
         start -= 1
     # A button is plain text: `code` and **bold** would show their markup.
     options = [_unmarked(m.group(1)) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
-    question = lines[start - 1].rstrip()
+    # Read as the headline shows it: "**Which cluster?**" still ends in "?".
+    question = _headline_text(lines[start - 1])
     if not options or not question.endswith(QUESTION_END):
         return len(lines), []
-    if PROCEED_QUESTION.search(question) and not CHOICE_WORD.search(question):
+    asked = SENTENCE_START.split(question)[-1]
+    if PROCEED_QUESTION.search(asked) and not CHOICE_WORD.search(asked):
         return len(lines), []
     return start, options
 
