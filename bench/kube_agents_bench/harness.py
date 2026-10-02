@@ -1660,12 +1660,11 @@ class KubeAgentsHarness(AgentHarness):
                 _log.warning("card wake: card %s could not be read", planted.card)
             elif not settled.archived:
                 _log.warning("card wake: card %s was not archived", planted.card)
-        # Tagged before the error check: an errored run is the one whose card
-        # and wake are wanted.
-        if failure:
+        # A failure wake has no answer turn, nor has a wake turn that errored;
+        # both are tagged, since an errored run is the one whose card and wake
+        # are wanted.
+        if answer_turn is None:
             return card_wake.tag(planted, wake_turn, settled)
-        if wake_turn.errors:
-            return wake_turn
         return card_wake.merge(planted, wake_turn, answer_turn, settled)
 
     def _execute_inject(self, prompt: str) -> AgentResult:

@@ -52,11 +52,15 @@ OPENED_BEFORE_URL = re.compile(
 #: The verb and "PR" with more words before the url, in the same sentence:
 #: "Opened PR #412 in acme/x: <url>", "Opened a PR against main: <url>".
 OPENED_PR_THEN = re.compile(
-    r"\b(?:opened|created|raised|filed|submitted)[*_`]*\s+" + PR_ARTICLE + r"(?:PR|pull\s+request)\b",
+    r"\b(?:opened|created|raised|filed|submitted)[*_`]*\s+" + PR_ARTICLE
+    + r"(?:PR|pull\s+request)\b(?:\s*#(\d+))?",
     re.IGNORECASE,
 )
 #: A sentence end between "PR" and the url; a colon does not end it here.
 GAP_BREAK = re.compile(r"[.!?](?=[*_`]*\s+[A-Z])|;(?=[*_`]*\s)")
+#: Those words end in a colon or dash that labels the url, so a url the
+#: sentence only cites ("Opened PR #412, which reverts <url>") is not the one.
+GAP_LABEL = re.compile(r"[:—–-][*_`]*\s*[*_`]*(?:\[[^\]]*\]\(|<)?$")
 #: A negation just before the verb: "not opened", "haven't yet opened".
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 #: Where a sentence ends: ".", "!" or "?" before a space and a capital, or
@@ -104,12 +108,12 @@ OUR_VERB = frozenset({
 #: The worker's line under the headline, clipped: a note can be one long
 #: paragraph, and a Slack context element holds at most 3,000 characters.
 EVIDENCE_MAX = 300
-#: Markup a button cannot show, stripped from an option with its pair only, so
-#: a glob (``app=web-*``) or a dunder name keeps its characters.
-OPTION_MARKUP = re.compile(r"`([^`]+)`|\*\*([^*]+)\*\*")
-#: The same for the question's headline, plus a paired ``*emphasis*``.
-HEADLINE_MARKUP = re.compile(
+#: Markup a button or headline cannot show, stripped with its pair only, so a
+#: glob (``app=web-*``) or a dunder name (``__init__``) keeps its characters:
+#: ``code``, ``**bold**``, a paired ``*emphasis*`` and ``_emphasis_``.
+PAIRED_MARKUP = re.compile(
     r"`([^`]+)`|\*\*([^*]+)\*\*|(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])"
+    r"|(?<![\w_])_(?=\S)([^_]+?)(?<=\S)_(?![\w_])"
 )
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
@@ -161,7 +165,9 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     """``(url, repo, number, line)`` for the first PR ``text`` says was opened, else None."""
     for line in str(text or "").splitlines():
         for match in PR_URL.finditer(line):
-            verb = OPENED_BEFORE_URL.search(line[: match.start()]) or _opened_pr_then(line[: match.start()])
+            verb = OPENED_BEFORE_URL.search(line[: match.start()]) or _opened_pr_then(
+                line[: match.start()], match.group(3)
+            )
             if not verb:
                 continue
             before = line[: verb.start()]
@@ -171,12 +177,16 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     return None
 
 
-def _opened_pr_then(before: str) -> re.Match | None:
-    """The last "opened PR" in ``before`` with no sentence end between it and the url."""
+def _opened_pr_then(before: str, number: str) -> re.Match | None:
+    """The last "opened PR" in ``before`` with no sentence end between it and the
+    url, a label just before the url, and no other PR number named."""
     verbs = list(OPENED_PR_THEN.finditer(before))
-    if not verbs or GAP_BREAK.search(before, verbs[-1].end()):
+    if not verbs:
         return None
-    return verbs[-1]
+    verb = verbs[-1]
+    if GAP_BREAK.search(before, verb.end()) or not GAP_LABEL.search(before, verb.end()):
+        return None
+    return verb if verb.group(1) in (None, number) else None
 
 
 def _a_name(clause: str) -> bool:
@@ -275,8 +285,8 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
     return _with_subline(blocks, evidence), "\n".join([_text(first, evidence), *rest])
 
 
-def _unmarked(option: str) -> str:
-    return OPTION_MARKUP.sub(lambda m: m.group(1) or m.group(2), option).strip()
+def _unmarked(text: str) -> str:
+    return PAIRED_MARKUP.sub(lambda m: next(g for g in m.groups() if g is not None), text).strip()
 
 
 def _headline_text(headline: str) -> str:
@@ -286,7 +296,7 @@ def _headline_text(headline: str) -> str:
     text = _presenter.HEADING.sub("", headline.strip())
     text = _presenter.LIST_MARKER.sub("", text)
     text = _presenter.MD_LINK.sub(r"\1", text)
-    return HEADLINE_MARKUP.sub(lambda m: m.group(1) or m.group(2) or m.group(3), text).strip()
+    return _unmarked(text)
 
 
 def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
@@ -314,16 +324,32 @@ def _live_markup(text: str) -> bool:
     return "`" in text or bool(_presenter.FALLBACK_LIVE_MARKER.search(text) or _presenter.MD_ITALIC.search(text))
 
 
+def _first_text_line(lines: Sequence[str], fences: bool) -> int | None:
+    """The index of the first line with text, outside a fence when ``fences``."""
+    fence = None
+    for index, line in enumerate(lines):
+        opened = _presenter.next_fence(line, fence) if fences else None
+        if opened is None and not _presenter.FENCE.match(line) and any(
+            ch.isalnum() for ch in _presenter._plain(line)
+        ):
+            return index
+        fence = opened
+    return None
+
+
 def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     """The reason's first line, the lines after it, and its options when they can be buttons."""
     lines = str(reason or "").strip().splitlines()
-    # A line of markup alone (a bare "```") has no text to head the question.
-    while lines and (
-        not any(ch.isalnum() for ch in _presenter._plain(lines[0])) or _presenter.FENCE.match(lines[0])
-    ):
-        lines.pop(0)
-    if not lines:
+    # The headline is the first line of text outside a fence; a line of markup
+    # alone (a bare "```") has none, and a fenced block before it stays in the
+    # detail. A fence that never closes is a stray opener, not code.
+    head = _first_text_line(lines, fences=True)
+    before = lines[:head] if head is not None and any(_presenter.FENCE.match(line) for line in lines[:head]) else []
+    if head is None:
+        head = _first_text_line(lines, fences=False)
+    if head is None:
         return "", [], []
+    lines = lines[head:]
     start, options = _trailing_options(lines)
     usable = buttons and OPTIONS_MIN <= len(options) <= OPTIONS_MAX and all(
         len(option) <= _presenter.BUTTON_TEXT_MAX for option in options
@@ -333,14 +359,22 @@ def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     first = lines[0].strip()
     # A clipped headline keeps its whole line below it too.
     below = 0 if len(first) > _presenter.HEADLINE_MAX else 1
-    return first, lines[below:start], options
+    return first, [*before, *lines[below:start]], options
 
 
 def _detail(lines: Sequence[str]) -> str:
+    """``lines`` as one text, clipped so that it is at most :data:`DETAIL_MAX` once
+    escaped: Slack counts ``&amp;``, ``&lt;`` and ``&gt;`` against the limit."""
     text = "\n".join(lines).strip()
-    if len(text) > DETAIL_MAX:
-        text = text[: DETAIL_MAX - len(_presenter.ELLIPSIS)].rstrip() + _presenter.ELLIPSIS
-    return text
+    if len(_escape(text)) <= DETAIL_MAX:
+        return text
+    budget, end = DETAIL_MAX - len(_presenter.ELLIPSIS), 0
+    for ch in text:
+        budget -= len(_escape(ch))
+        if budget < 0:
+            break
+        end += 1
+    return text[:end].rstrip() + _presenter.ELLIPSIS
 
 
 def needs_you(reason: str, buttons: bool = True) -> tuple[list[dict], str] | None:
