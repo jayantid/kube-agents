@@ -9,9 +9,11 @@ it: when it runs, what it prints, and that nothing it meets stops the upgrade.
 
 import copy
 import json
+import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -26,7 +28,8 @@ _RECORD = json.loads((_REPO_ROOT / "deploy" / "docker" / "patches" / "slack_mani
 
 _FAKE_KUBECTL = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_KUBECTL_LOG"
-[ -z "${FAKE_KUBECTL_SLEEP:-}" ] || sleep "$FAKE_KUBECTL_SLEEP"
+[ -z "${FAKE_KUBECTL_PIDFILE:-}" ] || echo "$$" > "$FAKE_KUBECTL_PIDFILE"
+[ -z "${FAKE_KUBECTL_SLEEP:-}" ] || exec sleep "$FAKE_KUBECTL_SLEEP"
 case "$*" in
   *--agent-view*) out="${FAKE_KUBECTL_OUTPUT_agent:-}" ;;
   *--no-assistant*) out="${FAKE_KUBECTL_OUTPUT_none:-}" ;;
@@ -58,6 +61,14 @@ def _without_reactions(experience):
     return older
 
 
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 class CheckSlackManifestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -72,20 +83,23 @@ class CheckSlackManifestTest(unittest.TestCase):
             overrides={"FAKE_KUBECTL_LOG": str(self.log), "SLACK_ENABLED": "true"}, bin_dir=bin_dir
         )
 
-    def run_check(self, printed=None, repo_dir=_REPO_ROOT, env=None, timeout_seconds=None):
+    def script(self, printed=None, repo_dir=_REPO_ROOT, timeout_seconds=None):
         """``printed`` maps an experience to the text the fake prints for it; a missing one fails."""
         for experience, text in (printed or {}).items():
             output = self.tmp / f"{experience}.json"
             output.write_text(text if isinstance(text, str) else json.dumps(text))
             self.env[f"FAKE_KUBECTL_OUTPUT_{experience}"] = str(output)
         override = "" if timeout_seconds is None else f"SLACK_MANIFEST_READ_TIMEOUT_SECONDS={timeout_seconds}\n"
-        script = (
+        return (
             f"KUBE_AGENTS_SOURCE_ONLY=true source {shlex.quote(str(_UPGRADE_SH))}\n"
             f"source {shlex.quote(str(_COMMON_SH))}\n"
             f"{override}"
             f"check_slack_manifest agents-ns {shlex.quote(str(repo_dir))}\n"
-            'echo "rc=$? changed=$SLACK_MANIFEST_CHANGED"\n'
+            'echo "rc=$? changed=$SLACK_MANIFEST_CHANGED uncompared=$SLACK_MANIFEST_UNCOMPARED"\n'
         )
+
+    def run_check(self, printed=None, repo_dir=_REPO_ROOT, env=None, timeout_seconds=None):
+        script = self.script(printed, repo_dir, timeout_seconds)
         proc = subprocess.run(
             ["bash", "-c", script],
             capture_output=True,
@@ -134,10 +148,55 @@ class CheckSlackManifestTest(unittest.TestCase):
 
     def test_an_image_that_cannot_print_the_other_experiences_compares_the_default(self):
         out = self.run_check(printed={"assistant": _printed(_RECORD["manifests"]["assistant"])})
-        self.assertIn("could not print the --agent-view manifest, so that experience is not compared", out)
-        self.assertIn("could not print the --no-assistant manifest, so that experience is not compared", out)
-        self.assertIn("This version does not change the Slack app's manifest.", out)
-        self.assertIn("rc=0 changed=false", out)
+        self.assertIn("did not print a readable --agent-view manifest, so that experience is not compared", out)
+        self.assertIn("did not print a readable --no-assistant manifest, so that experience is not compared", out)
+        self.assertNotIn("This version does not change the Slack app's manifest.", out)
+        self.assertIn(
+            "does not change the Slack manifests the running image printed, but an app created with "
+            "--agent-view or --no-assistant was not compared. If yours was, re-apply its manifest.",
+            out,
+        )
+        self.assertIn("Reinstall the app", out)
+        self.assertIn("rc=0 changed=false uncompared=--agent-view or --no-assistant", out)
+
+    def test_a_variant_that_prints_no_manifest_leaves_the_rest_compared(self):
+        printed = {**_all_printed(), "assistant": _printed(_without_reactions("assistant")), "none": "Usage: hermes"}
+        out = self.run_check(printed=printed)
+        self.assertIn("did not print a readable --no-assistant manifest", out)
+        self.assertNotIn("--agent-view manifest", out)
+        self.assertIn("      + oauth_config.scopes.bot: reactions:write", out)
+        self.assertIn("rc=0 changed=true", out)
+
+    def test_an_interrupted_read_leaves_no_exec_or_temp_dir_behind(self):
+        for name, sig in (("SIGINT", signal.SIGINT), ("SIGTERM", signal.SIGTERM)):
+            with self.subTest(signal=name):
+                tmpdir = self.tmp / name
+                tmpdir.mkdir()
+                pidfile = self.tmp / f"{name}.pid"
+                proc = subprocess.Popen(
+                    ["bash", "-c", self.script(printed=_all_printed())],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={**self.env, "TMPDIR": str(tmpdir), "FAKE_KUBECTL_SLEEP": "30",
+                         "FAKE_KUBECTL_PIDFILE": str(pidfile)},
+                    cwd=str(_REPO_ROOT),
+                    start_new_session=True,
+                )
+                deadline = time.monotonic() + 10
+                while not (pidfile.exists() and pidfile.read_text().strip()) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                kubectl_pid = int(pidfile.read_text())
+                # Ctrl-C signals the whole foreground group; SIGTERM comes to the script alone.
+                if sig == signal.SIGINT:
+                    os.killpg(proc.pid, sig)
+                else:
+                    proc.send_signal(sig)
+                proc.wait(timeout=10)
+                deadline = time.monotonic() + 5
+                while _alive(kubectl_pid) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(_alive(kubectl_pid), "the exec outlived the run")
+                self.assertEqual(list(tmpdir.iterdir()), [])
 
     def test_a_pod_it_cannot_exec_into_does_not_stop_the_upgrade(self):
         out = self.run_check()
@@ -185,6 +244,9 @@ class SlackManifestGatingTest(unittest.TestCase):
             '  print_step "🎉 Upgrade Complete!"\n'
             '  if [ "$SLACK_MANIFEST_CHANGED" = "true" ]; then\n'
             "    print_warning \"The Slack app still has the previous version's manifest.\"\n"
+            '    print_slack_manifest_steps "$target_namespace"\n'
+            '  elif [ -n "$SLACK_MANIFEST_UNCOMPARED" ]; then\n'
+            '    print_warning "The Slack manifest of an app created with ${SLACK_MANIFEST_UNCOMPARED} was not compared."\n'
             '    print_slack_manifest_steps "$target_namespace"\n',
             main,
         )

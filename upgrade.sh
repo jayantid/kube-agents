@@ -228,6 +228,12 @@ cleanup() {
   if [ -n "$TEMP_REPO_DIR" ] && [ -d "$TEMP_REPO_DIR" ]; then
     rm -rf -- "$TEMP_REPO_DIR"
   fi
+  if [ -n "${SLACK_MANIFEST_READ_PID:-}" ]; then
+    kill "$SLACK_MANIFEST_READ_PID" 2>/dev/null || true
+  fi
+  if [ -n "${SLACK_MANIFEST_READ_DIR:-}" ] && [ -d "$SLACK_MANIFEST_READ_DIR" ]; then
+    rm -rf -- "$SLACK_MANIFEST_READ_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -463,6 +469,13 @@ SANDBOX_ROLLOUT_TIMEOUT="180s"
 # Set by check_slack_manifest when the target's Slack manifest differs from the
 # running one, so the end of the run can repeat the re-apply steps.
 SLACK_MANIFEST_CHANGED="false"
+# The flags of the experiences check_slack_manifest could not read, when it
+# found no difference in the rest, so the end of the run can say so again.
+SLACK_MANIFEST_UNCOMPARED=""
+# The read in flight, for cleanup to kill and remove on an interrupted run: a
+# backgrounded command ignores SIGINT, so Ctrl-C would leave the exec running.
+SLACK_MANIFEST_READ_PID=""
+SLACK_MANIFEST_READ_DIR=""
 
 # Bounds each exec that reads a running manifest: a wedged pod must not hold up
 # an upgrade over a check that is advisory. kubectl's --request-timeout does
@@ -1498,30 +1511,41 @@ check_slack_manifest() {
   # The app was created from one of the three experiences and nothing records
   # which, so all three are read; the default one must be, the other two are
   # left out of the comparison when the running image cannot print them.
-  local read_dir="" installed=""
-  read_dir="$(mktemp -d)"
+  local read_dir="" installed="" uncompared="" variant experience flag
+  read_dir="$(mktemp -d "${TMPDIR:-/tmp}/kube-agents-slack-manifest.XXXXXX")"
+  SLACK_MANIFEST_READ_DIR="$read_dir"
   if ! read_slack_manifest "$namespace" "${read_dir}/assistant"; then
     rm -rf "$read_dir"
+    SLACK_MANIFEST_READ_DIR=""
     print_warning "Could not read the running Slack manifest from deployment/${PLATFORM_AGENT_DEPLOYMENT}, so it is not compared. After the upgrade, compare the app's manifest with what \`hermes slack manifest\` prints."
     return 0
   fi
   installed="\"assistant\": $(cat "${read_dir}/assistant")"
-  if read_slack_manifest "$namespace" "${read_dir}/agent" --agent-view; then
-    installed="${installed}, \"agent\": $(cat "${read_dir}/agent")"
-  else
-    print_info "The running image could not print the --agent-view manifest, so that experience is not compared."
-  fi
-  if read_slack_manifest "$namespace" "${read_dir}/none" --no-assistant; then
-    installed="${installed}, \"none\": $(cat "${read_dir}/none")"
-  else
-    print_info "The running image could not print the --no-assistant manifest, so that experience is not compared."
-  fi
+  # A variant that prints something other than a JSON object is left out like
+  # one that fails: joined into the one document compare reads, it would leave
+  # the default experience uncompared too.
+  for variant in agent:--agent-view none:--no-assistant; do
+    experience="${variant%%:*}" flag="${variant#*:}"
+    if read_slack_manifest "$namespace" "${read_dir}/${experience}" "$flag" &&
+      python3 -c 'import json, sys; sys.exit(not isinstance(json.load(open(sys.argv[1])), dict))' \
+        "${read_dir}/${experience}" 2>/dev/null; then
+      installed="${installed}, \"${experience}\": $(cat "${read_dir}/${experience}")"
+    else
+      uncompared="${uncompared:+${uncompared} or }${flag}"
+      print_info "The running image did not print a readable ${flag} manifest, so that experience is not compared."
+    fi
+  done
   rm -rf "$read_dir"
+  SLACK_MANIFEST_READ_DIR=""
   local report="" status=0
   # `trap - ERR` for the bash 3.2 reason write_tfvars_from_state gives.
   report="$(trap - ERR; printf '{%s}' "$installed" | python3 "$tool" compare "$record" 2>&1)" || status=$?
-  if [ "$status" -eq 0 ]; then
+  if [ "$status" -eq 0 ] && [ -z "$uncompared" ]; then
     print_success "This version does not change the Slack app's manifest."
+  elif [ "$status" -eq 0 ]; then
+    SLACK_MANIFEST_UNCOMPARED="$uncompared"
+    print_warning "This version does not change the Slack manifests the running image printed, but an app created with ${uncompared} was not compared. If yours was, re-apply its manifest."
+    print_slack_manifest_steps "$namespace"
   elif [ "$status" -eq "$SLACK_MANIFEST_DIFFERS" ]; then
     SLACK_MANIFEST_CHANGED="true"
     print_warning "This version changes the Slack app's manifest. The app keeps its old one until you re-apply it."
@@ -1541,18 +1565,22 @@ read_slack_manifest() {
   shift 2
   kubectl exec "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -c "$PLATFORM_AGENT_CONTAINER" \
     -n "$namespace" -- hermes slack manifest "$@" >"$out_file" 2>/dev/null &
-  local pid=$! polls=0
+  local pid=$! polls=0 rc=0
+  SLACK_MANIFEST_READ_PID="$pid"
   local limit=$((SLACK_MANIFEST_READ_TIMEOUT_SECONDS * SLACK_MANIFEST_POLLS_PER_SECOND))
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$polls" -ge "$limit" ]; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      SLACK_MANIFEST_READ_PID=""
       return 1
     fi
     sleep "$SLACK_MANIFEST_POLL_INTERVAL"
     polls=$((polls + 1))
   done
-  wait "$pid"
+  wait "$pid" || rc=$?
+  SLACK_MANIFEST_READ_PID=""
+  return "$rc"
 }
 
 print_slack_manifest_steps() {
@@ -2137,6 +2165,9 @@ main() {
   print_step "🎉 Upgrade Complete!"
   if [ "$SLACK_MANIFEST_CHANGED" = "true" ]; then
     print_warning "The Slack app still has the previous version's manifest."
+    print_slack_manifest_steps "$target_namespace"
+  elif [ -n "$SLACK_MANIFEST_UNCOMPARED" ]; then
+    print_warning "The Slack manifest of an app created with ${SLACK_MANIFEST_UNCOMPARED} was not compared."
     print_slack_manifest_steps "$target_namespace"
   fi
 }
