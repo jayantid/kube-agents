@@ -4361,6 +4361,9 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
         (f"{_CRASHED} I think the dispatcher has most likely already got it queued for retry.", []),
         # An offer of a card that does the retry:
         (f"{_CRASHED} It's being retried. Want a card that retries the pod?", []),
+        # A trailing "if any" after "each" or "every", which the doubt check
+        # skips so that "new errors from each attempt, if any" passes:
+        (f"{_CRASHED} It's being retried, and I'll report each retry, if any.", []),
         # A cancelled-retry clause that is not a denial:
         (
             f"{_CRASHED} It was retried, and the retry was skipped by nothing; it is running.",

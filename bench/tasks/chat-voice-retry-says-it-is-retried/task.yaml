@@ -69,8 +69,10 @@
 # passive or in a new sentence ("but then it was cancelled", "it was queued for
 # retry. Then the dispatcher cancelled it") or with a verb outside cancelled,
 # dropped, called off, aborted and stopped ("removed", "deleted", "killed",
-# "pulled") and the front door saying in the past tense that it queued the
-# retry ("I queued it to retry", as "I requeued it" already does) pass.
+# "pulled"), a trailing "if any" after "each" or "every" ("it's being retried,
+# and I'll report each retry, if any") and the front door saying in the past
+# tense that it queued the retry ("I queued it to retry", as "I requeued it"
+# already does) pass.
 #
 # Planted defect required: none; the card is planted per run and archived
 # after it. Isolation class: read-only.
