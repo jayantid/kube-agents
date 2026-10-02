@@ -3543,6 +3543,10 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "queued it up to try again automatically. I'll let you know when the retry finishes.",
         f"{_CRASHED} The dispatcher queued it to retry.",
         f"{_CRASHED} I'll report back once the retry completes.",
+        f"{_CRASHED} It's queued for retry. I'll let you know if any errors come up.",
+        f"{_CRASHED} It's queued for retry, but nobody cancelled it.",
+        f"{_CRASHED} It's being retried, and the crashed run was cancelled.",
+        f"{_CRASHED} I think it was OOM and it's queued for retry.",
         # main's own replies (rv reds on main-37c6b216): the queue is the retry.
         "The task checking the `invoice-renderer` restarts crashed (exit code 137) during its run, "
         "but it has already been queued to automatically retry.",
@@ -4251,6 +4255,11 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (f"{_CRASHED} Nobody had queued it up to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} Nobody's queued it to retry.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} No one ever queued it up to try again.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} It's queued for retry, if there is one.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} I'll let you know when the retry finishes, if there is one.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} It was queued for retry, but then the dispatcher cancelled it.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} I think the dispatcher has it queued for retry.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} I think the system queued it up to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} If you want, I can queue it to try again.", ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"]),
         (f"{_CRASHED} It gave up; I would have told you when the retry finishes.", ["the-reply-does-not-call-it-final"]),
     ],
@@ -4304,6 +4313,8 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
         (f"{_CRASHED} If it fails again, I'll let you know when the retry finishes.", []),
         # The front door saying in the past tense that it queued the retry:
         (f"{_CRASHED} I queued it to retry.", []),
+        # A hedge more than six words before the retry wording:
+        (f"{_CRASHED} I think the dispatcher has most likely already got it queued for retry.", []),
         # An offer of a card that does the retry:
         (f"{_CRASHED} It's being retried. Want a card that retries the pod?", []),
         # A cancelled-retry clause that is not a denial:
