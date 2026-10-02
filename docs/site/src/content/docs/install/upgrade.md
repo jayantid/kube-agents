@@ -183,7 +183,8 @@ appear.
 When Slack is enabled and the run moves the agent's image, `upgrade.sh` reads the manifests the
 running image prints and compares them with the ones the target release ships. It reads all three
 variants (the default, `--agent-view` and `--no-assistant`), because nothing records which one
-your app was created from, and labels each one that differs. A plan that moves the image compares
+your app was created from, and labels each one that differs. The default has to be readable; a
+variant the running image cannot print is left out of the comparison, and the run says so. A plan that moves the image compares
 too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a plan that keeps the
 installed tag do not: a dry run never contacts the install, and the others leave the agent's image
 where it is. If a manifest differs, the run prints the scopes, events, features and settings that
@@ -199,8 +200,9 @@ are not compared: the list depends on the plugins an install loads, not on the r
    ```
 
    Add the flag your app was created with, `--agent-view` or `--no-assistant`. The printed
-   manifest resets the app's name, description and long description to Hermes defaults; add
-   `--name`, `--description` and `--long-description` to keep your own.
+   manifest sets the app's name and description to Hermes defaults and carries no long
+   description, so pasting it clears yours; add `--name`, `--description` and
+   `--long-description` to keep your own.
 
 2. In the [Slack App Console](https://api.slack.com/apps), open your app's **Features → App
    Manifest**, replace the JSON with that output, and save.

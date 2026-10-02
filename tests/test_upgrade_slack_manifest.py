@@ -106,6 +106,7 @@ class CheckSlackManifestTest(unittest.TestCase):
     def test_the_same_manifests_say_so(self):
         out = self.run_check(printed=_all_printed())
         self.assertIn("This version does not change the Slack app's manifest.", out)
+        self.assertNotIn("not compared", out)
         self.assertIn("rc=0 changed=false", out)
         self.assertEqual(
             [line.split() for line in self.log.read_text().splitlines()],
@@ -133,6 +134,8 @@ class CheckSlackManifestTest(unittest.TestCase):
 
     def test_an_image_that_cannot_print_the_other_experiences_compares_the_default(self):
         out = self.run_check(printed={"assistant": _printed(_RECORD["manifests"]["assistant"])})
+        self.assertIn("could not print the --agent-view manifest, so that experience is not compared", out)
+        self.assertIn("could not print the --no-assistant manifest, so that experience is not compared", out)
         self.assertIn("This version does not change the Slack app's manifest.", out)
         self.assertIn("rc=0 changed=false", out)
 
