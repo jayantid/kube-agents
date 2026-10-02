@@ -32,10 +32,12 @@ non-push adapter always wakes for the failure kinds), and the reply to that
 wake is the user's only announcement of the failure (``agents/chat/SOUL.md``
 §2, step 5). The harness never reads it: its own poll turns ask for a status
 recital, and no prompt makes a specialist fail every time. For
-:data:`FAILURE_DIRECTIVE` the in-pod script files the card assigned to
-:data:`FAILURE_ASSIGNEE`, blocks it with the case's reason (``outcome:
-blocked``) or trips its failure breaker with it as the error (``outcome:
-gave_up``, the event the dispatcher records when its retries run out), and
+:data:`FAILURE_DIRECTIVE` the in-pod script files the card and either blocks
+it with the case's reason, then assigns it to :data:`FAILURE_ASSIGNEE`
+(``outcome: blocked``), or trips its failure breaker with it as the error
+(``outcome: gave_up``, the event the dispatcher records when its retries run
+out). A gave_up card is filed with ``max_retries=1`` and never assigned, so
+the dispatcher cannot re-arm it; only its wake names the assignee. Then it
 builds the wake with the image's notifier through a non-push stub adapter, as
 the API server's is. The harness sends that wake as the run's only turn. The
 wake names the card but not the reason, so the front door reads the card
@@ -171,7 +173,7 @@ STUB_THREAD = "1700000000.000100"
 # pid, elapsed time and runtime limit in a crash or timeout's payload are
 # made up; only the front door reads them.
 _PLANT_SCRIPT = r"""
-import asyncio, json, os, sys
+import asyncio, dataclasses, json, os, sys
 
 (SENTINEL, HERMES_ROOT, SCRIPTS, FLAG, ON, CREATOR,
  CHANNEL, THREAD, TITLE, BODY, REASON, OUTCOME, ASSIGNEE) = sys.argv[1:14]
@@ -229,7 +231,12 @@ try:
     except ImportError:
         moments = None
     conn = connect()
-    card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR)
+    gave_up = OUTCOME == "gave_up"
+    # A gave_up card is never assigned, and max_retries=1 keeps it parked:
+    # assign_task resets an unassigned card's failure count, and
+    # recompute_ready then promotes it to a real worker.
+    limit = {"max_retries": 1} if gave_up else {}
+    card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR, **limit)
     out["card"] = card
     batch = 1
     if OUTCOME in ("crashed", "timed_out", "crashed_final", "timed_out_final"):
@@ -263,7 +270,7 @@ try:
         # The notifier claims every event since its cursor, so a final
         # attempt's crash or timeout reaches the wake with the gave_up after it.
         batch = FINAL_BATCH if final else 1
-    elif OUTCOME == "gave_up":
+    elif gave_up:
         from hermes_cli import kanban_db_dispatch as dispatch
         # force_trip records gave_up and parks the card on its first failure,
         # where the dispatcher would after exhausting its retries.
@@ -275,8 +282,8 @@ try:
         if not kb.block_task(conn, card, reason=REASON, kind=block_kind):
             raise RuntimeError("card %s would not block" % card)
         kind = "blocked"
-    # Assigned only once it can no longer be dispatched.
-    if ASSIGNEE and not kb.assign_task(conn, card, ASSIGNEE):
+    # A blocked card is assigned only once it can no longer be dispatched.
+    if ASSIGNEE and not gave_up and not kb.assign_task(conn, card, ASSIGNEE):
         raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
     events = [e for e in kb.list_events(conn, card) if e.kind != "assigned"][-batch:]
     if not events or events[-1].kind != kind:
@@ -291,8 +298,12 @@ try:
         sub = {"task_id": card, "platform": "api_server", "chat_id": CHANNEL, "thread_id": "",
                "delivery_mode": "notify+wake"}
         adapter = _ApiServerAdapter()
+    task = kb.get_task(conn, card)
+    if gave_up and ASSIGNEE:
+        # The wake names the worker that gave up; only this copy carries it.
+        task = dataclasses.replace(task, assignee=ASSIGNEE)
     wake = notifier._KanbanNotification(
-        None, {"sub": sub, "task": kb.get_task(conn, card), "board": kb.DEFAULT_BOARD, "events": events},
+        None, {"sub": sub, "task": task, "board": kb.DEFAULT_BOARD, "events": events},
         platform_cls=None, sub_fail_counts={})
     wake.adapter = adapter
     wake.is_push_adapter = OUTCOME == "question"
