@@ -3801,7 +3801,7 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "The dispatcher retries failed workers automatically.",
             )
         ),
-        # SOUL step 5 names a re-route, so offering one beside the retry passes.
+        # SOUL step 5 forbids a retry offer, not a re-route one, so this passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
             for offer in (
