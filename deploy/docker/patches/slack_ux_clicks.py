@@ -15,9 +15,14 @@ click does nothing.
 With the flag on, :func:`register` adds two listeners:
 
 * A choice button (``<prefix>.choice.<n>``) is the clicker answering in the
-  thread with the button's text as Slack showed it. Never its ``value``: the
+  thread with the button's text as Slack showed it. Not its ``value``: the
   presenter clips the text to ``BUTTON_TEXT_MAX`` but keeps up to
-  ``BUTTON_VALUE_MAX`` in the value, and a click must not send words the clicker did not see. A
+  ``BUTTON_VALUE_MAX`` in the value, and a click must not send words the clicker did not see.
+  The one exception keeps that rule: a value that is the label, ": ", and a
+  whole line the message itself shows ("Fix the first one: <the first row>",
+  markup and a row's severity aside) is the turn, so a session that never
+  read the message is told what the click is about. Part of a line is not
+  enough: it can say the opposite of the line it came from. The echo and the answered line still show the label. A
   label that starts like a command (``/`` or ``!``) is sent as text, since a
   choice is an answer. The click goes through the adapter's own interactive
   authorization; an unlisted user's click is logged and changes nothing, and
@@ -31,6 +36,11 @@ With the flag on, :func:`register` adds two listeners:
 * A link button (``<prefix>.link.<n>``) is acknowledged and nothing else;
   Slack has already opened the url.
 
+When the clicked message is a card's question (``gateway/slack_ux_moments.py``),
+the turn also names the card, after the label or the shown line its value
+names, so with two cards blocked in one thread the
+answer reaches the right one, and the rewrite drops its "waiting on you" line.
+
 A message is answered once: the first authorized click wins, and a second
 click on the same message, before the rewrite lands, is dropped in this
 process and logged. If the rewrite fails, the buttons stay on the message but
@@ -39,6 +49,8 @@ logged rather than running a second apply. That memory is this process's and
 holds the last ``ANSWERED_MAX`` answers, so only a failed rewrite followed by a
 gateway restart, or by that many later answers, lets the leftover buttons run
 again.
+:func:`answered` reports a message only once its rewrite landed, so a question
+whose rewrite failed is still settled when its card moves on.
 
 Fail-soft throughout: a rewrite or echo that fails is logged and the turn
 still runs, because the click was the user's answer.
@@ -48,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -72,6 +85,9 @@ CHOICE_KIND = "kage choice"
 ECHO = "↳ <@{user}>: {label}"
 ANSWERED = "✓ <@{user}>: {label}"
 
+#: Joins a label to the shown line its value names.
+TURN_JOIN = ": "
+
 #: Slack mrkdwn control characters in a label, escaped before it is echoed so a
 #: label cannot mention a user or a channel.
 MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
@@ -80,6 +96,22 @@ MRKDWN_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
 #: the guard in front keeps it an answer. Zero-width, so the agent reads the label.
 COMMAND_PREFIXES = ("/", "!")
 COMMAND_GUARD = "\u200b"
+
+#: Added to the turn when the clicked message is a card's question.
+CARD_NOTE = "(Clicked on the question from card {card}.)"
+
+#: Paired markup a shown line or a clicked value may carry, stripped from both
+#: before they are compared: ``code``, **bold**, *bold*, _italic_ and ~strike~.
+#: Paired only, so a glob (``app=web-*``) or a dunder name keeps its characters.
+PAIRED_MARKUP = re.compile(
+    r"`([^`]+)`|\*\*([^*]+)\*\*"
+    r"|(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])"
+    r"|(?<![\w_])_(?=\S)([^_]+?)(?<=\S)_(?![\w_])"
+    r"|(?<![\w~])~(?=\S)([^~]+?)(?<=\S)~(?![\w~])"
+)
+
+#: The severities a row leads with as inline code (``findings_queue.SEVERITIES``).
+ROW_SEVERITIES = frozenset({"critical", "major", "minor"})
 
 #: A DM channel id's first letter, as the adapter's message handler reads it.
 DM_CHANNEL_PREFIX = "D"
@@ -92,6 +124,8 @@ ANSWERED_MAX = 512
 
 #: ``(channel, ts, kind)`` a click answered.
 _answered: OrderedDict[tuple, None] = OrderedDict()
+#: The keys of ``_answered`` whose rewrite landed.
+_rewritten: OrderedDict[tuple, None] = OrderedDict()
 _warned_missing = False
 
 
@@ -110,7 +144,12 @@ def enabled() -> bool:
 
 
 def register(adapter: Any) -> None:
-    """Add the choice and link listeners to ``adapter._app``."""
+    """Add the choice and link listeners to ``adapter._app``.
+
+    A choice click's turn is the label Slack showed, or the value when it is
+    that label naming a whole line the message shows; either way, a click on a
+    card's question then names the card.
+    """
 
     async def on_choice(ack, body, action):
         await answer(adapter, ack, body, action, CHOICE_KIND)
@@ -126,6 +165,11 @@ def _escape(text: str) -> str:
     return text
 
 
+def answered(channel_id: str, msg_ts: str) -> bool:
+    """Whether a choice click in this process answered the message and rewrote it."""
+    return (str(channel_id), str(msg_ts), CHOICE_KIND) in _rewritten
+
+
 def _answered_by(other: str) -> bool:
     """Whether ``other`` is one of the buttons a choice click answers: every choice."""
     return bool(_presenter.CHOICE_ACTION_ID_PATTERN.search(other))
@@ -136,9 +180,12 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
 
     An actions block left with no buttons is dropped; one that still holds a
     link keeps it.
+    So is the "waiting on you" line, now that it is answered.
     """
     out: list[dict] = []
     for block in blocks or ():
+        if isinstance(block, dict) and block.get("block_id") == _presenter.WAITING_BLOCK_ID:
+            continue
         if isinstance(block, dict) and block.get("type") == "actions":
             elements = block.get("elements") or []
             kept = [e for e in elements if not answered(str((e or {}).get("action_id") or ""))]
@@ -157,6 +204,52 @@ def _shown_text(action: dict) -> str:
     return str(text.get("text") or "").strip() if isinstance(text, dict) else ""
 
 
+def _shown_lines(blocks: Any) -> list[str]:
+    """Each line the rich_text in ``blocks`` shows, its elements' text joined.
+
+    A section led by a severity as inline code (a row's) also gives its first
+    line without it, since a row's button value leaves the severity out. Only
+    a severity: any other leading code span stays part of the line.
+    """
+    lines: list[str] = []
+    for block in blocks or ():
+        if not (isinstance(block, dict) and block.get("type") == "rich_text"):
+            continue
+        for section in block.get("elements") or ():
+            raw = (section or {}).get("elements") or () if isinstance(section, dict) else ()
+            elements = [e for e in raw if isinstance(e, dict)]
+            lines.extend("".join(str(e.get("text") or "") for e in elements).split("\n"))
+            style = elements[0].get("style") if elements else None
+            rest = "".join(str(e.get("text") or "") for e in elements[1:])
+            if isinstance(style, dict) and style.get("code") and str(elements[0].get("text") or "").strip().lower() in ROW_SEVERITIES:
+                lines.append(rest.split("\n")[0])
+    return lines
+
+
+def _comparable(text: str) -> str:
+    """``text`` without paired markup, its whitespace collapsed."""
+    return " ".join(PAIRED_MARKUP.sub(lambda m: next(g for g in m.groups() if g is not None), text).split())
+
+
+def _turn(label: str, value: Any, message: dict) -> str:
+    """The clicker's turn: ``label`` and the line it names when ``value`` names a whole line the message shows, else ``label``.
+
+    The named line must equal a shown line, not sit inside one: a card showing
+    "Do not drain node-pool-a" must not pass a value naming "drain node-pool-a".
+    The turn carries the line as shown, not the value's own markup, which the
+    match ignores: "~Do not~ drain node-pool-a" would read as striking "Do not".
+    """
+    prefix = label + TURN_JOIN
+    if not (isinstance(value, str) and value.startswith(prefix)):
+        return label
+    named = value[len(prefix):].strip()
+    want = _comparable(named)
+    if not want or "\n" in named:
+        return label
+    shown = next((line for line in _shown_lines(message.get("blocks")) if _comparable(line) == want), None)
+    return label if shown is None else label + TURN_JOIN + " ".join(shown.split())
+
+
 def _gated_out(adapter: Any, channel_id: str) -> bool:
     """Whether the adapter would ignore a typed message in ``channel_id``: outside
     ``allowed_channels``, or a DM with DMs disabled. Checked before anything is shown."""
@@ -171,6 +264,23 @@ def _as_answer(label: str) -> str:
     return COMMAND_GUARD + label if label.startswith(COMMAND_PREFIXES) else label
 
 
+def _question_card(channel_id: str, msg_ts: str) -> str:
+    """The card whose question this process posted as the message, else ""."""
+    try:
+        from gateway import slack_ux_moments
+    except ImportError:
+        return ""
+    try:
+        return str(slack_ux_moments.question_card(channel_id, msg_ts) or "")
+    except Exception:  # noqa: BLE001 — the label alone still answers
+        return ""
+
+
+def _turn_text(label: str, card: str) -> str:
+    text = _as_answer(label)
+    return f"{text}\n\n{CARD_NOTE.format(card=card)}" if card else text
+
+
 def _thread_ts(body: dict, message: dict, msg_ts: str) -> str:
     container = body.get("container") or {}
     return str(message.get("thread_ts") or container.get("thread_ts") or msg_ts)
@@ -181,7 +291,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     started = await adapter._begin_interaction(ack, body, action, kind)
     if started is None:
         return
-    team_id, action_id, _value, message, msg_ts, channel_id, _user_name, user_id = started
+    team_id, action_id, value, message, msg_ts, channel_id, _user_name, user_id = started
     label = _shown_text(action)
     missing = [
         name
@@ -209,11 +319,17 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     shown = _escape(label)
     client = adapter._get_client(channel_id, team_id=team_id)
     note = ANSWERED.format(user=user_id, label=shown)
+    # Before the awaits: a card that moves on in between settles its question and forgets it.
+    card = _question_card(channel_id, msg_ts)
     try:
         await client.chat_update(
             channel=channel_id, ts=msg_ts, text=note,
             blocks=answered_blocks(message.get("blocks"), _answered_by, note),
         )
+        if key in _answered:
+            _rewritten[key] = None
+            while len(_rewritten) > ANSWERED_MAX:
+                _rewritten.popitem(last=False)
     except Exception as exc:  # noqa: BLE001 — the click still answers
         logger.warning(
             "slack_ux_clicks: could not mark %s answered; its buttons stay but further clicks are dropped: %s",
@@ -229,7 +345,7 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     synthetic = {
         "type": "message",
         "user": user_id,
-        "text": _as_answer(label),
+        "text": _turn_text(_turn(label, value, message), card),
         "channel": channel_id,
         # The click's own ts keeps the deduplicator from conflating this turn
         # with the echo or the clicked message, as a reaction trigger's does.

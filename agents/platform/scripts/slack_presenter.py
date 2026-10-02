@@ -5,8 +5,9 @@ the network, so any process that posts to Slack can use it, and it can move
 with Slack ingress when it leaves the gateway. Its callers include the
 gateway patches for reactions (``slack_ux_reactions``, which the kanban
 notifier also reaches), plan and session status (``slack_ux_status``, which
-reads only :func:`enabled`), incident triage (``slack_ux_incident``) and
-button clicks (``slack_ux_clicks``).
+reads only :func:`enabled`), moments (``slack_ux_moments``, which reads
+:func:`enabled` and lays out through ``slack_moments``), incident triage
+(``slack_ux_incident``) and button clicks (``slack_ux_clicks``).
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
@@ -16,9 +17,11 @@ take their upstream path unchanged; this module only answers questions.
 
 Layout: :func:`split_answer` takes the headline off an agent's markdown
 answer; url link buttons and choice buttons, whose value is the label, are
-built by ``_button`` and wrapped into rows by ``_actions``; :func:`fallback_text`
-is the headline, links and choices as plain mrkdwn, for the message's ``text``
-field.
+built by ``_button`` and wrapped into rows by ``_actions``;
+:func:`blocks_answer` lays out a bold headline and those buttons for
+``slack_moments``, which lays out the messages ``slack_ux_moments`` posts;
+:func:`fallback_text` is the headline, links and choices as plain mrkdwn,
+for the message's ``text`` field.
 
 Reactions (:func:`arrival_reaction`, :func:`settle_reaction`): the first
 reaction says what kind of ask arrived, chosen by keyword before any model
@@ -128,6 +131,8 @@ LINK_ACTION = "link"
 CHOICE_ACTION = "choice"
 LINK_ACTION_ID_PATTERN = re.compile(r"\.link\.\d+$")
 CHOICE_ACTION_ID_PATTERN = re.compile(r"\.choice\.\d+$")
+#: The block that says a message waits on an answer; a choice click drops it.
+WAITING_BLOCK_ID = "kage_waiting"
 
 CHOICES_LEAD = "Reply with one of: "
 CHOICE_SEPARATOR = " · "
@@ -387,6 +392,35 @@ def _actions(buttons: Sequence[dict]) -> list[dict]:
         {"type": "actions", "elements": list(buttons[i : i + BUTTONS_PER_ROW])}
         for i in range(0, len(buttons), BUTTONS_PER_ROW)
     ]
+
+
+def blocks_answer(
+    headline: str,
+    links: Iterable[Any] = (),
+    choices: Iterable[str] = (),
+    action_id_prefix: str = "kage",
+) -> list[dict]:
+    """Block Kit for a message: headline, link buttons, choice buttons.
+
+    ``links`` are ``(label, url)`` pairs or ``{"text", "url"}`` mappings.
+    ``choices`` are labels; each button's ``value`` is its label. Blocks are
+    emitted in that order and any part left empty is omitted.
+    """
+    blocks: list[dict] = []
+    title = _clip(_plain(headline or ""), HEADLINE_MAX)
+    if title:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{_escape(title)}*"}})
+    link_buttons = [
+        _button(label, f"{action_id_prefix}.{LINK_ACTION}.{i}", url=url)
+        for i, (label, url) in enumerate(_link_pairs(links))
+    ]
+    blocks.extend(_actions(link_buttons))
+    choice_buttons = [
+        _button(label, f"{action_id_prefix}.{CHOICE_ACTION}.{i}", value=label)
+        for i, label in enumerate(str(c) for c in choices or () if str(c).strip())
+    ]
+    blocks.extend(_actions(choice_buttons))
+    return blocks
 
 
 def fallback_text(headline: str, links: Iterable[Any] = (), choices: Iterable[str] = ()) -> str:

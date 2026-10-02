@@ -275,6 +275,71 @@ class ButtonsTest(unittest.TestCase):
         self.assertEqual(button["value"], "word " * 40)
 
 
+class BlocksAnswerTest(unittest.TestCase):
+    def test_headline_only(self):
+        self.assertEqual(
+            sp.blocks_answer("All three clusters are healthy."),
+            [{"type": "section", "text": {"type": "mrkdwn", "text": "*All three clusters are healthy.*"}}],
+        )
+
+    def test_headline_escaped(self):
+        blocks = sp.blocks_answer("a < b & c")
+        self.assertEqual(blocks[0]["text"]["text"], "*a &lt; b &amp; c*")
+
+    def test_link_buttons(self):
+        blocks = sp.blocks_answer(
+            "h", links=[("Open PR ↗", "https://github.com/o/r/pull/1"), {"text": "Files", "url": "https://f"}]
+        )
+        self.assertEqual(
+            blocks[1],
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open PR ↗", "emoji": True},
+                        "action_id": "kage.link.0",
+                        "url": "https://github.com/o/r/pull/1",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Files", "emoji": True},
+                        "action_id": "kage.link.1",
+                        "url": "https://f",
+                    },
+                ],
+            },
+        )
+        for button in blocks[1]["elements"]:
+            self.assertRegex(button["action_id"], sp.LINK_ACTION_ID_PATTERN)
+
+    def test_choice_buttons_value_is_label(self):
+        blocks = sp.blocks_answer("h", choices=["Raise to 512Mi", "Leave it"], action_id_prefix="triage")
+        elements = blocks[1]["elements"]
+        self.assertEqual([e["value"] for e in elements], ["Raise to 512Mi", "Leave it"])
+        self.assertEqual([e["action_id"] for e in elements], ["triage.choice.0", "triage.choice.1"])
+        self.assertNotIn("url", elements[0])
+        for button in elements:
+            self.assertIsNone(sp.LINK_ACTION_ID_PATTERN.search(button["action_id"]))
+
+    def test_buttons_wrap_at_five(self):
+        blocks = sp.blocks_answer("h", choices=[str(i) for i in range(7)])
+        self.assertEqual([len(b["elements"]) for b in blocks[1:]], [5, 2])
+        ids = [e["action_id"] for b in blocks[1:] for e in b["elements"]]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_long_label_clipped(self):
+        button = sp.blocks_answer("h", choices=["word " * 40])[1]["elements"][0]
+        self.assertLessEqual(len(button["text"]["text"]), sp.BUTTON_TEXT_MAX)
+        self.assertEqual(button["value"], "word " * 40)
+
+    def test_order(self):
+        blocks = sp.blocks_answer("h", links=[("l", "https://l")], choices=["c"])
+        self.assertEqual([b["type"] for b in blocks], ["section", "actions", "actions"])
+        self.assertIn("url", blocks[1]["elements"][0])
+        self.assertIn("value", blocks[2]["elements"][0])
+
+
 class FallbackTextTest(unittest.TestCase):
     def test_same_layout_as_mrkdwn(self):
         text = sp.fallback_text("Two findings.", links=[("Open PR", "https://p")], choices=["Yes", "No"])
