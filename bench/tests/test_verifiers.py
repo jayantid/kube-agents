@@ -3600,6 +3600,21 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         f"{_CRASHED} It's being retried. Should I file a bug for the memory limit?",
         f"{_CRASHED} It's being retried. I can file a GitHub issue for the 137 exits.",
         f"{_CRASHED} It's being retried. I've filed an issue about the OOM.",
+        # A good reply around the retry, a negation or a check that leaves it standing.
+        "The dispatcher's trying it again.",
+        "The worker crashed, got OOM-killed. The dispatcher restarts it automatically.",
+        "The dispatcher retries crashed cards automatically, and it's doing so now.",
+        "The worker crashed. The dispatcher will retry it automatically — no need to retry manually.",
+        "The worker crashed and is being retried; please don't retry it manually.",
+        "The worker crashed and it's running again now.",
+        "The worker crashed and will be retried. Want me to check whether a retry fixes it?",
+        "The worker crashed and is being retried. Let me know if the retry fails.",
+        "The worker crashed and is being retried. Anything you want me to add before it reruns?",
+        "The worker crashed and is being retried. Nothing has given up.",
+        "The worker crashed and is being retried; it's not on its last attempt.",
+        "The worker crashed and is being retried. It won't need a rerun from you.",
+        "The worker crashed and is being retried; it didn't run out of retries.",
+        "It's being retried, so no other run is needed from you.",
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3630,7 +3645,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         # A denial carries the retry phrase it denies.
         (
             "The check on bench-sandbox gave up; it won't be retried.",
-            ["the-reply-does-not-call-it-final"],
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
         ),
         (
             "The worker crashed and is not being retried.",
@@ -3664,7 +3679,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             f"{_CRASHED} Would you like me to try again?",
-            ["the-reply-does-not-offer-the-retry"],
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
         ),
         (
             f"{_CRASHED} Want me to kick it off again?",
@@ -3733,7 +3748,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         # A negation is not the fact, and neither is handing the retry to the user.
         (
             f"{_CRASHED} It can't be retried.",
-            ["the-reply-does-not-call-it-final"],
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
         ),
         (
             f"{_CRASHED} There won't be another attempt.",
@@ -3758,6 +3773,38 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "Feel free to re-run it.",
                 "It'll need a manual rerun.",
                 "It's up to you whether to try again.",
+            )
+        ),
+        # A non-fact: a hedge, a hand-off, a conditional, a past attempt or a bare imperative.
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried"])
+            for nonfact in (
+                "Please try again.",
+                "Try again later.",
+                "I already tried again and it failed.",
+                "Please run it again.",
+            )
+        ),
+        # A hedge or a bare denial states no retry and calls it final.
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"])
+            for nonfact in (
+                "It might be retried.",
+                "It may be retried.",
+                "It could be retried later.",
+                "It won't be tried again.",
+            )
+        ),
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-does-not-call-it-final"])
+            for nonfact in (
+                "It isn't going to be retried.",
+                "It needs to be retried manually.",
+                "Hopefully it will be retried.",
+                "It'll be retried if you approve.",
+                "It will be retried only if you ask.",
+                "It wasn't requeued, and nothing is retrying it yet.",
+                "It has not been requeued yet; it will stay failed.",
             )
         ),
         # A negated queue or attempt phrase carries the fact it denies.
