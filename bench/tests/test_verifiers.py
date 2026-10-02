@@ -3725,6 +3725,15 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried, but not right away — it's queued.",
                 "It's being retried, so this time it's already queued.",
                 "It's being retried; if it hits the limit I'll tell you.",
+                "It's being retried. Should I pull the logs before the job retries?",
+                "It's being retried. Should I pull the logs if the pod retries?",
+                "It's being retried. Should I pull the logs as the run retries?",
+                "It's being retried. Want me to check the node before the check reruns?",
+                "It's being retried, and it'll keep retrying until it has exhausted its retries.",
+                "It's being retried; it stops once it's reached the cap.",
+                "It's being retried. I'll tell you when it has exhausted its retries.",
+                "It's being retried until its retries are exhausted; this is attempt 2.",
+                "It's being retried. I'll tell you if the retries are spent.",
                 "It's being retried. Should I bump the memory limit so it doesn't OOM again on retry?",
                 "It's being retried. Would you like retry status pings?",
                 "It's being retried. Just ask while it reruns.",
@@ -4241,6 +4250,8 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
         # Denials the checks pass:
         (f"{_CRASHED} Retry pending approval from you.", []),
         (f"{_CRASHED} Status: retrying stopped.", []),
+        # An offer of a card that does the retry:
+        (f"{_CRASHED} It's being retried. Want a card that retries the pod?", []),
     ],
 )
 def test_the_retry_objectives_known_gaps(final_message, missed):
