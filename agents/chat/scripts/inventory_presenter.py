@@ -19,7 +19,7 @@ its sentence as a second line), a primary
 findings than the rows shown, a "show all N" button, both answered as the
 clicker's turn. N is the larger of the posture's own "<n> findings" and the
 listed items plus the roll-up's count ("Also found: <n>" or "<n> more"). The
-roll-up stays as a plain line under the headline, from its counting sentence
+roll-up stays as a plain line below the rows, from its counting sentence
 to the end of that line, since a click
 takes both buttons off the message and the line is then what still says how
 many more there are and how to ask for them; the closing lines are left out,
@@ -314,7 +314,7 @@ def blocks(report: str, fold_in_place: bool = True) -> tuple[list[dict], str, st
         action_id_prefix=ACTION_ID_PREFIX,
         fold_in_place=fold_in_place,
         fold_first=True,
-        detail=_plain(shape.rollup),
+        after_rows=_plain(shape.rollup),
     )
     rest = fallback_text(fold_title, rows=_rows(shape.rest)) if shape.rest and not fold_in_place else ""
     return built, fallback_text(shape.headline, rows=top), rest

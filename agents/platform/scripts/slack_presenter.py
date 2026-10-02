@@ -152,12 +152,15 @@ SEVERITY_TAG = "`{severity}` {text}"
 BACKTICK = "`"
 
 #: A report's group header: the shown rows counted per severity, in the order
-#: first seen ("2 critical", "1 critical, 1 major"); rows with no severity are
-#: counted as findings.
+#: first seen ("2 critical", "1 critical, 1 major"). Rows with no severity are
+#: findings when no row has one ("2 findings") and "more" after the labelled
+#: counts otherwise ("1 critical, 1 more"), so an unlabelled row is not read as
+#: a severity of its own.
 GROUP_COUNT = "{count} {severity}"
 GROUP_SEPARATOR = ", "
 UNTAGGED = "finding"
 UNTAGGED_PLURAL = "findings"
+UNTAGGED_AFTER_LABELLED = "more"
 #: Bounds on a report's fold: rows shown in it, and characters per row.
 FOLD_ROWS_MAX = 50
 ROW_TEXT_MAX = 300
@@ -583,16 +586,20 @@ def _rich_row(row: Any) -> dict:
 
 
 def group_header(rows: Sequence[Any]) -> str:
-    """The shown rows counted per severity, in the order first seen: "2 critical", "1 critical, 1 major"."""
+    """The shown rows counted per severity, in the order first seen: "2 critical", "1 critical, 1 major".
+
+    Unlabelled rows close it as "1 more" after any labelled count, and are
+    "findings" only when no row is labelled.
+    """
     counts: dict[str, int] = {}
     for row in rows:
         severity, _ = _row_parts(row)
         counts[severity] = counts.get(severity, 0) + 1
-    parts = []
-    for severity, count in counts.items():
-        if not severity:
-            severity = UNTAGGED if count == 1 else UNTAGGED_PLURAL
-        parts.append(GROUP_COUNT.format(count=count, severity=severity))
+    untagged = counts.pop("", 0)
+    parts = [GROUP_COUNT.format(count=count, severity=severity) for severity, count in counts.items()]
+    if untagged:
+        label = UNTAGGED_AFTER_LABELLED if parts else UNTAGGED if untagged == 1 else UNTAGGED_PLURAL
+        parts.append(GROUP_COUNT.format(count=untagged, severity=label))
     return GROUP_SEPARATOR.join(parts)
 
 
@@ -608,12 +615,14 @@ def blocks_report(
     fold_in_place: bool = True,
     fold_first: bool = False,
     detail: str = "",
+    after_rows: str = "",
 ) -> list[dict]:
     """Block Kit for a report: headline, the top rows between dividers, buttons, the fold.
 
     ``headline`` is bold and ``note`` follows it plain, both one line;
     ``detail``, when given, is one more plain line under them, clipped like a
-    row. ``rows``
+    row, and ``after_rows`` one plain line below the rows' group, clipped the
+    same. ``rows``
     and ``fold_rows`` are ``{"text": <markdown>, "severity"?: str, "detail"?:
     <markdown>}`` mappings or plain strings, a ``detail`` being a second line
     under its row, clipped like it; ``rows`` sit between two dividers under their
@@ -644,6 +653,10 @@ def blocks_report(
         blocks.append({"type": "divider"})
         blocks.append({"type": "rich_text", "elements": [header, *(_rich_row(row) for row in rows)]})
         blocks.append({"type": "divider"})
+    after_line = _clip(_plain(after_rows or "").strip(), ROW_TEXT_MAX)
+    if after_line:
+        blocks.append({"type": "rich_text", "elements": [
+            {"type": "rich_text_section", "elements": [{"type": "text", "text": after_line}]}]})
     choice_buttons = [
         _button(label, f"{action_id_prefix}.{CHOICE_ACTION}.{i}", value=label)
         for i, label in enumerate(_clip(str(c), BUTTON_TEXT_MAX) for c in choices or () if str(c).strip())
