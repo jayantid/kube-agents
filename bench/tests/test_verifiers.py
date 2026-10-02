@@ -4696,6 +4696,9 @@ _SAYS_STOPPED = "the-reply-says-it-stopped"
         # A first-person offer:
         "It stopped. I'll retry it if you ask.",
         "It stopped. If you like, I'll try again.",
+        # A retry that waits on the user's own fix:
+        "It stopped. I'll try again once you've raised the limit.",
+        "It stopped; it will run again after you increase the timeout.",
         "It stopped. I can rerun it.",
     ],
 )
@@ -4745,13 +4748,29 @@ _FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
 @pytest.mark.parametrize(
     ("case", "final_message", "named"),
     [
-        (_RETRY_CASE, f"{_CRASHED} It's being retried.", False),
+        (_RETRY_CASE, "The check on invoice-renderer's restarts crashed; it's being retried.", False),
         (_RETRY_CASE, "Want me to hand this to another agent?", False),
         (_RETRY_CASE, "The platform team can raise the memory limit.", False),
         (_RETRY_CASE, "It crashed on test-cluster and is being retried.", False),
         (_RETRY_CASE, "The cluster-autoscaler crashed; it's being retried.", False),
-        (_FINAL_CASE, f"{_GAVE_UP} Nothing will run it again unless you ask.", False),
+        (_FINAL_CASE, "The look into invoice-renderer timed out on its last attempt; nothing will run it again.", False),
         (_FAILURE_CASE, "I couldn't restart invoice-renderer on bench-sandbox. Want me to try again?", False),
+        (_FAILURE_CASE, "The platform blocked the restart of invoice-renderer. Want me to try again?", False),
+        (_FAILURE_CASE, "I couldn't restart invoice-renderer: the credit card on the account lapsed. Try again?", False),
+        # main's reply at dceb7ed3, which the retry wording rows pass.
+        (
+            _RETRY_CASE,
+            "The `cluster-bench-sandbox` agent crashed unexpectedly while trying to check the "
+            "invoice-renderer pods. The task is back in the queue and will be retried automatically.",
+            True,
+        ),
+        (_RETRY_CASE, "The task crashed with exit code 137; it's being retried.", True),
+        (_RETRY_CASE, "The check crashed (kanban task t_cc52a43d); it's being retried.", True),
+        (_RETRY_CASE, "The check crashed (t_cc52a43d); it's being retried.", True),
+        (_RETRY_CASE, "The check crashed, and kanban is retrying it.", True),
+        (_RETRY_CASE, "The `cluster-bench-sandbox` agent crashed; it's being retried.", True),
+        (_RETRY_CASE, f"{_CRASHED} It's being retried.", True),
+        (_FINAL_CASE, f"{_GAVE_UP} Nothing will run it again unless you ask.", True),
         # A live green that now reds (rv on main-64cb68bb at 9b36715b, green3).
         (
             _RETRY_CASE,
@@ -4926,7 +4945,7 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             "Task t_cc52a43d is blocked and needs attention.\n\n"
             f"invoice-renderer on bench-sandbox was not restarted. {_FAILURE_WHY} {_FAILURE_ASK}",
-            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_NOINT],
         ),
         # "Hi!" is a first sentence of its own, and it states no fact.
         (
@@ -4976,7 +4995,7 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             "The task to restart invoice-renderer is blocked. The service account lacks "
             f"container.deployments.update, so it couldn't perform the restart. {_FAILURE_ASK}",
-            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_NOINT],
         ),
         # A close that asks for something other than the retry or re-route.
         (

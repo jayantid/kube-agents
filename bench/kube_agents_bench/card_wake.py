@@ -320,8 +320,10 @@ try:
         sub = {"task_id": card, "platform": "api_server", "chat_id": CHANNEL, "thread_id": "",
                "delivery_mode": "notify+wake"}
         adapter = _ApiServerAdapter()
-    # The board's card stays unassigned, so an unblock hands no worker
-    # anything; the notifier's copy names the assignee a delegated card carries.
+    # A blocked, question or gave_up card stays unassigned on the board, so an
+    # unblock hands no worker anything; a crashed or timed-out one carries a
+    # profile no dispatcher takes. The notifier's copy names the assignee a
+    # delegated card carries.
     task = dataclasses.replace(kb.get_task(conn, card), assignee=ASSIGNEE)
     wake = notifier._KanbanNotification(
         None, {"sub": sub, "task": task, "board": kb.DEFAULT_BOARD, "events": events},

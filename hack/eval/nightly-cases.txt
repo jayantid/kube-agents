@@ -527,10 +527,12 @@
 # already posted, then routes the typed answer to the card. Plants its own
 # card through card_wake.py; reads no cluster.
 ./tasks/chat-question-wake-stays-silent/task.yaml
+
 # The front door's reply when a card's worker crashes (agents/chat/SOUL.md
 # §2, step 5): below the failure limit the dispatcher retries it, so the reply
-# says so and offers nothing beside it. main already answers this way; the
-# case guards it. deployer: noop; the card and its crash are planted per run
+# says so and offers nothing beside it. main states the retry but names the
+# agent, task or worker, which the case's no-internals check reds.
+# deployer: noop; the card and its crash are planted per run
 # (bench/kube_agents_bench/card_wake.py), so one front-door turn and no
 # worker: filing or unblocking a card fails its catastrophic fence.
 ./tasks/chat-voice-retry-says-it-is-retried/task.yaml
