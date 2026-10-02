@@ -6,8 +6,10 @@ reach. Two replays produce one. A prompt whose first line is
 an ask; :func:`parse` reads it.
 
 **A specialist's Slack question.** A card that blocks on ``needs_input`` wakes
-the conversation that filed it, and the front door's reply is its turn to act
-(``agents/chat/SOUL.md`` §2, step 5); the user's answer then goes to the card
+the conversation that filed it, and the front door's reply follows
+``agents/chat/SOUL.md`` §2, step 5: exactly ``[SILENT]`` when the wake says the
+question is already posted, otherwise the question in its own words. The
+user's answer then goes to the card
 with ``kanban_comment`` and ``kanban_unblock`` (§1.5, **Unblock**). On an image
 whose gateway carries a Slack moments module (``gateway/slack_ux_moments.py``)
 with ``KAGE_SLACK_UX`` on, that module's ``needs_you`` posts the question in

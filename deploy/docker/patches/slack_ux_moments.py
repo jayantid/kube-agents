@@ -2,9 +2,10 @@
 
 Installed into the image at ``/opt/hermes/gateway/slack_ux_moments.py``.
 ``gateway/kanban_progress_lines.py`` calls it for a Slack card when
-``KAGE_SLACK_UX`` is on, and ``apply_slack_ux_moments.py`` has the notifier's
-wake text pass through :func:`wake_text`; with the flag off nothing reaches it
-and the wake text comes back unchanged. What the messages look like is
+``KAGE_SLACK_UX`` is on, and ``apply_slack_ux_moments.py`` has every notifier
+wake's text pass through :func:`wake_text`, flag on or off. That function does
+not read the flag: with it off no question was posted, so the wake text comes
+back unchanged. What the messages look like is
 ``agents/platform/scripts/slack_moments.py``.
 
 Upstream, and why it changes
