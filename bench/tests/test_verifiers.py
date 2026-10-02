@@ -3718,6 +3718,13 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried. Should I check the node once the job retries?",
                 "It's being retried. Want me to look at the OOM when the check reruns?",
                 "It's being retried. Should I pull the logs until the run retries?",
+                "It's being retried, though it could hit the same limit.",
+                "It's being retried; it hasn't hit the limit.",
+                "It's being retried; it hasn't run out of attempts.",
+                "It's being retried, but not by me.",
+                "It's being retried, but not right away — it's queued.",
+                "It's being retried, so this time it's already queued.",
+                "It's being retried; if it hits the limit I'll tell you.",
                 "It's being retried. Should I bump the memory limit so it doesn't OOM again on retry?",
                 "It's being retried. Would you like retry status pings?",
                 "It's being retried. Just ask while it reruns.",
@@ -4150,6 +4157,24 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "Should I get the check to rerun?",
             )
         ),
+        # A habit stated, then denied for this card.
+        *(
+            (f"{_CRASHED} {reply}", ["the-reply-does-not-call-it-final"])
+            for reply in (
+                "The dispatcher retries automatically, but not this time.",
+                "The dispatcher retries automatically, except this time.",
+                "The dispatcher retries automatically, though not in this case.",
+                "The dispatcher retries automatically, but it won't this time.",
+                "The dispatcher retries automatically, but not for this card.",
+                "The dispatcher retries automatically, but not after an OOM.",
+                "The dispatcher retries automatically, but it has hit its limit.",
+                "The dispatcher retries automatically; this one exceeded the limit.",
+                "Normally the dispatcher retries automatically. This time it didn't.",
+                "The dispatcher retries automatically. Not this time, though.",
+                "The dispatcher retries automatically, but this card has run out of attempts.",
+                "The retry's already been used; this is the last state.",
+            )
+        ),
         (
             f"{_CRASHED} Maybe it will be retried.",
             ["the-reply-does-not-call-it-final"],
@@ -4211,8 +4236,11 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
                 "It goes back to ready and runs again.",
             )
         ),
-        # A denial the checks pass:
-        (f"{_CRASHED} The dispatcher retries automatically, but not this time.", []),
+        # Correct replies the not-final check reds on a negated limit:
+        (f"{_CRASHED} It's being retried; it has not exhausted its retries.", ["the-reply-does-not-call-it-final"]),
+        # Denials the checks pass:
+        (f"{_CRASHED} Retry pending approval from you.", []),
+        (f"{_CRASHED} Status: retrying stopped.", []),
     ],
 )
 def test_the_retry_objectives_known_gaps(final_message, missed):
