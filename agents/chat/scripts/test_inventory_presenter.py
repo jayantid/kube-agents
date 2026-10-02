@@ -187,17 +187,25 @@ class BlocksTest(unittest.TestCase):
     def _types(self, blocks):
         return [block["type"] for block in blocks]
 
+    def _roll_up(self, blocks):
+        """The plain line directly below the rows' closing divider."""
+        after = blocks[max(i for i, b in enumerate(blocks) if b["type"] == "divider") + 1]
+        self.assertEqual(after["type"], "rich_text")
+        return after["elements"][0]["elements"][0]["text"]
+
     def test_mock_15_shape(self):
         blocks, text, rest = inventory_presenter.blocks(REPORT)
-        self.assertEqual(self._types(blocks), ["rich_text", "divider", "rich_text", "divider", "container", "actions"])
+        self.assertEqual(
+            self._types(blocks), ["rich_text", "divider", "rich_text", "divider", "rich_text", "container", "actions"]
+        )
         head = blocks[0]["elements"][0]["elements"]
         self.assertEqual(head[0], {"type": "text", "text": "I scanned 3 clusters and 41 workloads.", "style": {"bold": True}})
         self.assertEqual(head[1]["text"], " Posture is mostly healthy. Two worth fixing first:")
         group = blocks[2]["elements"]
-        self.assertEqual(group[0]["elements"][0]["text"], "1 critical, 1 finding")
+        self.assertEqual(group[0]["elements"][0]["text"], "1 critical, 1 more")
         self.assertEqual(group[1]["elements"][0], {"type": "text", "text": "critical", "style": {"code": True}})
-        self.assertEqual(blocks[4]["title"]["text"], "2 more worth a look")
-        buttons = blocks[5]["elements"]
+        self.assertEqual(blocks[5]["title"]["text"], "2 more worth a look")
+        buttons = blocks[6]["elements"]
         self.assertEqual([b["action_id"] for b in buttons], ["kage_inventory.choice.0", "kage_inventory.choice.1"])
         self.assertEqual(buttons[0]["style"], "primary")
         self.assertEqual(buttons[0]["text"]["text"], "start with: seeded-b and seeded-c admit privileged pods")
@@ -212,10 +220,22 @@ class BlocksTest(unittest.TestCase):
         blocks, _, _ = inventory_presenter.blocks(REPORT)
         kept = [b for b in blocks if b["type"] != "actions"]
         self.assertEqual(
-            kept[0]["elements"][1]["elements"][0]["text"],
+            self._roll_up(kept),
             "Also found: 18 more items, tracked in the findings queue — ask for the full list.",
         )
         self.assertNotIn("The full inventory is available", str(blocks))
+
+    def test_the_headline_leads_into_the_rows_and_the_roll_up_follows_them(self):
+        # "Two worth fixing first:" ends on a colon, so the rows come next; the
+        # roll-up sits between them and the fold.
+        blocks, _, _ = inventory_presenter.blocks(REPORT)
+        self.assertEqual(len(blocks[0]["elements"]), 1)
+        self.assertTrue(blocks[0]["elements"][0]["elements"][-1]["text"].endswith("Two worth fixing first:"))
+        self.assertEqual(blocks[1]["type"], "divider")
+        self.assertEqual(
+            self._roll_up(blocks), "Also found: 18 more items, tracked in the findings queue — ask for the full list."
+        )
+        self.assertEqual(blocks[self._types(blocks).index("container") - 1]["type"], "rich_text")
 
     def test_a_closing_line_directly_under_the_roll_up_stays_out(self):
         report = REPORT.replace("ask for the full list.\n\n", "ask for the full list.\n")
@@ -223,7 +243,7 @@ class BlocksTest(unittest.TestCase):
         blocks, _, _ = inventory_presenter.blocks(report)
         kept = [b for b in blocks if b["type"] != "actions"]
         self.assertEqual(
-            kept[0]["elements"][1]["elements"][0]["text"],
+            self._roll_up(kept),
             "Also found: 18 more items, tracked in the findings queue — ask for the full list.",
         )
         self.assertNotIn("The full inventory is available", str(blocks))
@@ -236,7 +256,7 @@ class BlocksTest(unittest.TestCase):
         self.assertNotEqual(report, REPORT)
         blocks, _, _ = inventory_presenter.blocks(report)
         kept = [b for b in blocks if b["type"] != "actions"]
-        self.assertEqual(kept[0]["elements"][1]["elements"][0]["text"], "Also found: 18 more items. Ask for the full list.")
+        self.assertEqual(self._roll_up(kept), "Also found: 18 more items. Ask for the full list.")
 
     def test_a_closing_line_under_a_roll_up_with_no_full_stop_stays_out(self):
         report = REPORT.replace("ask for the full list.\n\n", "ask for the full list\n")
@@ -244,7 +264,7 @@ class BlocksTest(unittest.TestCase):
         blocks, _, _ = inventory_presenter.blocks(report)
         kept = [b for b in blocks if b["type"] != "actions"]
         self.assertEqual(
-            kept[0]["elements"][1]["elements"][0]["text"],
+            self._roll_up(kept),
             "Also found: 18 more items, tracked in the findings queue — ask for the full list",
         )
         self.assertNotIn("The full inventory is available", str(blocks))
@@ -255,7 +275,7 @@ class BlocksTest(unittest.TestCase):
         blocks, _, _ = inventory_presenter.blocks(report)
         kept = [b for b in blocks if b["type"] != "actions"]
         self.assertEqual(
-            kept[0]["elements"][1]["elements"][0]["text"],
+            self._roll_up(kept),
             "Also found: 18 more items, tracked in the findings queue — ask for the full list.",
         )
 
@@ -285,7 +305,7 @@ class BlocksTest(unittest.TestCase):
                 self.assertNotEqual(report, REPORT)
                 blocks, _, _ = inventory_presenter.blocks(report)
                 kept = [b for b in blocks if b["type"] != "actions"]
-                self.assertEqual(kept[0]["elements"][1]["elements"][0]["text"], rollup)
+                self.assertEqual(self._roll_up(kept), rollup)
                 self.assertEqual(blocks[-1]["elements"][1]["text"]["text"], "show all 18")
 
     def test_without_the_fold_the_rest_is_returned_for_the_thread(self):
@@ -302,7 +322,7 @@ class BlocksTest(unittest.TestCase):
         blocks, text, _ = inventory_presenter.blocks(REPORT)
         group = blocks[2]["elements"]
         self.assertEqual(group[1]["elements"][-1]["text"], "Any workload can escape to the node; enforce baseline Pod Security.")
-        folded = str(blocks[4])
+        folded = str(blocks[self._types(blocks).index("container")])
         self.assertIn("Pods fall back to the node SA; enable it on the node pool.", folded)
         self.assertIn("\nA compromised pod owns the cluster; remove the binding.", text)
 

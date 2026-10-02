@@ -564,10 +564,21 @@ class BlocksReportTest(unittest.TestCase):
     def test_rows_with_no_text_and_no_severity_are_skipped(self):
         self.assertEqual(sp.blocks_report("h", rows=[""], fold_rows=["  "]), sp.blocks_report("h"))
         group = sp.blocks_report("h", rows=["", {"text": "", "severity": "major"}, "x"])[2]["elements"]
-        self.assertEqual(group[0]["elements"][0]["text"], "1 major, 1 finding")
+        self.assertEqual(group[0]["elements"][0]["text"], "1 major, 1 more")
         self.assertEqual(len(group), 3)
         for section in group:
             self.assertTrue(section["elements"])
+
+    def test_after_rows_is_a_plain_line_below_the_rows(self):
+        blocks = self._report(after_rows="Also found: 18 more.", fold_first=True)
+        self.assertEqual([b["type"] for b in blocks],
+                         ["rich_text", "divider", "rich_text", "divider", "rich_text", "container", "actions"])
+        self.assertEqual(len(blocks[0]["elements"]), 1)
+        self.assertEqual(blocks[4]["elements"][0]["elements"], [{"type": "text", "text": "Also found: 18 more."}])
+        self.assertEqual(self._report(after_rows="  "), self._report())
+        long_line = self._report(after_rows="**x** " * 200)[4]["elements"][0]["elements"][0]["text"]
+        self.assertLessEqual(len(long_line), sp.ROW_TEXT_MAX)
+        self.assertNotIn("**", long_line)
 
     def test_fold_first_puts_the_fold_above_the_buttons(self):
         self.assertEqual([b["type"] for b in self._report(fold_first=True)][-2:], ["container", "actions"])
@@ -615,7 +626,12 @@ class BlocksReportTest(unittest.TestCase):
         self.assertEqual(sp.group_header([{"severity": "critical", "text": "a"}, {"severity": "major", "text": "b"}]),
                          "1 critical, 1 major")
         self.assertEqual(sp.group_header(["a", "b"]), "2 findings")
-        self.assertEqual(sp.group_header([{"severity": "High", "text": "a"}, "b"]), "1 high, 1 finding")
+        self.assertEqual(sp.group_header([{"severity": "High", "text": "a"}, "b"]), "1 high, 1 more")
+
+    def test_group_header_puts_unlabelled_rows_last_as_more(self):
+        rows = ["a", {"severity": "critical", "text": "b"}, "c", {"severity": "major", "text": "d"}]
+        self.assertEqual(sp.group_header(rows), "1 critical, 1 major, 2 more")
+        self.assertEqual(sp.group_header(["a"]), "1 finding")
 
 
 class SeverityRowTest(unittest.TestCase):
