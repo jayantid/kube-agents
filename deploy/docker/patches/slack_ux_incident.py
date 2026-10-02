@@ -14,8 +14,14 @@ keeps showing the alert while the diagnosis sits in the thread. With the flag
 on, the report replaces the alert in place instead: the alert message is
 edited into the report's "What's wrong" sentence, one button per option, the
 links on the report's 🔗 line as link buttons, and the whole report in a
-collapsed fold, rendered by the Slack plugin's own ``block_kit.render_blocks``
-so it reads as the threaded reply would.
+collapsed fold, rendered by the Slack plugin's own ``block_kit.render_blocks``,
+the renderer the threaded reply goes through when the adapter sends rich
+blocks. The message's ``text`` is the headline, the choices and then the
+whole report, because the adapter reads a thread back from ``text`` and
+top-level blocks, never a fold's. That holds on a cold read of the thread
+only: a session already open on it fetches just the newer replies, which
+skips the edited alert, and a typed ``apply`` there finds the report through
+the ``incidents`` row below.
 
 A button's text is ``apply Option B: <title>`` (``apply: <title>`` for the
 single-fix shape), so a click, which ``slack_ux_clicks`` sends as the
@@ -83,7 +89,9 @@ PRIMARY = "primary"
 #: Slack refuses a button url longer than this, and with it the whole message.
 BUTTON_URL_MAX = 3000
 #: A report longer than this keeps the threaded reply; triage reports are a
-#: few hundred words, and Slack's limit on a container's content is not published.
+#: few hundred words, Slack's limit on a container's content is not published,
+#: and the message ``text``, which carries the report too, stays far inside
+#: Slack's 40,000 characters.
 FOLD_TEXT_MAX = 12000
 #: The block types Slack has been seen to keep inside a collapsible
 #: ``container`` (read back from ``conversations.replies`` on a live alert).
@@ -272,10 +280,15 @@ def blocks_triage(triage: dict, fold_blocks: list[dict]) -> list[dict]:
 
 
 def fallback_text(triage: dict) -> str:
-    """The edited message's ``text``: the headline, the links and the choices, as mrkdwn."""
+    """The headline, the links and the choices, as mrkdwn; :func:`message_text` starts with it."""
     return _presenter.fallback_text(
         triage["headline"], links=triage["links"], choices=[label for label, _ in triage["choices"]]
     )
+
+
+def message_text(triage: dict, report: str, mrkdwn_fn: Any = None) -> str:
+    """The edited message's ``text``: :func:`fallback_text`, then the whole report as mrkdwn."""
+    return "\n\n".join((fallback_text(triage), mrkdwn_fn(report) if callable(mrkdwn_fn) else report))
 
 
 def _db_path() -> str:
@@ -315,12 +328,15 @@ def is_open_alert(chat_id: str, thread_id: str, db_path: str | None = None) -> b
 class _AlertEditor:
     """The notifier's adapter, with ``send`` editing the alert instead of replying under it."""
 
-    def __init__(self, adapter: Any, chat_id: str, thread_id: str, triage: dict, fold_blocks: list[dict]):
+    def __init__(
+        self, adapter: Any, chat_id: str, thread_id: str, triage: dict, fold_blocks: list[dict], text: str
+    ):
         self._adapter = adapter
         self._chat_id = chat_id
         self._thread_id = thread_id
         self._triage = triage
         self._fold_blocks = fold_blocks
+        self._text = text
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._adapter, name)
@@ -332,10 +348,10 @@ class _AlertEditor:
             while len(_edited) > EDITED_MAX:
                 _edited.popitem(last=False)
             try:
-                await self._adapter._get_client(self._chat_id).chat_update(
+                await self._adapter._client_for(self._chat_id, metadata).chat_update(
                     channel=self._chat_id,
                     ts=self._thread_id,
-                    text=fallback_text(self._triage),
+                    text=self._text,
                     blocks=blocks_triage(self._triage, self._fold_blocks),
                 )
                 logger.info("slack_ux_incident: edited alert %s into its triage", self._thread_id)
@@ -380,10 +396,11 @@ def adapter_for(adapter: Any, platform: str, event: Any, task: Any, sub: Any) ->
         triage = parse_triage(report)
         if triage is None or (chat_id, thread_id) in _edited or not is_open_alert(chat_id, thread_id):
             return adapter
-        fold_blocks = render_fold(report, getattr(adapter, "format_message", None))
+        mrkdwn_fn = getattr(adapter, "format_message", None)
+        fold_blocks = render_fold(report, mrkdwn_fn)
         if not fold_blocks:
             return adapter
-        return _AlertEditor(adapter, chat_id, thread_id, triage, fold_blocks)
+        return _AlertEditor(adapter, chat_id, thread_id, triage, fold_blocks, message_text(triage, report, mrkdwn_fn))
     except Exception as exc:  # noqa: BLE001 — never fail a delivery on presentation
         logger.warning("slack_ux_incident: not editing the alert: %s", exc)
         return adapter
