@@ -1638,10 +1638,12 @@ class KubeAgentsHarness(AgentHarness):
         pinned = _PINNED_RUN_ID.set(_run_id())
         try:
             wake_turn = self._execute(planted.wake, workspace_path)
-            if wake_turn.errors:
-                return wake_turn
+            # Tagged before the error check: an errored run is the one whose
+            # card and wake are wanted.
             if failure:
                 return card_wake.tag(planted, wake_turn)
+            if wake_turn.errors:
+                return wake_turn
             answer_turn = self._execute(replay.answer, workspace_path)
         finally:
             _PINNED_RUN_ID.reset(pinned)

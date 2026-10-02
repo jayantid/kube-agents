@@ -67,10 +67,6 @@ def _save(state):
         json.dump(state, fh)
 
 
-def connect():
-    return object()
-
-
 def create_task(conn, *, title, body=None, created_by=None):
     state = _load()
     task_id = "t_%08d" % (len(state["tasks"]) + 1)
@@ -172,6 +168,9 @@ def hermes_root(tmp_path: Path) -> Path:
     (root / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_cli" / "kanban_db.py").write_text(_FAKE_KANBAN_DB)
     (root / "hermes_cli" / "kanban_db_dispatch.py").write_text(_FAKE_DISPATCH)
+    # Only the split module opens the board: a script that reaches for
+    # kanban_db.connect, the compat shim, fails here.
+    (root / "hermes_cli" / "kanban_db_connect.py").write_text("def connect():\n    return object()\n")
     (root / "gateway" / "__init__.py").write_text("")
     (root / "gateway" / "kanban_watchers_notifier.py").write_text(_FAKE_NOTIFIER)
     return root

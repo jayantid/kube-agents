@@ -160,12 +160,15 @@ try:
     sys.path[:0] = [HERMES_ROOT, SCRIPTS]
     os.environ[FLAG] = ON
     from hermes_cli import kanban_db as kb
+    # kanban_db.connect is a compat shim since the board split; the split
+    # module is the opener's home.
+    from hermes_cli.kanban_db_connect import connect
     from gateway import kanban_watchers_notifier as notifier
     try:
         from gateway import slack_ux_moments as moments
     except ImportError:
         moments = None
-    conn = kb.connect()
+    conn = connect()
     card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR)
     out["card"] = card
     if OUTCOME == "gave_up":
@@ -228,7 +231,8 @@ sys.path.insert(0, HERMES_ROOT)
 out = {"archived": False, "error": None}
 try:
     from hermes_cli import kanban_db as kb
-    out["archived"] = bool(kb.archive_task(kb.connect(), CARD))
+    from hermes_cli.kanban_db_connect import connect
+    out["archived"] = bool(kb.archive_task(connect(), CARD))
 except Exception as exc:
     out["error"] = "%s: %s" % (type(exc).__name__, exc)
 print(SENTINEL)

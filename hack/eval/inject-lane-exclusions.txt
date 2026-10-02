@@ -1,4 +1,4 @@
-# The inject lane's exclusions: presubmit cases that do not run when the
+# The inject lane's exclusions: registered cases that do not run when the
 # matrix goes through the A2A gateway's inject door (the harness's
 # AGENT_TRANSPORT=inject, which hack/ci-eval-pr.sh exports under
 # EVAL_MODE_NEXT=1), because the case's premise needs the chat front door
