@@ -43,9 +43,9 @@
 # The report is normalized before matching (lowercased, `_` and Markdown
 # emphasis stripped, curly apostrophes folded).
 #
-# Known gaps, each pinned by test_the_retry_objectives_known_gaps in
-# bench/tests/test_verifiers.py so a fix has to move its row. These correct
-# replies red: a denied hand-off outside the guarded forms ("it's not
+# Known gaps, by kind rather than every miss; one row of each is pinned by
+# test_the_retry_objectives_known_gaps in bench/tests/test_verifiers.py so a
+# fix has to move it. These correct replies red: a denied hand-off outside the guarded forms ("it's not
 # something you should rerun"), a denial bounded by time ("it isn't running
 # again until a worker frees up", "hasn't begun retrying"), "up to you" or
 # "your call" about something unnamed ("digging in is your call"), an
@@ -55,10 +55,13 @@
 # was skipped by nothing; it is running"). Retry wording outside the fact
 # list misses it ("attempted again", "the dispatcher will restart it", "a
 # fresh worker will pick it up", "a second attempt", "runs again"). And
-# "retry pending approval from you", "status: retrying stopped", "nothing
-# more will happen, not this time", a pod's restart limit ("it has hit its
-# restart limit") and an offer of a card that retries ("want a card that
-# retries the pod?") pass.
+# "retry pending approval from you", "status: retrying stopped", a "not
+# this time" after a negation the negation pattern does not read ("nothing
+# more will happen, not this time"), a limit named for anything other than
+# the card's retries or attempts (a restart or crash limit), an
+# except-clause followed by a trailing aside ("except this one, sadly") and
+# an offer of a card that retries ("want a card that retries the pod?")
+# pass.
 #
 # Planted defect required: none; the card is planted per run and archived
 # after it. Isolation class: read-only.

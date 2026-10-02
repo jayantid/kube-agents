@@ -4274,8 +4274,10 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
         (f"{_CRASHED} Retry pending approval from you.", []),
         (f"{_CRASHED} Status: retrying stopped.", []),
         (f"{_CRASHED} Nothing more will happen, not this time.", ["the-reply-says-it-is-being-retried"]),
-        # A pod's restart limit, not the card's retries:
+        # A limit named for something other than the card's retries:
         (f"{_CRASHED} It has hit its restart limit.", ["the-reply-says-it-is-being-retried"]),
+        # An except-clause followed by a trailing aside:
+        (f"{_CRASHED} Crashed cards usually get another go, except this one, sadly.", []),
         # An offer of a card that does the retry:
         (f"{_CRASHED} It's being retried. Want a card that retries the pod?", []),
         # A cancelled-retry clause that is not a denial:
