@@ -44,3 +44,5 @@ agent-kanban-smoke
 # answers it. Returns to the lane when the door routes through the chat
 # profile.
 chat-voice-retry-says-it-is-retried
+# #2039: the same for the wake a card sends on its last attempt.
+chat-voice-final-attempt-is-not-retried

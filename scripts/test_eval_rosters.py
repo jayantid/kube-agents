@@ -147,6 +147,7 @@ ADDED_AFTER_THE_MOVE = [
     "chat-voice-ack-names-target",  # the front door's delegation ack
     "bootstrap-inventory-ranking-delivery",  # the onboarding prioritization stage, #2143
     "chat-voice-retry-says-it-is-retried",  # the front door's reply to a crashed card
+    "chat-voice-final-attempt-is-not-retried",  # the front door's reply to a card's last attempt
 ]
 
 # Admitted after the split, each by a pull request that cited the record
@@ -332,12 +333,14 @@ class SplitLostNothingTest(unittest.TestCase):
 INJECT_LANE_EXCLUDED = [
     "agent-kanban-smoke",  # #2039: grades kanban_create by the front door; the inject door addresses platform directly
     "chat-voice-retry-says-it-is-retried",  # #2039: grades the front door's reply to a crashed card's wake; the inject door addresses platform directly
+    "chat-voice-final-attempt-is-not-retried",  # the same for a card's last-attempt wake
 ]
 # Each exclusion's api-lane tier, pinned beside it: an entry is not a
 # demotion, so a case that leaves its tier's file while still excluded reds.
 INJECT_LANE_EXCLUDED_TIER = {
     "agent-kanban-smoke": "presubmit",
     "chat-voice-retry-says-it-is-retried": "nightly",
+    "chat-voice-final-attempt-is-not-retried": "nightly",
 }
 
 
