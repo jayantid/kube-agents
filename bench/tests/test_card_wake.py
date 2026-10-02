@@ -50,6 +50,7 @@ needs_moments = pytest.mark.skipif(
 
 _FAKE_KANBAN_DB = '''
 import json, os
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 DEFAULT_BOARD = "default"
@@ -69,11 +70,18 @@ def _save(state):
         json.dump(state, fh)
 
 
-def create_task(conn, *, title, body=None, created_by=None):
+@dataclass
+class Task:
+    id: str
+    title: str
+    assignee: object
+
+
+def create_task(conn, *, title, body=None, created_by=None, max_retries=None):
     state = _load()
     task_id = "t_%08d" % (len(state["tasks"]) + 1)
     state["tasks"][task_id] = {"title": title, "body": body, "created_by": created_by,
-                               "status": "ready", "assignee": None}
+                               "status": "ready", "assignee": None, "max_retries": max_retries}
     _save(state)
     return task_id
 
@@ -102,7 +110,7 @@ def list_events(conn, task_id):
 
 def get_task(conn, task_id):
     row = _load()["tasks"][task_id]
-    return SimpleNamespace(id=task_id, title=row["title"], assignee=row["assignee"])
+    return Task(id=task_id, title=row["title"], assignee=row["assignee"])
 
 
 def archive_task(conn, task_id):
@@ -405,6 +413,7 @@ def test_a_blocked_failure_wakes_through_the_api_server_with_the_card_assigned(
     assert card["status"] == "blocked"
     assert card["body"] == "Roll the checkout-gateway Deployment on seeded-a."
     assert card["assignee"] == card_wake.FAILURE_ASSIGNEE
+    assert card["max_retries"] is None
     # Blocked first, assigned after, so the dispatcher never sees it ready.
     assert [e["kind"] for e in board["events"]] == ["blocked", "assigned"]
     assert board["events"][0]["payload"] == {"reason": FAILURE_REASON, "kind": None}
@@ -418,9 +427,17 @@ def test_a_gave_up_failure_trips_the_breaker_with_the_reason_as_its_error(
 
     planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
 
-    assert planted.wake.startswith(f"[kanban] Task {planted.card} gave up (retries exhausted).\n")
+    assert planted.wake == (
+        f"[kanban] Task {planted.card} gave up (retries exhausted).\n"
+        f"Assignee: @{card_wake.FAILURE_ASSIGNEE}\nVia: api_server"
+    )
     board = _board(tmp_path)
-    assert [e["kind"] for e in board["events"]] == ["gave_up", "assigned"]
+    # Never assigned, and one failure is its limit: assigning would reset the
+    # failure count and let recompute_ready hand it to a real worker.
+    card = board["tasks"][planted.card]
+    assert card["assignee"] is None
+    assert card["max_retries"] == 1
+    assert [e["kind"] for e in board["events"]] == ["gave_up"]
     assert board["events"][0]["payload"] == {
         "error": FAILURE_REASON,
         "trigger_outcome": "crashed",
