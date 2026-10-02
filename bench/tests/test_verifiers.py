@@ -3698,6 +3698,32 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried automatically, so I don't recommend retrying it manually.",
                 "It's being retried. Nothing needs a manual rerun.",
                 "It's being retried. There isn't anything to retry by hand.",
+                "It's being retried. It isn't retrying forever though — there's a failure limit.",
+                "It's being retried. It won't retry forever; there's a cap.",
+                "It's being retried. It won't be retried indefinitely, there's a limit.",
+                "It's being retried. You might notice it requeued on the board.",
+                "It's being retried; you could see it retrying on the board shortly.",
+                "It's being retried. I'll tell you about the retry if you want.",
+                "It's being retried. Ping me about the retry if you want details.",
+                "It's being retried. Happy to post the outcome of the retry if you want.",
+                "It's being retried automatically, rather than you retrying it by hand.",
+                "It's being retried. Nothing has to be rerun by you.",
+                "It's being retried; the card doesn't need re-running by hand.",
+                "It's being retried automatically, your call on whether to wait for it or not.",
+                "It's being retried, so it's your call whether to wait or move on.",
+                "It's being retried. Want me to dig into exit 137 while the card retries?",
+                "It's being retried. Should I bump the memory limit so it doesn't OOM again on retry?",
+                "It's being retried. Would you like retry status pings?",
+                "It's being retried. Just ask while it reruns.",
+                "The retry's underway.",
+                "The retry's queued.",
+                "A retry is scheduled.",
+                "A retry has been scheduled automatically.",
+                "A retry is on its way.",
+                "Retry pending.",
+                "Status: retrying.",
+                "The dispatcher retries automatically, so there's nothing to do.",
+                "The dispatcher retries failed workers automatically.",
             )
         ),
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
@@ -4036,6 +4062,23 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             f"{_CRASHED} It's being retried, but it needs a manual rerun as well.",
             ["the-reply-does-not-call-it-final"],
         ),
+        # A retry noun stated as queued or scheduled is denied by "no" before it.
+        *(
+            (f"{_CRASHED} {denial}", ["the-reply-does-not-call-it-final"])
+            for denial in (
+                "No retry is queued.",
+                "No retry is pending.",
+                "No retry is scheduled.",
+                "No retry has been scheduled.",
+                "No retry pending.",
+                "The dispatcher no longer retries it.",
+                "The dispatcher never retries crashed cards.",
+            )
+        ),
+        (
+            f"{_CRASHED} A retry isn't scheduled.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+        ),
         (
             f"{_CRASHED} It's not set to be retried.",
             ["the-reply-does-not-call-it-final"],
@@ -4124,6 +4167,44 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
 
 
 @pytest.mark.parametrize(
+    "final_message, missed",
+    [
+        # Known gaps, named in the case's comments and EVAL-PLAN.md. Each row
+        # records today's verdict, so a fix that flips one fails here and the
+        # row moves to the pass or fail list. Correct replies the checks red:
+        *(
+            (f"{_CRASHED} {reply}", ["the-reply-does-not-call-it-final"])
+            for reply in (
+                "It's being retried. It's not something you should rerun.",
+                "It's being retried. None of this is something you need to retry.",
+                "It's back in the queue; it isn't running again until a worker frees up.",
+                "It's queued for retry but hasn't begun retrying.",
+                "It'll retry on its own; digging in is your call.",
+                "It's being retried; if you'd rather not wait, up to you.",
+                "It'll be retried, with your approval needed only for the memory bump.",
+                "It's being retried; I haven't started another run.",
+            )
+        ),
+        # Retry wording outside the fact list:
+        *(
+            (f"{_CRASHED} {reply}", ["the-reply-says-it-is-being-retried"])
+            for reply in (
+                "It'll be attempted again automatically.",
+                "The dispatcher will restart it.",
+                "A fresh worker will pick it up shortly.",
+                "It gets a second attempt automatically.",
+                "It goes back to ready and runs again.",
+            )
+        ),
+        # A denial the checks pass:
+        (f"{_CRASHED} The dispatcher retries automatically, but not this time.", []),
+    ],
+)
+def test_the_retry_objectives_known_gaps(final_message, missed):
+    assert _report_misses(_RETRY_CASE, final_message) == missed
+
+
+@pytest.mark.parametrize(
     "final_message",
     [
         "a: " * 5000,
@@ -4132,16 +4213,32 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
         ("won't retry " * 1700)[:20000] + " yet",
         ("file a " * 6000)[:40000],
         ("want retry " * 4000)[:40000],
+        (", so want me to retry it " * 700)[:15000] + "?",
+        (
+            "Last State: Terminated\n  Reason: OOMKilled\n  Exit Code: 137\n"
+            "  Started: Thu, 01 Oct 2026 10:00:00 +0000\n  Restart Count: 4\n"
+            "  Message: retry: back-off 5m0s restarting failed container\n" * 150
+        )[:20000],
     ],
-    ids=["colons", "offer-colons", "kubelet-fields", "denials-then-yet", "offer-verbs", "offer-wants"],
+    ids=[
+        "colons",
+        "offer-colons",
+        "kubelet-fields",
+        "denials-then-yet",
+        "offer-verbs",
+        "offer-wants",
+        "offer-clauses",
+        "describe-log",
+    ],
 )
 def test_the_retry_objectives_are_linear_on_a_long_line(final_message):
-    # One 15-40k character line with a segment boundary or a retry word every
-    # few words: a scan that restarts at each ": " or each retry word and runs
-    # to the end of the line took seconds, ten and more at a colon.
+    # 15-40k characters with a segment boundary, a clause or a retry word
+    # every few words: a scan that restarts at each one and runs to the end
+    # of the line took seconds, ten and more at a colon. The offer patterns'
+    # 200-character tail is a second bound, not what keeps these linear.
     began = time.monotonic()
     _report_misses(_RETRY_CASE, final_message)
-    assert time.monotonic() - began < 1.0
+    assert time.monotonic() - began < 0.5
 
 
 def test_the_retry_case_fences_new_work_and_the_worker_verbs():
