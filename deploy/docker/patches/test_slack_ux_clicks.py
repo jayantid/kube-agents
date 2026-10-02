@@ -605,6 +605,45 @@ class RuntimeTest(unittest.TestCase):
         _update, _echo, turn = self._card_click("Fix the first one: ~Do not~  drain node-pool-a", row="Do not drain node-pool-a")
         self.assertEqual(turn["text"], "Fix the first one: Do not drain node-pool-a")
 
+    def test_a_line_with_struck_text_sends_the_label(self):
+        # The turn carries a line as plain text, so a struck "Do not" would reach the agent unstruck.
+        struck = [{"type": "text", "text": "Do not", "style": {"strike": True}}, {"type": "text", "text": " drain node-pool-a"}]
+        row = [{"type": "text", "text": "critical", "style": {"code": True}}] + struck
+        for elements, value in (
+            (struck, "Fix the first one: Do not drain node-pool-a"),
+            (struck, "Fix the first one: drain node-pool-a"),
+            (row, "Fix the first one: Do not drain node-pool-a"),
+        ):
+            with self.subTest(value=value, elements=elements):
+                runtime._answered.clear()
+                _update, _echo, turn = self._card_click(value, elements=elements)
+                self.assertEqual(turn["text"], "Fix the first one")
+
+    def test_a_line_holding_an_element_with_no_text_sends_the_label(self):
+        # A mention, an emoji or a bare link shows something its text does not hold; joining the rest drops it.
+        for element, value in (
+            ({"type": "user", "user_id": "U9"}, "Fix the first one: Page  before draining"),
+            ({"type": "channel", "channel_id": "C9"}, "Fix the first one: Page  before draining"),
+            ({"type": "emoji", "name": "no_entry"}, "Fix the first one: Page  before draining"),
+            ({"type": "link", "url": "https://x/keep"}, "Fix the first one: Page  before draining"),
+        ):
+            elements = [{"type": "text", "text": "Page "}, element, {"type": "text", "text": " before draining"}]
+            with self.subTest(element=element):
+                runtime._answered.clear()
+                _update, _echo, turn = self._card_click(value, elements=elements)
+                self.assertEqual(turn["text"], "Fix the first one")
+
+    def test_struck_or_textless_elements_leave_the_other_lines_matchable(self):
+        elements = [
+            {"type": "text", "text": "Pods admit privileged containers"},
+            {"type": "link", "url": "https://x/runbook", "text": " (runbook)"},
+            {"type": "text", "text": "\n"},
+            {"type": "text", "text": "old note", "style": {"strike": True}},
+            {"type": "user", "user_id": "U9"},
+        ]
+        _update, _echo, turn = self._card_click("Fix the first one: Pods admit privileged containers (runbook)", elements=elements)
+        self.assertEqual(turn["text"], "Fix the first one: Pods admit privileged containers (runbook)")
+
     def test_a_cards_question_with_a_value_names_both_the_finding_and_the_card(self):
         moments = SimpleNamespace(question_card=lambda channel, ts: "t_e0c1" if (channel, ts) == (CHANNEL, MESSAGE_TS) else None)
         with mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_moments=moments), "gateway.slack_ux_moments": moments}):

@@ -232,12 +232,32 @@ def _shown_text(action: dict) -> str:
     return str(text.get("text") or "").strip() if isinstance(text, dict) else ""
 
 
+def _section_lines(elements: list[dict]) -> list[str | None]:
+    """Each line ``elements`` show, their text joined; None for a line the joined text misrepresents.
+
+    That is a line holding struck text, which a turn would carry unstruck, or
+    an element with no text (a mention, an emoji, a bare link), which Slack
+    shows and the join drops.
+    """
+    lines: list[str | None] = [""]
+    for element in elements:
+        text, style = element.get("text"), element.get("style")
+        opaque = not isinstance(text, str) or (isinstance(style, dict) and bool(style.get("strike")))
+        for i, part in enumerate(str(text or "").split("\n")):
+            if i:
+                lines.append("")
+            lines[-1] = None if opaque or lines[-1] is None else lines[-1] + part
+    return lines
+
+
 def _shown_lines(blocks: Any) -> list[str]:
     """Each line the rich_text in ``blocks`` shows, its elements' text joined.
 
     A section led by a severity as inline code (a row's) also gives its first
     line without it, since a row's button value leaves the severity out. Only
-    a severity: any other leading code span stays part of the line.
+    a severity: any other leading code span stays part of the line. A line
+    holding struck text or an element with no text is left out, so a value
+    naming it sends the label.
     """
     lines: list[str] = []
     for block in blocks or ():
@@ -246,11 +266,12 @@ def _shown_lines(blocks: Any) -> list[str]:
         for section in block.get("elements") or ():
             raw = (section or {}).get("elements") or () if isinstance(section, dict) else ()
             elements = [e for e in raw if isinstance(e, dict)]
-            lines.extend("".join(str(e.get("text") or "") for e in elements).split("\n"))
+            lines.extend(line for line in _section_lines(elements) if line is not None)
             style = elements[0].get("style") if elements else None
-            rest = "".join(str(e.get("text") or "") for e in elements[1:])
             if isinstance(style, dict) and style.get("code") and str(elements[0].get("text") or "").strip().lower() in ROW_SEVERITIES:
-                lines.append(rest.split("\n")[0])
+                first = _section_lines(elements[1:])[0]
+                if first is not None:
+                    lines.append(first)
     return lines
 
 
