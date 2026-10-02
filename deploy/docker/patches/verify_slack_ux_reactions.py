@@ -19,7 +19,8 @@ Three things are checked:
    ``_reacting_message_ids`` as a set, ``_reactions_enabled()``, and
    ``_track_reacting_message(team_id, ts)``. And what the runtime reads to
    tell an admitted inbound message from the rest: ``_build_message_event``
-   passes the Slack event as ``raw_message`` and its ts as ``message_id``, and
+   passes the Slack event as ``raw_message`` and its ts as ``message_id``,
+   ``_handle_slack_message_impl`` hands it that event's own ``ts``, and
    ``_synthetic_reaction_event`` marks a reaction trigger with the key the
    runtime skips.
 2. The board read. The runtime's own kanban query runs against real boards
@@ -30,9 +31,9 @@ Three things are checked:
    Hermes copies onto it, with that card as its creator.
 3. The runtime module, loaded by path from ``gateway/`` and driven with a stub
    adapter: flag off it is inert; flag on, an ask gets the arrival reaction for
-   its kind, an admitted one upstream did not track included, while a
-   reaction trigger gets none, a direct answer settles at once, a delegated one waits for the
-   notifier, and no call anywhere is a removal.
+   its kind, a direct answer settles at once, a delegated one waits for the
+   notifier, and no call anywhere is a removal. An admitted ask upstream did
+   not track is reacted to the same way; a reaction trigger is not.
 
 Every failure here is silent in production — a reaction the runtime never
 attempts raises and logs nothing — so the build is where it is caught.
@@ -78,6 +79,10 @@ TRACK_POSITIONAL = ("team_id", "ts")
 #: the runtime reads to know it for one: the Slack event, and that event's ts.
 BUILD_EVENT = "_build_message_event"
 BUILD_EVENT_KEYWORDS = {"raw_message": "event", "message_id": "ts"}
+#: Where upstream calls ``_build_message_event`` for an inbound message, and
+#: the Slack event's key it reads the ``ts`` it passes from.
+INBOUND_HANDLER = "_handle_slack_message_impl"
+EVENT_TS_KEY = "ts"
 SYNTHETIC_REACTION = "_synthetic_reaction_event"
 #: The runtime's ``FORCED_EVENT_KEY``.
 FORCED_EVENT_KEY = "_hermes_force_process"
@@ -243,6 +248,29 @@ def _check_inbound(adapter: ast.ClassDef) -> None:
     passed = {k.arg: k.value.id for k in calls[0].keywords if isinstance(k.value, ast.Name)}
     if any(passed.get(key) != name for key, name in BUILD_EVENT_KEYWORDS.items()):
         raise _fail(f"{BUILD_EVENT}() no longer passes {BUILD_EVENT_KEYWORDS} to MessageEvent: {passed}")
+    handler = _method(adapter, INBOUND_HANDLER)
+    builds = [
+        node for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == BUILD_EVENT
+    ]
+    ts_args = [
+        k.value.id for call in builds for k in call.keywords
+        if k.arg == BUILD_EVENT_KEYWORDS["message_id"] and isinstance(k.value, ast.Name)
+    ]
+    if len(builds) != 1 or len(ts_args) != 1:
+        raise _fail(f"{INBOUND_HANDLER}() no longer calls {BUILD_EVENT}() once with ts=<name>")
+    sources = [
+        node.value for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(tg, ast.Name) and tg.id == ts_args[0] for tg in node.targets)
+    ]
+    if not sources or not all(
+        isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "get"
+        and isinstance(v.func.value, ast.Name) and v.func.value.id == BUILD_EVENT_KEYWORDS["raw_message"]
+        and v.args and isinstance(v.args[0], ast.Constant) and v.args[0].value == EVENT_TS_KEY
+        for v in sources
+    ):
+        raise _fail(f"{INBOUND_HANDLER}() no longer takes the ts it builds with from event.get({EVENT_TS_KEY!r})")
     synthetic = _method(adapter, SYNTHETIC_REACTION)
     keys = {
         key.value for node in ast.walk(synthetic) if isinstance(node, ast.Dict)

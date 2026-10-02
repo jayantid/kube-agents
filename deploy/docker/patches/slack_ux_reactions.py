@@ -22,14 +22,16 @@ turn ends. Two things go wrong in a kube-agents install:
 
 With the flag on:
 
-* Every ask the channel gate admits is reacted to. Upstream reacts only to a
-  1:1 DM or a message that @mentions the bot, so a thread reply admitted
-  without a mention got nothing; this module tracks it itself when its turn
-  starts (:func:`_admitted_target`).
+* Every ask the channel gate admits is reacted to when its turn starts.
+  Upstream reacts only to a 1:1 DM or a message that @mentions the bot, so a
+  thread reply admitted without a mention got nothing; this module tracks it
+  itself (:func:`_admitted_target`). Messages Hermes folds into one turn
+  still get one reaction set between them, or none for a queue-mode burst.
 * The arrival reaction says what kind of ask this is, chosen from its words
   before any model call (``slack_presenter.arrival_reaction``): 👀 a question
   or check, 🛠️ a change, 📋 the board, 🚨 an incident.
-* Nothing is ever removed.
+* Nothing is ever removed, and ⏸️ goes on an ask once, however many of its
+  cards block.
 * A turn that answered directly settles at once: ✅, or ❌ on failure. A
   cancelled turn adds nothing.
 * A turn that put new cards on the board, subscribed to this thread, defers
@@ -183,13 +185,16 @@ class _Turn:
 class _Ask:
     """A Slack ask whose settle waits on the cards its turn opened, as ``(board, id)``."""
 
-    __slots__ = ("cards", "failed", "team_id", "ts")
+    __slots__ = ("cards", "failed", "paused", "team_id", "ts")
 
     def __init__(self, ts: str, team_id: Any, cards: set, failed: bool = False) -> None:
         self.ts = ts
         self.team_id = team_id
         self.cards = cards
         self.failed = failed
+        #: Whether ⏸️ is on the ask already: a second add fails as already
+        #: reacted, which would log a warning for a reaction that is there.
+        self.paused = False
 
 
 _started: OrderedDict[Any, _Turn] = OrderedDict()
@@ -341,6 +346,15 @@ async def _add_reaction(adapter: Any, channel: str, ts: str, emoji: str, team_id
         )
 
 
+async def _pause(adapter: Any, channel: str, asks: list) -> None:
+    """Put ⏸️ on each of ``asks`` that does not carry it yet."""
+    blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
+    for ask in asks:
+        if not ask.paused:
+            ask.paused = True
+            await _add_reaction(adapter, channel, ask.ts, blocked, ask.team_id)
+
+
 def _where(event: Any) -> tuple[str | None, str]:
     source = getattr(event, "source", None)
     return getattr(source, "chat_id", None), str(getattr(source, "thread_id", "") or "")
@@ -412,7 +426,8 @@ async def on_processing_complete(adapter: Any, event: Any, outcome: Any) -> None
         # later complete do not undo an ask whose turn raised.
         failed = settle == _presenter.SETTLE_FAILED or any(turn.finished.get(card, False) for card in new)
         if waiting:
-            asks = [*_deferred.get((chat_id, thread_id), []), _Ask(ts, team_id, waiting, failed)]
+            ask = _Ask(ts, team_id, waiting, failed)
+            asks = [*_deferred.get((chat_id, thread_id), []), ask]
             if len(asks) > DEFERRED_PER_THREAD:
                 logger.debug(
                     "slack_ux_reactions: %s/%s has %d asks waiting; dropping the oldest, which will not settle",
@@ -422,6 +437,7 @@ async def on_processing_complete(adapter: Any, event: Any, outcome: Any) -> None
             # A pause the turn also saw resumed would put ⏸️ on nothing that waits.
             paused = {card for card in waiting & turn.paused if card in after}
             if any(after[card].status not in RESUMED_STATUSES for card in paused):
+                ask.paused = True
                 blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
                 await _add_reaction(adapter, chat_id, ts, blocked, team_id)
             return
@@ -476,8 +492,7 @@ async def settle_delegated(adapter: Any, sub: dict, kind: str, board: str | None
     if not asks or not hasattr(adapter, "_react"):
         return
     if provisional:
-        for ask in asks:
-            await _add_reaction(adapter, key[0], ask.ts, _presenter.settle_reaction(settle), ask.team_id)
+        await _pause(adapter, key[0], asks)
         return
     follow_ups = {}
     if settle == _presenter.SETTLE_DONE:
@@ -503,9 +518,7 @@ async def settle_delegated(adapter: Any, sub: dict, kind: str, board: str | None
         else:
             _deferred.pop(key, None)
     if waits_on_user:
-        blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
-        for ask in asks:
-            await _add_reaction(adapter, key[0], ask.ts, blocked, ask.team_id)
+        await _pause(adapter, key[0], asks)
     for ask in settled:
         outcome = _presenter.SETTLE_FAILED if ask.failed else _presenter.SETTLE_DONE
         await _add_reaction(adapter, key[0], ask.ts, _presenter.settle_reaction(outcome), ask.team_id)

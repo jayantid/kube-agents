@@ -59,6 +59,10 @@ class SlackAdapter:
     async def _build_message_event(self, event, *, ts):
         return MessageEvent(text=event.get("text", ""), raw_message=event, message_id=ts)
 
+    async def _handle_slack_message_impl(self, event):
+        ts = event.get("ts", "")
+        await self.handle_message(await self._build_message_event(event, ts=ts))
+
     def _synthetic_reaction_event(self, event, action, thread_ts, team_id):
         return {"type": "message", "ts": event.get("event_ts"), "_hermes_force_process": True}
 
@@ -205,6 +209,8 @@ class ApplierTest(unittest.TestCase):
             "raw message": ("raw_message=event, message_id=ts", "raw_message=None, message_id=ts"),
             "message id": ("raw_message=event, message_id=ts", "raw_message=event, message_id=None"),
             "forced key": ('"_hermes_force_process": True', '"_hermes_forced": True'),
+            "inbound ts source": ('ts = event.get("ts", "")', 'ts = event.get("event_ts", "")'),
+            "inbound ts passed": ("_build_message_event(event, ts=ts)", "_build_message_event(event, ts=None)"),
         }
         for name, (old, new) in drifts.items():
             with self.subTest(drift=name):
@@ -434,6 +440,14 @@ class RuntimeTest(unittest.TestCase):
         with self.assertLogs(runtime.logger, "WARNING") as logged:
             _run(runtime.on_processing_start(adapter, _event("fix it")))
         self.assertIn("hammer_and_wrench", logged.output[0])
+
+    def test_a_second_block_does_not_add_the_pause_again(self):
+        # Slack refuses a repeat as already_reacted, which would warn for a reaction that is there.
+        adapter = self._turn("fix it", {}, _cards("t_a", "t_b"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_b"), "blocked"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("double_vertical_bar", False)])
 
     def test_the_forced_key_is_the_one_the_verifier_pins(self):
         self.assertEqual(runtime.FORCED_EVENT_KEY, verifier.FORCED_EVENT_KEY)
