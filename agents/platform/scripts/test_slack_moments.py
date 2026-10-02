@@ -185,6 +185,13 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(blocks[0]["text"], {"type": "mrkdwn", "text": "*Restart the prod pods in web?*"})
         self.assertEqual(text.split("\n")[0], "*Restart the prod pods in web?*")
 
+    def test_a_marker_inside_a_word_keeps_the_headline_bold(self):
+        # Slack reads neither as markup, and the fallback keeps both bold too.
+        for reason, title in (("Which node_pool should I drain?", "Which node_pool should I drain?"), ("Scale to 2*3 replicas?", "Scale to 2*3 replicas?")):
+            blocks, text = m.needs_you(reason + "\n- Yes\n- No")
+            self.assertEqual(blocks[0]["text"], {"type": "mrkdwn", "text": f"*{title}*"}, reason)
+            self.assertEqual(text.split("\n")[0], f"*{title}*", reason)
+
     def test_a_list_after_the_question_is_not_choices(self):
         reason = "Should I restart it?\nI found:\n- pod a is OOMKilled\n- pod b is Pending"
         blocks, _ = m.needs_you(reason)
@@ -216,6 +223,11 @@ class NeedsYouTest(unittest.TestCase):
         self.assertEqual(blocks[0]["text"]["text"], "*Which cluster?*")
         self.assertEqual(_contexts(blocks), [m.WAITING])
         self.assertIsNone(m.needs_you("```\n**"))
+
+    def test_a_fence_opener_with_a_language_does_not_head_the_question(self):
+        blocks, _ = m.needs_you("```bash\nWhich namespace?\n- default\n- prod")
+        self.assertEqual(blocks[0]["text"]["text"], "*Which namespace?*")
+        self.assertEqual([b["value"] for b in _buttons(blocks)], ["default", "prod"])
 
     def test_no_buttons_keeps_the_options_in_the_text(self):
         reason = "Which checkout-gateway did you mean?\n- seeded-reliability\n- seeded-debug"
