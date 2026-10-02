@@ -4560,8 +4560,10 @@ _SAYS_STOPPED = "the-reply-says-it-stopped"
         "It timed out again and nothing is retrying it. Want me to run it again?",
         "It timed out on every attempt, so it won't rerun. Run it again with more time?",
         "It timed out and won't be tried again. Retry it with a narrower scope?",
-        # The first person is a promise, not the card's state; the last safeguard grades the act:
-        "It stopped. I'll retry it.",
+        # A first-person offer:
+        "It stopped. I'll retry it if you ask.",
+        "It stopped. If you like, I'll try again.",
+        "It stopped. I can rerun it.",
     ],
 )
 def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_message):
@@ -4590,6 +4592,13 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
         ("It stopped, but it'll be retried if you leave it.", [_SAYS_RETRIED]),
         # A "tell me and" covers only its own clause:
         ("It stopped. Tell me and I'll check; meanwhile it will try again.", [_SAYS_RETRIED]),
+        # A retry promised in the first person is still a retry to come:
+        ("It stopped. I'll retry it.", [_SAYS_RETRIED]),
+        ("It stopped, so I’ll try again.", [_SAYS_RETRIED]),
+        ("It stopped. I'll rerun it now.", [_SAYS_RETRIED]),
+        ("It stopped; we'll retry it shortly.", [_SAYS_RETRIED]),
+        ("It stopped. I'm going to retry it.", [_SAYS_RETRIED]),
+        ("It stopped. I will run it again.", [_SAYS_RETRIED]),
         ("It timed out twice.", [_SAYS_STOPPED]),
     ],
 )
