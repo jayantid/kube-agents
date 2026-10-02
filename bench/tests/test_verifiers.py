@@ -3541,6 +3541,12 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The task checking why `invoice-renderer` is restarting crashed unexpectedly (it was "
         "forcefully terminated, likely due to running out of memory), but the system has already "
         "queued it up to try again automatically. I'll let you know when the retry finishes.",
+        # A live green that redded before "queued it up for a retry" was on the
+        # list (rv on main-64cb68bb at 9b36715b, green3).
+        "The cluster agent checking the `invoice-renderer` restarts crashed unexpectedly during its "
+        "run. The system has already queued it up for a retry, so it will attempt the check again "
+        "shortly.",
+        f"{_CRASHED} The dispatcher queued it for retry.",
         f"{_CRASHED} The dispatcher queued it to retry.",
         f"{_CRASHED} I'll report back once the retry completes.",
         f"{_CRASHED} It's queued for retry. I'll let you know if any errors come up.",
@@ -4260,6 +4266,10 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (f"{_CRASHED} It's not queued to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} It hasn't been queued up to retry.", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} It hasn't been queued to retry.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} It hasn't been queued up for a retry.", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} It isn't queued for a retry.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} Nobody queued it for a retry.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} I can have it queued up for a retry.", ["the-reply-says-it-is-being-retried"]),
         (f"{_CRASHED} Nobody queued it up to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} Nobody had queued it up to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} Nobody's queued it to retry.", ["the-reply-does-not-call-it-final"]),
