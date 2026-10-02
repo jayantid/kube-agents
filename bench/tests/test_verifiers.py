@@ -57,6 +57,7 @@ from kube_agents_bench.verifiers import (
     LedgerIssueContainsVerifier,
     PullRequestOpenedVerifier,
     ReplayCardVerifier,
+    ReplyIsSilentVerifier,
     ReportContainsVerifier,
     ToolCalledVerifier,
 )
@@ -3570,49 +3571,51 @@ def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
     assert not _ack_voice_hits(final_message), final_message
 
 
-_SILENT_CASE = TASKS / "chat-question-wake-stays-silent" / "task.yaml"
-# hermes-agent v2026.9.14 gateway/response_filters.py LIVE_GATEWAY_SILENT_MARKERS:
-# a reply that is one of these, case-insensitively and with edge punctuation
-# stripped, is never sent. Bump with the image's hermes pin.
-_GATEWAY_SILENT_MARKERS = ("[SILENT]", "SILENT", "NO_REPLY", "NO REPLY")
+
+# Hermes v2026.9.14 is_intentional_silence_response's verdicts on each reply,
+# taken from the real function (gateway/response_filters.py).
+_GATEWAY_SUPPRESSES = [
+    "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY", "no_reply", "NO_REPLY\n", "**SILENT**", "*NO_REPLY*",
+    '"SILENT"', "'NO_REPLY'", "(SILENT)", "\u201cSILENT\u201d", "\u2014SILENT\u2014", "\u2013 SILENT",
+    "SILENT\u2026", "...SILENT...", ". SILENT .", "#SILENT", "/SILENT", "@SILENT", "&SILENT", "SILENT%",
+    "NO\nREPLY", "NO  REPLY!", "silent.", "[SILENT].", ".[SILENT]", "- SILENT", "Silent", " SILENT",
+    "\uff0aSILENT\uff0a", "\u00a1SILENT!", "\u00bfSILENT?", "_SILENT_", "\u00a0SILENT", "SILENT\r\n",
+    "SILENT" + " " * 70,
+]
+_GATEWAY_POSTS = [
+    "", "  \n", "`[SILENT]`", "`SILENT`", "`NO_REPLY`", "```\nSILENT\n```", "[ SILENT ]", "[silent ]",
+    "[SILENT", "\U0001f515 SILENT", "SILENT \U0001f92b", "NOREPLY", "noreply", "SI_LENT", "NO*REPLY",
+    "N_O REPLY", ". . SILENT", "> SILENT", "SILENT\n\nok", "[SILENT] ok", "SILENT\u200b", "~SILENT~",
+    "+SILENT+", "<SILENT>", "x" * 70 + " SILENT", "Which should I look at: seeded-a or seeded-b?",
+]
 
 
-def _silence_verdict(reply: str) -> str:
-    spec = yaml.safe_load(_SILENT_CASE.read_text())
-    entries = [e for e in spec["verification_spec"] if e["name"] == "the-wake-reply-is-silent"]
-    assert len(entries) == 1, _SILENT_CASE
-    check = {k: v for k, v in entries[0]["check"].items() if k != "type"}
+def _silent(reply: str):
     transcript.set(reply, [], final_message=reply)
-    return ReportContainsVerifier(type="report_contains", **check).verify(5).status
+    return ReplyIsSilentVerifier(type="reply_is_silent").verify(5)
 
 
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "",
-        "  \n",
-        *_GATEWAY_SILENT_MARKERS,
-        *(m.lower() for m in _GATEWAY_SILENT_MARKERS),
-        *(f"{m}." for m in _GATEWAY_SILENT_MARKERS),
-        "*NO_REPLY*",
-        "`[SILENT]`",
-        "  silent  ",
-        "NO  REPLY!",
-    ],
-)
-def test_the_question_wake_case_accepts_every_gateway_silent_marker(reply):
-    assert _silence_verdict(reply) == "pass", repr(reply)
+@pytest.mark.parametrize("reply", _GATEWAY_SUPPRESSES)
+def test_reply_is_silent_passes_what_the_gateway_suppresses(reply):
+    assert _silent(reply).success, repr(reply)
 
 
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "[SILENT] ok",
-        "silent please",
-        "Which should I look at: seeded-a or seeded-b?",
-        "the platform agent asked which cluster to check.",
-        "no",
-    ],
-)
-def test_the_question_wake_case_fails_anything_else(reply):
-    assert _silence_verdict(reply) == "fail", repr(reply)
+@pytest.mark.parametrize("reply", _GATEWAY_POSTS)
+def test_reply_is_silent_fails_what_the_gateway_posts(reply):
+    res = _silent(reply)
+    assert not res.success and res.status != "error", repr(reply)
+
+
+def test_reply_is_silent_reads_the_final_message_not_the_output():
+    transcript.set("Which cluster?", [], final_message="[SILENT]")
+    assert ReplyIsSilentVerifier(type="reply_is_silent").verify(5).success
+
+
+def test_reply_is_silent_without_a_transcript_is_an_error():
+    assert ReplyIsSilentVerifier(type="reply_is_silent").verify(5).status == "error"
+
+
+def test_the_question_wake_case_grades_silence_with_the_gateway_predicate():
+    spec = yaml.safe_load((TASKS / "chat-question-wake-stays-silent" / "task.yaml").read_text())
+    entries = [e for e in spec["verification_spec"] if e["name"] == "the-wake-reply-is-silent"]
+    assert [e["check"] for e in entries] == [{"type": "reply_is_silent"}]

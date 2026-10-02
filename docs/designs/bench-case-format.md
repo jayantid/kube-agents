@@ -185,8 +185,9 @@ case it runs), `worker_commands` (regular expressions over the terminal commands
 the delegated workers ran, read from each card's worker log before the harness
 purges it), `worker_agents` (regular expressions every one of which must match the
 profile at least one delegated worker ran as, read from the tags the harness puts on the
-workers' trajectory entries), and `replay_card` (the status and comments of the card a
-card-wake replay planted, read before the harness archives it).
+workers' trajectory entries), `replay_card` (the status and comments of the card a
+card-wake replay planted, read before the harness archives it), and `reply_is_silent`
+(whether the gateway would post the closing message at all, by its own silence rule).
 
 Four read the install under test, all from the same file. `bootstrap_fanout` compares the
 cards the onboarding discovery sweep filed, read from the agent pod's board, against the

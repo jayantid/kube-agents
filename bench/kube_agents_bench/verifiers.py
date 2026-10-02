@@ -66,7 +66,7 @@ from devops_bench.verification.base import (
 )
 from devops_bench.verification.verifiers import ResourcePropertyVerifier
 
-from kube_agents_bench import card_wake, discovery, github_writes, onboarding, transcript
+from kube_agents_bench import card_wake, discovery, gateway_silence, github_writes, onboarding, transcript
 from kube_agents_bench.fleet import (
     ROLE_PATTERN,
     FleetRoleUnresolved,
@@ -802,6 +802,49 @@ class ReplayCardVerifier(BaseVerifier):
             elapsed_time=time.monotonic() - start,
             reason=f"the replay's card ended {status!r} with {len(comments)} comment(s) matching",
         )
+
+
+# How much of a reply the gateway would post a failing reason quotes.
+_REPLY_QUOTE_CHARS = 200
+
+
+@VERIFIERS.register("reply_is_silent")
+class ReplyIsSilentVerifier(BaseVerifier):
+    """Passes when the gateway would post nothing for the run's closing message.
+
+    Grades the raw ``final_message`` with Hermes's own silence predicate
+    (:mod:`kube_agents_bench.gateway_silence`), not ``report_contains``'s
+    normalized text: that drops backticks, and the gateway posts a backticked
+    ``[SILENT]``. A blank reply fails, because the gateway posts an
+    empty-response warning for it.
+    """
+
+    type: Literal["reply_is_silent"]
+
+    def verify(self, timeout_sec: float) -> VerificationResult:
+        start = time.monotonic()
+        snap = transcript.get()
+        if snap is None:
+            return VerificationResult(
+                success=False,
+                status="error",
+                elapsed_time=time.monotonic() - start,
+                reason=_NO_TRANSCRIPT_REASON,
+            )
+        reply = snap.final_message
+        if gateway_silence.is_intentional_silence_response(reply):
+            return VerificationResult(
+                success=True,
+                elapsed_time=time.monotonic() - start,
+                reason=f"the gateway suppresses the reply {reply.strip()!r}",
+            )
+        posted = reply.strip()[:_REPLY_QUOTE_CHARS]
+        reason = (
+            f"the gateway would post the reply: {posted!r}"
+            if posted
+            else "the reply was blank, which the gateway posts as an empty-response warning"
+        )
+        return VerificationResult(success=False, elapsed_time=time.monotonic() - start, reason=reason)
 
 
 def _agent_shell(script: str, timeout: float) -> str:
