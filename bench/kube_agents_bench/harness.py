@@ -1652,7 +1652,7 @@ class KubeAgentsHarness(AgentHarness):
             settled = card_wake.archive(_agent_shell, planted.key, _EXEC_TIMEOUT)
             if settled is None:
                 _log.warning("card wake: card %s could not be read", planted.card)
-            if settled is None or not settled.archived:
+            elif not settled.archived:
                 _log.warning("card wake: card %s was not archived", planted.card)
         if wake_turn.errors:
             return wake_turn
