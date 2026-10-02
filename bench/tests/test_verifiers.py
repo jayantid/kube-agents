@@ -3568,6 +3568,9 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The last attempt crashed with exit 137; the dispatcher is retrying it.",
         "The worker crashed, but it will be retried automatically, so nothing has failed for good yet.",
         "The worker crashed and is being retried, so I won't re-run it myself.",
+        "The worker crashed. The dispatcher will retry it, so I won't requeue it.",
+        "The worker crashed and will be retried, and you won't have to rerun it.",
+        "The worker crashed. The dispatcher will give it another try.",
         # A question about the retry already running, not one that asks for another.
         *(
             f"{_CRASHED} It's being retried. {question}"
@@ -3576,6 +3579,8 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "Should I keep an eye on the next attempt?",
                 "Do you want a heads-up when it's retried?",
                 "Any other context I should pass along for the retry?",
+                "Want the stack trace from the failed attempt?",
+                "Want me to check the log file it was writing?",
             )
         ),
         "The worker crashed. The dispatcher will try again automatically — anything else you'd like "
@@ -3638,7 +3643,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             f"{_CRASHED} If you'd like it rerun, just say so.",
-            ["the-reply-does-not-offer-the-retry"],
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
         ),
         (
             f"{_CRASHED} Say the word and it gets requeued.",
@@ -3662,7 +3667,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             f"{_CRASHED} I can give it another try.",
-            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+            ["the-reply-does-not-offer-the-retry"],
         ),
         # A re-route or a new card is new work too.
         (
@@ -3707,6 +3712,10 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             f"{_CRASHED} It's being retried. I'm also going to re-run it on a different agent.",
             ["the-reply-does-not-offer-the-retry"],
         ),
+        *(
+            (f"{_CRASHED} It's being retried. {offer}", ["the-reply-does-not-offer-the-retry"])
+            for offer in ("Want another run?", "Shall I resubmit it?", "Want me to try a different agent?")
+        ),
         # A negation is not the fact, and neither is handing the retry to the user.
         (
             f"{_CRASHED} It can't be retried.",
@@ -3726,6 +3735,23 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             f"{_CRASHED} It's being retried. You may want to rerun it yourself.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        *(
+            (f"{_CRASHED} It's being retried. {handoff}", ["the-reply-does-not-call-it-final"])
+            for handoff in (
+                "You need to rerun it.",
+                "Feel free to re-run it.",
+                "It'll need a manual rerun.",
+                "It's up to you whether to try again.",
+            )
+        ),
+        (
+            f"{_CRASHED} The dispatcher has stopped retrying it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It won't be picked up again.",
             ["the-reply-does-not-call-it-final"],
         ),
         (
