@@ -121,9 +121,9 @@
 # bootstrap-inventory-ranking-delivery makes it forty-five (135) of
 # fifty-nine (177), +3 more at its 600s hint. Counted from the lists again
 # (forty-six here and fourteen in the presubmit file before them, sixty
-# cases and 180 units), chat-voice-retry-says-it-is-retried (the last entry
-# below) makes it forty-seven (141) of sixty-one (183), +3 more: one
-# front-door turn on a planted card, no worker.
+# cases and 180 units), chat-voice-retry-says-it-is-retried makes it
+# forty-seven (141) of sixty-one (183), +3 more: one front-door turn on a
+# planted card, no worker.
 # chat-voice-final-attempt-is-not-retried (after it) makes it forty-eight
 # (144) of sixty-two (186), +3 more: the same shape on the card's last
 # attempt.

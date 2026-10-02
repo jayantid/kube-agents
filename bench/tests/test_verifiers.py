@@ -4519,3 +4519,59 @@ def test_the_retry_case_fences_new_work_and_the_worker_verbs():
         "front-door-stays-out-of-the-worker-verbs": ["kanban_complete", "kanban_block", "kanban_heartbeat"],
         "front-door-starts-no-new-work": ["kanban_create", "kanban_unblock"],
     }
+
+
+_FINAL_CASE = TASKS / "chat-voice-final-attempt-is-not-retried" / "task.yaml"
+_GAVE_UP = "The worker checking invoice-renderer on bench-sandbox timed out on its last attempt and the dispatcher gave up."
+_SAYS_RETRIED = "the-reply-does-not-say-it-is-being-retried"
+_SAYS_STOPPED = "the-reply-says-it-stopped"
+
+
+@pytest.mark.parametrize(
+    "final_message",
+    [
+        f"{_GAVE_UP} Nothing will run it again unless you ask.",
+        "It stopped. It will not be automatically retried.",
+        "It stopped. It won't be automatically retried.",
+        "It stopped. Nothing will be retried unless you ask.",
+        "It stopped. No retry is scheduled.",
+        "It stopped and it won't get another try.",
+        # Past attempts are not a retry to come:
+        "It was requeued after each timeout, and it has now stopped for good.",
+        "It stopped and won't get picked up again unless you ask.",
+        # An offer is not a stated retry:
+        "It stopped. If you want, it'll run again once you say so.",
+        "It stopped; it will run again if you ask me to.",
+        "It stopped; it will be re-run only if you ask.",
+        "It stopped. Say yes and the cluster agent will try again.",
+        # Saying it stopped without "stopped" or "gave up":
+        "No further attempts will run unless you ask.",
+        "It's out of attempts; want me to file it again?",
+        "It's not going to be retried.",
+    ],
+)
+def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_message):
+    assert _report_misses(_FINAL_CASE, final_message) == []
+
+
+@pytest.mark.parametrize(
+    ("final_message", "missed"),
+    [
+        ("It timed out; the dispatcher will retry.", [_SAYS_RETRIED, _SAYS_STOPPED]),
+        ("It stopped, but it will be retried.", [_SAYS_RETRIED]),
+        ("It gave up, but the dispatcher will retry it.", [_SAYS_RETRIED]),
+        ("It stopped, but the dispatcher's going to try it again.", [_SAYS_RETRIED]),
+        ("It stopped, but a retry is scheduled.", [_SAYS_RETRIED]),
+        ("It stopped; a retry is on its way.", [_SAYS_RETRIED]),
+        ("It stopped, but it'll get another try shortly.", [_SAYS_RETRIED]),
+        ("It stopped. It's being retried automatically.", [_SAYS_RETRIED]),
+        ("It stopped, but it'll retry on its own.", [_SAYS_RETRIED]),
+        # A condition on the user that is not an offer:
+        ("It stopped, but it'll be retried automatically if you don't cancel it.", [_SAYS_RETRIED]),
+        # An offer earlier in the line does not cover a stated retry after it:
+        ("It stopped. Say yes and I'll file it; it'll be retried automatically.", [_SAYS_RETRIED]),
+        ("It timed out twice.", [_SAYS_STOPPED]),
+    ],
+)
+def test_the_final_attempt_objectives_fail_a_reply_that_says_it_is_retried(final_message, missed):
+    assert _report_misses(_FINAL_CASE, final_message) == missed

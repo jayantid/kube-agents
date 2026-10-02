@@ -63,13 +63,18 @@ owner: jayantid
 verification_spec:
   # The wake's own "dispatcher will retry", repeated as the state of the
   # card, in any of the forms it takes: passive ("is being retried", "will
-  # be retried"), the dispatcher or system as subject, or an automatic
-  # retry, any future retry whoever runs it ("it will try again", "Hermes
-  # will retry"), or another attempt queued. A negation ("won't be retried",
-  # "isn't being retried", "nothing will retry it automatically") passes, and
-  # so does an offer ("I can retry it", "it can be re-run", "say the word and
-  # it'll run again"), unless it says the re-run needs no asking ("on its own",
-  # "by itself", "without you asking").
+  # be retried"), the dispatcher or system as subject, an automatic retry,
+  # any future retry whoever runs it ("it will try again", "Hermes will
+  # retry"), another attempt or a retry queued or scheduled, or another try
+  # coming ("it'll get another try"). A negation ("won't be retried", "won't
+  # be automatically retried", "nothing will be retried", "nothing will
+  # retry it automatically") passes, and so does past tense ("it was
+  # requeued after each timeout") and an offer ("I can retry it", "it can be
+  # re-run", "it will run again if you ask", "say yes and the cluster agent
+  # will try again"), unless it says the re-run needs no asking ("on its
+  # own", "by itself", "without you asking"). An offer is read from a
+  # following "if", "unless", "once" or "when" you, or a "say the word and"
+  # earlier on the line, which also passes anything after it on that line.
   - name: the-reply-does-not-say-it-is-being-retried
     role: objective
     # assert, not the converge default: the transcript is immutable once the
@@ -78,11 +83,11 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:is|are|will|[''’]ll) (?:now |already |automatically )?(?:being|be) (?:automatically )?(?:re-?tried|re-?run|rescheduled|requeued)'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:dispatcher|scheduler|system|kanban|board)(?: will|[''’]ll| is going to| is)(?: automatically)? (?:retry|retrying|re-?run|rerunning|try it again)'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!not )(?<!n[''’]t )(?<!nothing will )(?<!no one will )(?<!nobody will )(?<!nothing else will )(?<!no one else will )(?<!nobody else will )(?:automatically (?:retr|re-?run)|retr(?:y|ies|ying) (?:it |itself )?(?:automatically|on its own))'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<!\bi )(?<!\bwe )(?<!nothing )(?<!no one )(?<!nobody )(?<!nothing else )(?<!no one else )(?<!nobody else )(?<!word and it )(?<!ask and it )(?<!yes and it )(?:will|is going to|is gonna)|(?<!\bi)(?<!\bwe)(?<!word and it)(?<!ask and it)(?<!yes and it)''ll) (?:automatically |also |then |soon |now |just )?(?:retry|re-?try|try (?:it |that |this )?again|run (?:it |that |this )?again|re-?run|be re-?tried|be re-?run)'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<!no )another attempt (?:is |has been |was )?(?:queued|scheduled|coming|on its way|underway|pending)|queued (?:to|for) (?:retry|a retry|another|re-?run)|(?<!n''t be )(?<!not be )(?<!not been )(?<!n''t been )re-?queued|(?:is|been|was|it''s) queued (?:again|up)|back in the queue|(?<!n''t be )(?<!not be )(?<!not been )(?<!n''t been )picked up again|retrying (?:now|shortly|soon|in )|(?<!no )(?:another|a third|the next) (?:attempt|run|try) (?:is|will|''ll) (?:start|run|begin|come|happen|be|queued|scheduled|underway|pending))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!nothing )(?<!no one )(?<!nobody )(?<!not )\b(?:is|are|will|[''’]ll) (?:now |already |automatically )?(?:being|be) (?:automatically )?(?:re-?tried|re-?run|rescheduled|requeued)(?![^.!?;\n]{0,60}?\b(?:if|unless|once|when) (?:you|asked)\b(?! (?:don''t|do not|didn''t|stop|cancel)))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:dispatcher|scheduler|system|kanban|board)(?: will|[''’]ll| is going to|[''’]s going to| is|[''’]s)(?: automatically)? (?:retry|retrying|re-?run|rerunning|try it again)(?![^.!?;\n]{0,60}?\b(?:if|unless|once|when) (?:you|asked)\b(?! (?:don''t|do not|didn''t|stop|cancel)))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!not )(?<!n[''’]t )(?<!nothing will )(?<!no one will )(?<!nobody will )(?<!nothing else will )(?<!no one else will )(?<!nobody else will )(?<!not be )(?<!n[''’]t be )(?:automatically (?:retr|re-?run)|retr(?:y|ies|ying) (?:it |itself )?(?:automatically|on its own))(?![^.!?;\n]{0,60}?\b(?:if|unless|once|when) (?:you|asked)\b(?! (?:don''t|do not|didn''t|stop|cancel)))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )(?:(?!\b(?:say|tell me)(?: the word| yes| so)? and\b)[^\n])*?(?:(?<!\bi )(?<!\bwe )(?<!nothing )(?<!no one )(?<!nobody )(?<!nothing else )(?<!no one else )(?<!nobody else )(?<!word and it )(?<!ask and it )(?<!yes and it )(?:will|is going to|is gonna)|(?<!\bi)(?<!\bwe)(?<!word and it)(?<!ask and it)(?<!yes and it)''ll) (?:automatically |also |then |soon |now |just )?(?:retry|re-?try|try (?:it |that |this )?again|run (?:it |that |this )?again|re-?run|be re-?tried|be re-?run)(?![^.!?;\n]{0,60}?\b(?:if|unless|once|when) (?:you|asked)\b(?! (?:don''t|do not|didn''t|stop|cancel)))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<!no )another attempt (?:is |has been |was )?(?:queued|scheduled|coming|on its way|underway|pending)|queued (?:to|for) (?:retry|a retry|another|re-?run)|(?<!n''t be )(?<!not be )(?<!not been )(?<!n''t been )(?<!was )(?<!were )(?<!had been )re-?queued|(?:is|been|was|it''s) queued (?:again|up)|back in the queue|(?<!n''t be )(?<!not be )(?<!not been )(?<!n''t been )(?<!n''t get )(?<!not get )(?<!never get )(?<!never be )picked up again|retrying (?:now|shortly|soon|in )|(?<!no )(?:another|a third|the next) (?:attempt|run|try) (?:is|will|''ll) (?:start|run|begin|come|happen|be|queued|scheduled|underway|pending)|(?<!no )(?<!not )\b(?:a|the) (?:retry|re-?run) (?:is|has been|''s) (?:queued|scheduled|coming|on its way|underway|pending|planned)|(?<!n''t )(?<!not )(?<!never )\bgets? another (?:try|attempt|go|run))(?![^.!?;\n]{0,60}?\b(?:if|unless|once|when) (?:you|asked)\b(?! (?:don''t|do not|didn''t|stop|cancel)))'
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:it|it[''’]s|it is|this|the task|the card|the check|the investigation) (?:is |now )?(?:retrying|rerunning|being retried)'
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!not )(?<!n[''’]t )(?<!nothing will )(?<!no one will )(?<!nobody will )(?<!nothing else will )(?<!no one else will )(?<!nobody else will )(?:re-?run|run (?:it |that |this )?again|try (?:it |that |this )?again|retry)(?: it)? (?:on its own|by itself|automatically|without (?:you |anyone )?(?:asking|having to ask))'
   # The other half of the fact: the run is over. Forgiving on purpose; any
@@ -99,13 +104,10 @@ verification_spec:
         - "giving up"
         - "stopped"
         - "won't be retried"
-        - "won’t be retried"
         - "will not be retried"
         - "isn't being retried"
-        - "isn’t being retried"
         - "not being retried"
         - "won't retry"
-        - "won’t retry"
         - "will not retry"
         - "no more retries"
         - "out of retries"
@@ -121,6 +123,11 @@ verification_spec:
         - "won't run again"
         - "won't be run again"
         - "won't try again"
+        - "won't be picked up again"
+        - "not going to be retried"
+        - "no further attempts"
+        - "no more attempts"
+        - "out of attempts"
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard
