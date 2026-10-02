@@ -3592,6 +3592,14 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The worker crashed. It's back in the queue but hasn't run again yet.",
         "The worker crashed and is being retried; you didn't need to requeue it.",
         "The worker crashed. I won't retry it myself — the dispatcher is already retrying it.",
+        # "Up to you" about something other than the retry, and an issue that is not a second run.
+        "The worker crashed and will be retried. Once the retry finishes, what to do next is up to you.",
+        "It's being retried automatically. After the next attempt, any fix is your call.",
+        "The worker crashed and is being retried. Want me to re-route it instead? Up to you.",
+        f"{_CRASHED} It's being retried. Want me to file an issue about the OOM?",
+        f"{_CRASHED} It's being retried. Should I file a bug for the memory limit?",
+        f"{_CRASHED} It's being retried. I can file a GitHub issue for the 137 exits.",
+        f"{_CRASHED} It's being retried. I've filed an issue about the OOM.",
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3795,6 +3803,18 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (
             f"{_CRASHED} Another attempt is your call.",
             ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried, but retrying it again is up to you.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Want me to retry it? Up to you.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Want me to file a new card for it?",
+            ["the-reply-does-not-offer-the-retry"],
         ),
         (
             "The worker checking invoice-renderer on bench-sandbox crashed.",
