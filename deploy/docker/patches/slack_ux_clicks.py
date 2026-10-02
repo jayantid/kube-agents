@@ -251,8 +251,11 @@ def _turn(label: str, value: Any, message: dict) -> str:
 
 
 def _gated_out(adapter: Any, channel_id: str) -> bool:
-    """Whether the adapter would ignore a typed message in ``channel_id``: outside
-    ``allowed_channels``, or a DM with DMs disabled. Checked before anything is shown."""
+    """Whether the adapter would ignore a typed message in ``channel_id``: an ignored
+    channel, outside ``allowed_channels``, or a DM with DMs disabled. Checked before
+    anything is shown."""
+    if adapter._is_ignored_channel(channel_id):
+        return True
     allowed = adapter._slack_allowed_channels()
     if allowed and channel_id not in allowed:
         return True
