@@ -123,6 +123,23 @@ class OpenedPrTest(unittest.TestCase):
         for line in (f"Opened a draft PR {PR}", f"Opened a new draft PR: {PR}"):
             self.assertIsNotNone(m.opened_pr(line), line)
 
+    def test_words_between_pr_and_the_url_in_one_sentence_still_count(self):
+        for lead in (
+            "Opened PR #412 in acme/x:",
+            "Opened PR #412 for the memory limit:",
+            "Opened PR #412 against main:",
+            "Opened a new draft PR for the limit:",
+        ):
+            self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+        self.assertIsNone(m.opened_pr(f"Bob opened PR #412 against main: {PR}"))
+        self.assertIsNone(m.opened_pr(f"Opened PR #412 against main. The fix is {PR}"))
+
+    def test_a_name_before_a_colon_or_comma_is_someone_else(self):
+        self.assertIsNone(m.opened_pr(f"Dependabot: opened {PR}"))
+        self.assertIsNone(m.opened_pr(f"Renovate, as usual, opened {PR}"))
+        for lead in ("We, as usual, opened", "✅, opened", "✅: opened"):
+            self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+
     def test_another_subject_after_our_first_step_is_not_ours(self):
         for lead in (
             "Checked with Bob and he then opened", "Confirmed with Alice, who then opened",

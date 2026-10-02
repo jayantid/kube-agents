@@ -42,11 +42,21 @@ PR_URL = re.compile(r"https://github\.com/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: A label's colon may follow the verb ("Opened: <url>"), its closing bold or
 #: code may sit before the url ("**Opened PR:** <url>"), and so may bold or code
 #: around the url itself ("Opened PR **<url>**"). "draft" may join "new".
+#: What may sit between the verb and "PR": "a"/"the", then "new" and "draft".
+PR_ARTICLE = r"(?:(?:an?|the)\s+)?(?:(?:new|draft)\s+){0,2}"
 OPENED_BEFORE_URL = re.compile(
-    r"\b(?:opened|created|raised|filed|submitted)(?:[*_`]*:)?[*_`]*\s+(?:(?:an?|the)\s+)?(?:(?:new|draft)\s+){0,2}"
-    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?[*_`]*\s*)?[*_`]*(?:\[[^\]]*\]\(|<)?$",
+    r"\b(?:opened|created|raised|filed|submitted)(?:[*_`]*:)?[*_`]*\s+" + PR_ARTICLE
+    + r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?[*_`]*\s*)?[*_`]*(?:\[[^\]]*\]\(|<)?$",
     re.IGNORECASE,
 )
+#: The verb and "PR" with more words before the url, in the same sentence:
+#: "Opened PR #412 in acme/x: <url>", "Opened a PR against main: <url>".
+OPENED_PR_THEN = re.compile(
+    r"\b(?:opened|created|raised|filed|submitted)[*_`]*\s+" + PR_ARTICLE + r"(?:PR|pull\s+request)\b",
+    re.IGNORECASE,
+)
+#: A sentence end between "PR" and the url; a colon does not end it here.
+GAP_BREAK = re.compile(r"[.!?](?=[*_`]*\s+[A-Z])|;(?=[*_`]*\s)")
 #: A negation just before the verb: "not opened", "haven't yet opened".
 NEGATED_VERB = re.compile(r"(?:\bnot|\bnever|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 #: Where a sentence ends: ".", "!" or "?" before a space and a capital, or
@@ -66,6 +76,10 @@ FILLER = frozenset({
 #: Joins the verb to the worker's earlier step: "Fixed it and opened".
 JOIN = frozenset({"and", "then"})
 OUR_LEAD = frozenset({"i", "we", "i've", "we've", "i’ve", "we’ve"})
+#: An outcome a label may name before "opened": "Done: opened", "Tests passed, opened".
+OUTCOME_WORD = frozenset({
+    "done", "update", "next", "result", "ready", "green", "complete", "completed", "finished",
+})
 #: A label naming the PR with no subject: "PR opened: <url>".
 PR_LABEL = (["pr"], ["pull", "request"])
 #: Someone else as the subject after the worker's first step: "Checked with Bob
@@ -147,7 +161,7 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
     """``(url, repo, number, line)`` for the first PR ``text`` says was opened, else None."""
     for line in str(text or "").splitlines():
         for match in PR_URL.finditer(line):
-            verb = OPENED_BEFORE_URL.search(line[: match.start()])
+            verb = OPENED_BEFORE_URL.search(line[: match.start()]) or _opened_pr_then(line[: match.start()])
             if not verb:
                 continue
             before = line[: verb.start()]
@@ -155,6 +169,23 @@ def opened_pr(text: str) -> tuple[str, str, str, str] | None:
                 continue
             return match.group(0), match.group(2), match.group(3), line.strip()
     return None
+
+
+def _opened_pr_then(before: str) -> re.Match | None:
+    """The last "opened PR" in ``before`` with no sentence end between it and the url."""
+    verbs = list(OPENED_PR_THEN.finditer(before))
+    if not verbs or GAP_BREAK.search(before, verbs[-1].end()):
+        return None
+    return verbs[-1]
+
+
+def _a_name(clause: str) -> bool:
+    """Whether ``clause`` only names someone ("Dependabot", "Renovate (bot)"): no
+    step or outcome of ours ("Done", "Checked it", "Tests passed", "Following up")."""
+    words = _trimmed([w.lower() for w in CLAUSE_WORD.findall(clause)])
+    return bool(words) and not any(
+        w in OUR_LEAD or w in OUR_VERB or w in OUTCOME_WORD or w.endswith(("ed", "ing")) for w in words
+    )
 
 
 def _trimmed(words: list[str]) -> list[str]:
@@ -171,8 +202,10 @@ def _ours(before: str) -> bool:
 
     One rule, read on the sentence the verb is in with :data:`FILLER` words
     trimmed from both ends: it is ours when nothing is left ("- Opened",
-    "Done: opened", "Successfully opened") or only a label ("PR opened"), when
-    a comma ends it (the verb opens a clause), when it ends in "I"/"we" ("I
+    "Done: opened", "Successfully opened") unless the sentence before a colon
+    only names someone ("Dependabot: opened"), or only a label ("PR opened"),
+    when a comma ends it (the verb opens a clause) and its first clause does
+    not only name someone ("Renovate, as usual, opened"), when it ends in "I"/"we" ("I
     have just opened", "Tests pass, so I opened"), or when it ends in
     "and"/"then", starts with "I"/"we" or one of :data:`OUR_VERB` ("Bumped
     values.yaml and opened") and names no :data:`OTHER_SUBJECT` after that.
@@ -180,9 +213,14 @@ def _ours(before: str) -> bool:
     opened", "Ahmed then opened", "bob reviewed and opened", "Checked with
     Bob and he then opened".
     """
-    sentence = SENTENCE_BREAK.split(before)[-1]
+    clauses = SENTENCE_BREAK.split(before)
+    sentence = clauses[-1]
+    # "Dependabot: opened" is a label naming who did it; "Done: opened" is ours.
+    if len(clauses) > 1 and not _trimmed([w.lower() for w in CLAUSE_WORD.findall(sentence)]) and _a_name(clauses[-2]):
+        return False
     if sentence.rstrip().endswith(","):
-        return True
+        # "Renovate, as usual, opened" names who did it; "Following up <url>, opened" does not.
+        return not _a_name(sentence.split(",")[0])
     words = _trimmed([w.lower() for w in CLAUSE_WORD.findall(sentence)])
     if not words or words in PR_LABEL or words[-1] in OUR_LEAD:
         return True
