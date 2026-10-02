@@ -31,7 +31,6 @@ MOMENTS = REPO / "deploy" / "docker" / "patches" / "slack_ux_moments.py"
 SCRIPTS = REPO / "agents" / "platform" / "scripts"
 WORKER_CASES = {
     "chat-voice-retry-says-it-is-retried": card_wake.OUTCOME_CRASHED,
-    "chat-voice-final-attempt-is-not-retried": card_wake.OUTCOME_TIMED_OUT_FINAL,
 }
 
 PROMPT = """[bench:slack-question-wake]

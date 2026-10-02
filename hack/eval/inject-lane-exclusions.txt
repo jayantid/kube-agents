@@ -43,7 +43,3 @@ agent-kanban-smoke
 # answers it. Returns to the lane when the door routes through the chat
 # profile.
 chat-voice-retry-says-it-is-retried
-
-# #2039: grades the chat front door's reply to the wake a card sends on its
-# last attempt, replayed and excluded as the case above.
-chat-voice-final-attempt-is-not-retried

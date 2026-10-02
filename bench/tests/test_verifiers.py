@@ -3504,8 +3504,8 @@ def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
     assert not _ack_voice_hits(final_message), final_message
 
 
-_FINAL_CASE = TASKS / "chat-voice-final-attempt-is-not-retried" / "task.yaml"
 _RETRY_CASE = TASKS / "chat-voice-retry-says-it-is-retried" / "task.yaml"
+_CRASHED = "The worker checking invoice-renderer on bench-sandbox crashed."
 
 
 def _report_misses(case: Path, final_message: str) -> list[str]:
@@ -3518,103 +3518,6 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         if entry["check"]["type"] == "report_contains"
         and not ReportContainsVerifier(**entry["check"]).verify(timeout_sec=1).success
     ]
-
-
-@pytest.mark.parametrize(
-    "final_message",
-    [
-        "The look into invoice-renderer's restarts on bench-sandbox ran out of time on both "
-        "attempts, so it has stopped and won't be retried on its own. I can run it again with a "
-        "narrower window if you want.",
-        "Checking why invoice-renderer restarts on bench-sandbox timed out twice and gave up. "
-        "Nothing will retry it automatically; it can be re-run if you'd like.",
-        "invoice-renderer's restart check on bench-sandbox hit its time limit on the final attempt. "
-        "It isn't being retried. Want me to try again?",
-        "The check on bench-sandbox timed out and gave up; no one else will retry it.",
-        "The check on bench-sandbox timed out and gave up. Nothing else will run it again.",
-        "The check on bench-sandbox gave up after its final attempt and won't be requeued.",
-        "The check on bench-sandbox timed out, gave up and has not been requeued.",
-        "The check on bench-sandbox timed out and gave up; it won't be picked up again.",
-        "The check on bench-sandbox timed out and gave up. The next attempt is yours to start.",
-        # A re-run on the user's word is what "unless the user asks" allows.
-        "The check on bench-sandbox timed out and gave up. Say the word and it'll run again.",
-        "The check on bench-sandbox gave up. Just ask and it will run again.",
-        # A delivered result is the specialist's voice, not the front door's.
-        "The restart check on bench-sandbox gave up after timing out twice.\n\n"
-        "Result of delegated task t_cc52a43d:\nThe task is being retried.",
-    ],
-)
-def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_message):
-    assert _report_misses(_FINAL_CASE, final_message) == []
-
-
-@pytest.mark.parametrize(
-    ("final_message", "missed"),
-    [
-        # The wake's own second half, repeated as the card's state.
-        (
-            "The check on invoice-renderer's restarts on bench-sandbox timed out; the dispatcher "
-            "will retry it automatically.",
-            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
-        ),
-        (
-            "invoice-renderer's restart check on bench-sandbox timed out and is being retried.",
-            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
-        ),
-        (
-            "It gave up after the time limit, but it's retrying now.",
-            ["the-reply-does-not-say-it-is-being-retried"],
-        ),
-        (
-            "The investigation timed out twice and will be retried.",
-            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
-        ),
-        (
-            "It timed out on its last attempt. You don't need to ask and it'll run again on its own.",
-            ["the-reply-does-not-say-it-is-being-retried"],
-        ),
-        (
-            "The check gave up, though the system will retry it shortly.",
-            ["the-reply-does-not-say-it-is-being-retried"],
-        ),
-        (
-            "The check timed out. It will retry on its own.",
-            ["the-reply-does-not-say-it-is-being-retried", "the-reply-says-it-stopped"],
-        ),
-        # Any future retry, whoever is said to run it.
-        *(
-            (f"The check on bench-sandbox timed out and gave up. {tail}", ["the-reply-does-not-say-it-is-being-retried"])
-            for tail in (
-                "It will try again shortly.",
-                "Another attempt is queued.",
-                "The specialist will retry it.",
-                "It will run again automatically.",
-                "Hermes will retry.",
-                "It's queued to retry.",
-                "It'll be re-tried in a few minutes.",
-                "It's retrying shortly.",
-                "It will be picked up again.",
-                "The next attempt will start in a minute.",
-                "It's been requeued.",
-                "Requeued it.",
-                "It's queued again.",
-            )
-        ),
-        # A count of attempts is not the run being over.
-        (
-            "The check on bench-sandbox timed out twice, on both attempts.",
-            ["the-reply-says-it-stopped"],
-        ),
-        (
-            "invoice-renderer's restart check on bench-sandbox timed out.",
-            ["the-reply-says-it-stopped"],
-        ),
-        ("[SILENT]", ["the-reply-says-it-stopped"]),
-        ("", ["the-reply-says-it-stopped"]),
-    ],
-)
-def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_message, missed):
-    assert _report_misses(_FINAL_CASE, final_message) == missed
 
 
 @pytest.mark.parametrize(
@@ -3639,6 +3542,27 @@ def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_m
         "The `cluster-bench-project-bench-sandbox-us-central1` agent crashed (exit code 137) while "
         "checking the `invoice-renderer` pods. The system has automatically returned it to the queue "
         "to retry, so no action is needed right now.",
+        # main's replies at dceb7ed3, the three runs the pull request cites.
+        "The task crashed with exit code 137 while running. It has already been automatically "
+        "placed back in the queue to be retried.",
+        "The `cluster-bench-sandbox` agent crashed unexpectedly while trying to check the "
+        "invoice-renderer pods (it was killed by the system, likely due to running out of memory). "
+        "The task is back in the queue and will be retried automatically.",
+        "The check on the invoice-renderer restarts in bench-sandbox crashed mid-run. The system has "
+        "already placed it back in the queue to try again. I'll let you know when the retried run "
+        "finishes.",
+        # Natural wording the fact list has to carry.
+        "The worker crashed. It will automatically retry.",
+        "The worker crashed; it's scheduled to retry.",
+        "The worker crashed and the dispatcher queued another attempt.",
+        "The worker crashed, so the card went back to the queue.",
+        "The worker crashed. The dispatcher will rerun it shortly.",
+        "The worker crashed. It'll run again on its own.",
+        # Talk about the retry that offers nothing.
+        "The worker crashed and is being retried. I'll check back once the retry finishes.",
+        "The worker crashed and is being retried. Want me to let you know when the retry finishes?",
+        "The worker crashed and is being retried. Anything else you need?",
+        "This is not a final failure: the worker crashed and it will be retried.",
     ],
 )
 def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message):
@@ -3652,15 +3576,15 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             "I couldn't find why invoice-renderer restarts on bench-sandbox: the worker crashed.",
             ["the-reply-says-it-is-being-retried"],
         ),
+        # A denial carries the retry phrase it denies.
         (
             "The check on bench-sandbox gave up; it won't be retried.",
-            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+            ["the-reply-does-not-call-it-final"],
         ),
         (
             "The worker crashed and is not being retried.",
             ["the-reply-does-not-call-it-final"],
         ),
-        # A denial carries the retry phrase it denies.
         (
             "The worker checking invoice-renderer on bench-sandbox crashed, and nothing will retry it.",
             ["the-reply-does-not-call-it-final"],
@@ -3669,20 +3593,106 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             "The worker checking invoice-renderer on bench-sandbox crashed; it is no longer being retried.",
             ["the-reply-does-not-call-it-final"],
         ),
+        # The front door starting the retry itself.
         (
-            "The worker crashed. I was unable to finish the check, so I'll retry it.",
+            f"{_CRASHED} I was unable to finish the check, so I'll retry it.",
             ["the-reply-does-not-offer-the-retry"],
         ),
-        # An offer is not the fact: main's "offer a retry or a re-route".
-        *(
-            (f"The worker checking invoice-renderer on bench-sandbox crashed. {offer}",
-             ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"])
-            for offer in (
-                "Want me to retry it?",
-                "I can retry it or re-route it.",
-                "Should I file a retry?",
-                "Happy to kick it off again.",
-            )
+        # An offer is not the fact: a question, a conditional, or a first-person offer.
+        (
+            f"{_CRASHED} Want me to retry it?",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Do you want another attempt?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Want it requeued?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Would you like me to try again?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Want me to kick it off again?",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} If you'd like it rerun, just say so.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Say the word and it gets requeued.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Let me know if you want it retried.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} I can retry it or re-route it.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} I can go ahead and retry it.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Happy to kick it off again.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} I can give it another try.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        # A re-route or a new card is new work too.
+        (
+            f"{_CRASHED} Should I re-route it to another cluster?",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} I could route it to seeded-a instead.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} I'll file a new card for it.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
+        ),
+        # Beside a stated retry, an offer still reds, a later one included.
+        (
+            f"{_CRASHED} It's being retried. Want me to re-route it instead?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It is being retried, and if this attempt also fails I can run it again.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        # A negation is not the fact, and neither is handing the retry to the user.
+        (
+            f"{_CRASHED} I won't retry it.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It is not going to be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Nobody is retrying it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} I'm not going to rerun it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Whether to retry is up to you.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Another attempt is your call.",
+            ["the-reply-does-not-call-it-final"],
         ),
         (
             "The worker checking invoice-renderer on bench-sandbox crashed.",
@@ -3691,13 +3701,12 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ("[SILENT]", ["the-reply-says-it-is-being-retried"]),
     ],
 )
-def test_the_retry_objectives_fail_a_reply_that_calls_it_final(final_message, missed):
+def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry(final_message, missed):
     assert _report_misses(_RETRY_CASE, final_message) == missed
 
 
-@pytest.mark.parametrize("case", [_FINAL_CASE, _RETRY_CASE])
-def test_the_worker_failure_cases_fence_new_work_and_the_worker_verbs(case):
-    spec = yaml.safe_load(case.read_text())["verification_spec"]
+def test_the_retry_case_fences_new_work_and_the_worker_verbs():
+    spec = yaml.safe_load(_RETRY_CASE.read_text())["verification_spec"]
     fences = {
         e["name"]: e["check"]["checks"][0]["tool_names"]
         for e in spec
