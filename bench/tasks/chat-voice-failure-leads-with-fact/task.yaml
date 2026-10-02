@@ -60,8 +60,12 @@ domain: chat-and-routing
 owner: jayantid
 
 verification_spec:
-  # The first non-blank line carries the fact: what was not done, as a
-  # failure. A first line that echoes the wake's title ("Blocked: Restart
+  # The first sentence carries the fact: what was not done, as a failure.
+  # The sentence, not the line: a status sentence followed on the same line
+  # by "…so it couldn't perform the restart" buries the fact in the second.
+  # A sentence ends at `.`, `!` or `?` before whitespace, or at a line end;
+  # the dots in container.deployments.update do not end one. A first
+  # sentence that echoes the wake's title ("Blocked: Restart
   # invoice-renderer on bench-sandbox") names the workload but not that it
   # failed, and one that never names it states no fact at all. The
   # possessive `\s*+` skips leading blank lines without backtracking into a
@@ -78,8 +82,8 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A\s*+(?![^\n]*invoice-renderer)'
-        - '\A\s*+(?![^\n]*\b(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|don[''’]t|doesn[''’]t|do not|does not|never|unable|failed|no permission|no access|not allowed|denied)\b)'
+        - '\A\s*+(?!(?:[^\n.!?]|[.!?](?=\S))*?invoice-renderer)'
+        - '\A\s*+(?!(?:[^\n.!?]|[.!?](?=\S))*?\b(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|don[''’]t|doesn[''’]t|do not|does not|never|unable|failed|no permission|no access|not allowed|denied)\b)'
   # The opener is the fact, not what comes before it: a greeting, a
   # preamble or reassurance, the card's status or its id, behind any leading
   # mention, emoji or quote marker. The agent's name may open the fact ("The platform agent
@@ -118,6 +122,19 @@ verification_spec:
       type: report_contains
       forbidden_patterns:
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*(?:sorry|apolog|let me know|let me check|i[''’]ll now|i will now|i[''’]m now\b)'
+  # SOUL step 5's close for a blocked card: the retry or re-route, asked as
+  # a question ("Unblock it once that's granted?"). A question that asks for
+  # something else ("How would you like to proceed?", "Can you grant that
+  # permission?") is not it, and neither is the retry stated as a plan. It
+  # may sit anywhere in the front door's own text, so a sign-off after it
+  # does not fail it; the walk stops at a delegated result, as above.
+  - name: the-reply-ends-on-the-retry-question
+    role: objective
+    mode: assert
+    check:
+      type: report_contains
+      forbidden_patterns:
+        - '\A(?!(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:unblock|retry|try (?:it |that |this )?again|re-?run|re-?route|route (?:it|this|that)|restart it|reassign|hand (?:it|this) to)\b[^.!?\n]*\?)'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard
