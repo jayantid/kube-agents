@@ -112,6 +112,17 @@ class OpenedPrTest(unittest.TestCase):
         blocks, _ = m.pr_opened(*m.opened_pr(f"**Opened PR:** <{PR}>"))
         self.assertEqual(_contexts(blocks)[0], "**Opened PR #412**")
 
+    def test_markup_wrapped_round_the_url_goes_with_it(self):
+        for line in (f"Opened PR **{PR}**", f"Opened PR **<{PR}>**", f"Opened PR `{PR}`", f"Opened `{PR}`"):
+            blocks, _ = m.pr_opened(*m.opened_pr(line))
+            self.assertEqual(_contexts(blocks)[0], "Opened PR #412", line)
+        blocks, _ = m.pr_opened(*m.opened_pr(f"**Done, opened PR {PR}**"))
+        self.assertEqual(_contexts(blocks)[0], "**Done, opened PR #412**")
+
+    def test_a_draft_pr_is_an_opened_pr(self):
+        for line in (f"Opened a draft PR {PR}", f"Opened a new draft PR: {PR}"):
+            self.assertIsNotNone(m.opened_pr(line), line)
+
     def test_another_subject_after_our_first_step_is_not_ours(self):
         for lead in (
             "Checked with Bob and he then opened", "Confirmed with Alice, who then opened",
@@ -241,6 +252,27 @@ class NeedsYouTest(unittest.TestCase):
             self.assertIn("1. Drain node-pool-a", text, question)
         blocks, _ = m.needs_you("Which step should I proceed with?\n- Drain\n- Upgrade")
         self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["Drain", "Upgrade"])
+
+    def test_a_question_asking_which_way_to_go_on_keeps_its_buttons(self):
+        for question in (
+            "How would you like to proceed?",
+            "How should we continue?",
+            "Can you approve one of these fixes?",
+            "Should I proceed with a rollback or a scale-up?",
+            "Which fix should I go ahead with?",
+        ):
+            blocks, _ = m.needs_you(f"The rollout stalled. {question}\n- Roll back\n- Scale up")
+            self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["Roll back", "Scale up"], question)
+
+    def test_an_emphasised_question_or_a_lettered_list_keeps_its_buttons(self):
+        for reason in (
+            "**Which cluster should I drain?**\n- seeded-a\n- seeded-b",
+            "*Which cluster should I drain?*\n- seeded-a\n- seeded-b",
+            "Which cluster should I drain?\nA) seeded-a\nB) seeded-b",
+            "Which cluster should I drain?\na. seeded-a\nb. seeded-b",
+        ):
+            blocks, _ = m.needs_you(reason)
+            self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["seeded-a", "seeded-b"], reason)
 
     def test_a_list_that_does_not_end_the_reason_is_not_choices(self):
         blocks, _ = m.needs_you("Which cluster?\n- seeded-a\n- seeded-b\nThe preflight failed on both.")
