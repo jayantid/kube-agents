@@ -76,8 +76,12 @@ harness records the run as infrastructure. The exception is a breaker that
 disagrees with the outcome (a retry that trips it, a final attempt that does
 not): the image's dispatcher no longer retries the way the case asserts, so
 :func:`plant` raises :class:`ReplayMismatch` and the harness records an
-errored run, which fails, rather than an infrastructure one, which the gate
-excludes.
+errored run rather than an infrastructure one, which the gate excludes. An
+errored run has no trajectory and a null token count, so a single repetition
+of it stops at one of the gate's absolute rungs (a check that did not run, or
+"not evidence of a real agent run"): an absolute red, admitted case or not.
+The printed reason names the rung, not the mismatch; the run's error names
+the mismatch.
 """
 
 from __future__ import annotations
