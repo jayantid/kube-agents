@@ -3,13 +3,19 @@
 #
 # Domain: chat and routing. What it grades is the front door's reply to the
 # wake a card sends when its worker crashes and the dispatcher will try
-# again (agents/chat/SOUL.md §2, step 5). Below its failure limit the
-# dispatcher puts a crashed card back to ready and runs it again on its own
-# (hermes_cli/kanban_db_dispatch.py, _record_task_failure), so the wake
-# says "crashed (worker exited); dispatcher will retry" and nothing else.
-# The reply says the card is being retried; it does not announce a failure
-# the user has to act on, and it does not file the work a second time
-# beside the retry the dispatcher is already making.
+# again. Below its failure limit the dispatcher puts a crashed card back to
+# ready and runs it again on its own (hermes_cli/kanban_db_dispatch.py,
+# _record_task_failure), so the wake says "crashed (worker exited);
+# dispatcher will retry" and nothing else. The reply says the card is being
+# retried; it does not announce a failure the user has to act on, and it
+# does not file the work a second time beside the retry the dispatcher is
+# already making.
+#
+# main already answers this way, and the case guards that answer.
+# agents/chat/SOUL.md §2 step 5 does not single the case out: it lists
+# crashed among the wakes to act on and says to "retry or re-route if that
+# is the better answer". A re-route here is a kanban_create, which the
+# fence below fails as a second run beside the dispatcher's.
 #
 # No prompt makes a worker crash, so the prompt is a replay
 # (bench/kube_agents_bench/card_wake.py, outcome crashed): the harness files
@@ -137,42 +143,56 @@ verification_spec:
         - "returned to the queue"
         - "returned it to the queue"
         - "picked up again"
-  # No retry, requeue, re-route or new card offered or started beside the
-  # dispatcher's retry, in words as in tools. Three shapes, one pattern each:
-  # any question sentence about retrying, requeuing, re-routing or filing
-  # ("Do you want another attempt?", "Want it requeued?"), unless it only
-  # asks about telling the user; a conditional ("if you'd like it rerun",
-  # "say the word and it gets requeued"); and a first-person offer ("I can
-  # retry it", "happy to re-route it", "I'll file a new card"). The third
-  # allows only filler words between the opener and the verb ("I can go
-  # ahead and retry it"), so "I'll check back once the retry finishes" and
-  # "I'll let you know when the retried run finishes" pass. A reply that
-  # offers a retry for later ("if this attempt also fails I can run it
-  # again") reds too: the dispatcher decides that, not the front door.
+        - "going to retry"
+        - "going to rerun"
+        - "going to re-run"
+        - "retry is underway"
+        - "retry is already"
+        - "retry is in progress"
+        - "retry is queued"
+        - "retry is pending"
+        - "retry on its own"
+        - "another go"
+        - "restarting it"
+  # No retry, requeue, re-route, hand-off or second card offered or started
+  # beside the dispatcher's retry, in words as in tools. Three shapes, one
+  # pattern each. A question sentence that asks for one ("Do you want
+  # another attempt?", "Want it requeued?", "Should I hand it to another
+  # agent?"); a question about the retry already running ("while the retry
+  # runs", "the next attempt", "when it's retried") or about telling the
+  # user passes. A conditional ("if you'd like it rerun", "say the word and
+  # it gets requeued"). A first-person offer ("I can retry it", "happy to
+  # re-route it", "I've queued a duplicate"), with only filler words
+  # between the opener and the verb ("I can go ahead and retry it"), so
+  # "I'll check back once the retry finishes" passes. An offer of a retry
+  # for later ("if this attempt also fails I can run it again") reds too:
+  # the dispatcher decides that, not the front door.
   - name: the-reply-does-not-offer-the-retry
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<![^\n])|(?<=[.!?:;] ))(?![^.!?;\n]*\b(?:let you know|tell you|update you|ping you|notify you|keep you posted))[^.!?;\n]*?\b(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|try (?:it |that |this )?again|run (?:it |that |this )?again|attempt|re-?queu|queue|kick (?:it |that |this )?off|re-?rout|route (?:it|this|that)\b|file (?:a|an|another|it|this|that|new)\b)[^.!?;\n]*\?'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:if you(?:''d)? (?:want|like|prefer|wish)|just (?:ask|say)|say the word|ask me|let me know)(?: [\w''-]+){0,4}? (?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?rout\w*)|(?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?rout\w*)(?: (?:it|that|this|again|the \w+))? (?:if you(?:''d)? (?:want|like|prefer|wish)|on request|if you ask))'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want(?: me)? to|would you like(?: me)? to|i can|i could|i''ll|i will|i''d|i would|let me|(?:i''m )?happy to|(?:i''m )?glad to|i''m able to)(?: (?:also|just|go|ahead|and|gladly|happily|manually|now|immediately|then|right|away|quickly|certainly|definitely|easily|have|get|make|start|give|it|that|this|them|you|a|new|fresh|to|try|the (?:agent|worker|task|card|check|dispatcher)))*? (?<!the )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|re-?queu\w*|queue (?:it|this|that|another|a)\b|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|a (?:new |fresh )?(?:retry|re-?run|attempt)|kick (?:it |that |this )?off|re-?rout\w*|route (?:it|this|that)\b|file\b|open (?:a |another |new )+(?:card|task)|send (?:it|this|that) (?:to|back))'
-  # Not the final-failure announcement: no "gave up", no retry denied ("won't
-  # be retried", "I'm not going to retry it", "nobody is retrying it"), and
-  # no retry handed to the user ("whether to retry is up to you"). A failure
-  # in the reason ("the logs could not be read") is not a final
-  # announcement, so "couldn't" is not forbidden, and neither is "it hasn't
-  # given up" or "please do not retry it yourself".
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<![^\n])|(?<=[.!?:;—] )|(?<=—))(?![^.!?;—\n]*\b(?:let you know|tell you|update you|ping you|notify you|keep you posted))[^.!?;—\n]*?\b(?<!the )(?<!next )(?<!this )(?<!that )(?<!its )(?<!while )(?<!when )(?<!after )(?<!until )(?<!once )(?<!before )(?<!during )(?<!''s )(?<!is )(?<!been )(?<!being )(?<!be )(?<!gets )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|try (?:it |that |this )?again|run (?:it |that |this )?again|attempt|re-?queu|queue|kick (?:it |that |this )?off|re-?rout|route (?:it|this|that)\b|filed?\b|re-?dispatch\w*|reassign\w*|hand (?:it|this|that) (?:to|off|over)\b|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b)[^.!?;—\n]*\?'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:if you(?:''d)? (?:want|like|prefer|wish)|just (?:ask|say)|say the word|ask me|let me know)(?: [\w''-]+){0,4}? (?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?rout\w*|re-?dispatch\w*|reassign\w*|hand (?:it|this|that) (?:to|off|over)\b|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b)|(?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?rout\w*|re-?dispatch\w*|reassign\w*|hand (?:it|this|that) (?:to|off|over)\b|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b)(?: (?:it|that|this|again|the \w+))? (?:if you(?:''d)? (?:want|like|prefer|wish)|on request|if you ask))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want(?: me)? to|would you like(?: me)? to|i can|i could|i''ll|i will|i''d|i would|let me|(?:i''m )?happy to|(?:i''m )?glad to|i''m able to|i''m (?:also )?going to|i''ve)(?: (?:also|just|go|ahead|and|up|gladly|happily|manually|now|immediately|then|right|away|quickly|certainly|definitely|easily|have|get|make|start|give|it|that|this|them|you|a|new|fresh|to|try|the (?:agent|worker|task|card|check|dispatcher)))*? (?<!the )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|re-?queu\w*|queue\w* (?:it|this|that|another|a)\b|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|a (?:new |fresh )?(?:retry|re-?run|attempt)|kick (?:it |that |this )?off|re-?rout\w*|route (?:it|this|that)\b|filed?\b|restart\b|re-?dispatch\w*|reassign\w*|hand (?:it|this|that) (?:to|off|over)\b|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|open (?:a |another |new )+(?:card|task)|send (?:it|this|that) (?:to|back))'
+  # Not the final-failure announcement: no "gave up", "last attempt" or
+  # "retry limit", no retry denied ("won't be retried", "it can't be
+  # retried", "there won't be another attempt", "nobody is retrying it"),
+  # and no retry handed to the user ("whether to retry is up to you", "you
+  # may want to rerun it"). A failure in the reason ("the logs could not be
+  # read") is not a final announcement, so "couldn't" is not forbidden, and
+  # neither is "it hasn't given up", "nothing has failed for good", "please
+  # do not retry it yourself" or "I won't re-run it myself".
   - name: the-reply-does-not-call-it-final
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|(?<!n''t )(?<!not )given up|(?<!n''t )(?<!not )giving up|retries exhausted|out of retries|no more retries|not (?:be |being )re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run)|no longer (?:be |being )?re-?(?:tr|run))'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:won''t|will not|isn''t|is not|i''m not|am not|aren''t|are not|not going to|never|nobody is|no one is|nothing is)(?: [\w''-]+){0,2}? (?:re-?tr|try(?:ing)? (?:it |that |this )?again|re-?run|run(?:ning)? (?:it |that |this )?again|re-?queu)'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:re-?tr|attempt|re-?run|again|re-?rout)[^.!?\n]{0,40}?\b(?:up to you|your call|yours to)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|(?<!n''t )(?<!not )given up|(?<!n''t )(?<!not )giving up|retries exhausted|out of retries|no more retries|not (?:be |being )re-?tr|n''t (?:be |being )re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run)|no longer (?:be |being )?re-?(?:tr|run)|(?:was|is|on) (?:its |the )(?:last|final) (?:attempt|try)|(?<!nothing )(?<!nothing has )(?<!n''t )(?<!not )failed (?:for good|permanently)|(?:hit|reached) (?:its |the )(?:retry|failure) limit)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:won''t|will not|isn''t|is not|i''m not|am not|aren''t|are not|not going to|never|nobody is|no one is|nothing is|can''t|cannot|can not)(?: [\w''-]+){0,2}? (?:re-?tr|try(?:ing)? (?:it |that |this )?again|re-?run|run(?:ning)? (?:it |that |this )?again|re-?queu|another (?:attempt|try|go|run))(?![^.!?;\n]*\b(?:myself|yourself|ourselves)\b)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:re-?tr|attempt|re-?run|again|re-?rout)[^.!?\n]{0,40}?\b(?:up to you|your call|yours to)|\byou (?:may|might|could|can|should) (?:want to )?(?:re-?tr|re-?run|rerun|run it again|try it again|requeue|re-queue)|(?:re-?run|rerun|re-?try|retry) (?:would be|is|will be) (?:needed|required))'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard

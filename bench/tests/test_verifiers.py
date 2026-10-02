@@ -3563,6 +3563,23 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The worker crashed and is being retried. Want me to let you know when the retry finishes?",
         "The worker crashed and is being retried. Anything else you need?",
         "This is not a final failure: the worker crashed and it will be retried.",
+        "The dispatcher is going to retry it on its own, so no action is needed.",
+        "A retry is already underway; nothing for you to do.",
+        "The last attempt crashed with exit 137; the dispatcher is retrying it.",
+        "The worker crashed, but it will be retried automatically, so nothing has failed for good yet.",
+        "The worker crashed and is being retried, so I won't re-run it myself.",
+        # A question about the retry already running, not one that asks for another.
+        *(
+            f"{_CRASHED} It's being retried. {question}"
+            for question in (
+                "Want me to check the node's memory while the retry runs?",
+                "Should I keep an eye on the next attempt?",
+                "Do you want a heads-up when it's retried?",
+                "Any other context I should pass along for the retry?",
+            )
+        ),
+        "The worker crashed. The dispatcher will try again automatically — anything else you'd like "
+        "me to look at while we wait?",
     ],
 )
 def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message):
@@ -3669,7 +3686,48 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             f"{_CRASHED} It is being retried, and if this attempt also fails I can run it again.",
             ["the-reply-does-not-offer-the-retry"],
         ),
+        # A hand-off or a second run in other words.
+        (
+            f"{_CRASHED} It's being retried. Should I hand it to a different agent instead?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. I can reassign it to another cluster agent if you prefer.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Want a fresh card filed in parallel?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. I've also queued a duplicate just in case.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. I'm also going to re-run it on a different agent.",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
         # A negation is not the fact, and neither is handing the retry to the user.
+        (
+            f"{_CRASHED} It can't be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} There won't be another attempt.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's been retried, but this was the last attempt.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} The dispatcher will retry, though it has now hit its retry limit.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. You may want to rerun it yourself.",
+            ["the-reply-does-not-call-it-final"],
+        ),
         (
             f"{_CRASHED} I won't retry it.",
             ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],

@@ -146,7 +146,7 @@ ADDED_AFTER_THE_MOVE = [
     "platform-worker-refuses-shipped-skill-edit",  # skill governance, #1848
     "chat-voice-ack-names-target",  # the front door's delegation ack
     "bootstrap-inventory-ranking-delivery",  # the onboarding prioritization stage, #2143
-    "chat-voice-retry-says-it-is-retried",  # the front door's reply to a crashed or timed-out card
+    "chat-voice-retry-says-it-is-retried",  # the front door's reply to a crashed card
 ]
 
 # Admitted after the split, each by a pull request that cited the record
