@@ -184,6 +184,12 @@ def compare(installed_raw: dict, record: dict) -> tuple[int, str]:
     ``installed_raw`` is one manifest (the default experience) or a dict of them
     keyed by experience. The running version is looked up by the digest of all
     three when all three are given, else by the default experience's alone.
+
+    The newest entry is never the running version: a report means something
+    differs from it. Without all three, entries sharing a default manifest
+    cannot be told apart, so the notes start after the earliest of them and the
+    heading says so; one manifest that changed without the default would
+    otherwise match the newest entry and print no note at all.
     """
     if any(key in installed_raw for key in EXPERIENCES):
         unknown = sorted(set(installed_raw) - set(EXPERIENCES))
@@ -210,14 +216,23 @@ def compare(installed_raw: dict, record: dict) -> tuple[int, str]:
     if not report:
         return EXIT_SAME, ""
     changes = record["changes"]
-    if sorted(installed) == sorted(EXPERIENCES):
+    full = sorted(installed) == sorted(EXPERIENCES)
+    if full:
         key, installed_digest = "digest", digest(installed)
     else:
         key, installed_digest = "assistant_digest", digest(installed[DEFAULT_EXPERIENCE])
-    seen = [index for index, change in enumerate(changes) if change.get(key) == installed_digest]
-    if seen:
+    seen = [
+        index for index, change in enumerate(changes[:-1]) if change.get(key) == installed_digest
+    ]
+    if seen and (full or len(seen) == 1):
         notes = changes[seen[-1] + 1 :]
         report.append("What changed since the running version:")
+    elif seen:
+        notes = changes[seen[0] + 1 :]
+        report.append(
+            "Not every running manifest could be read, and several recorded versions "
+            "share its default one, so the notes start after the earliest of them:"
+        )
     else:
         notes = changes
         report.append("The running manifest matches no recorded version, so every note follows:")

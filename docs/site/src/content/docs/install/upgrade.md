@@ -184,8 +184,9 @@ When Slack is enabled and the run moves the agent's image, `upgrade.sh` reads th
 running image prints and compares them with the ones the target release ships. It reads all three
 variants (the default, `--agent-view` and `--no-assistant`), because nothing records which one
 your app was created from, and labels each one that differs. The default has to be readable; a
-variant the running image cannot print is left out of the comparison, and the run says so. A plan that moves the image compares
-too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a plan that keeps the
+variant the running image cannot print is left out of the comparison, and the run says so. If
+nothing it could read differs, it still prints the steps below for an app created from the variant
+it left out. A plan that moves the image compares too. `--dry-run`, `--keep-image-tag`, `--upgrade-mode=operator` and a plan that keeps the
 installed tag do not: a dry run never contacts the install, and the others leave the agent's image
 where it is. If a manifest differs, the run prints the scopes, events, features and settings that
 are added, removed or changed, the release's note for each manifest change since the version you

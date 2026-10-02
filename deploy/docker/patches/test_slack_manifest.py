@@ -191,6 +191,31 @@ class CompareTest(unittest.TestCase):
         _, report = slack_manifest.compare(installed, record)
         self.assertIn("What changed since the running version:", report)
         self.assertNotIn(record["changes"][0]["note"], report)
+        self.assertIn(record["changes"][-1]["note"], report)
+
+    def test_a_partial_set_whose_default_is_current_gets_every_note(self):
+        older = copy.deepcopy(RECORD["manifests"]["agent"])
+        older["oauth_config"]["scopes"]["bot"].remove("reactions:write")
+        installed = {"assistant": raw_from(RECORD["manifests"]["assistant"]), "agent": raw_from(older)}
+        _, report = slack_manifest.compare(installed, RECORD)
+        self.assertIn("The 'agent' experience's manifest differs", report)
+        self.assertIn("matches no recorded version", report)
+        for change in RECORD["changes"]:
+            self.assertIn(change["note"], report)
+
+    def test_a_partial_set_matching_several_versions_starts_at_the_earliest(self):
+        older = copy.deepcopy(RECORD["manifests"]["assistant"])
+        older["oauth_config"]["scopes"]["bot"].remove("reactions:write")
+        record = copy.deepcopy(RECORD)
+        record["changes"][0]["assistant_digest"] = slack_manifest.digest(older)
+        record["changes"].insert(
+            1, {"digest": "0" * 12, "assistant_digest": slack_manifest.digest(older), "note": "Agent view only."}
+        )
+        _, report = slack_manifest.compare(raw_from(older), record)
+        self.assertIn("several recorded versions share its default one", report)
+        self.assertNotIn(record["changes"][0]["note"], report)
+        self.assertIn("Agent view only.", report)
+        self.assertIn(record["changes"][-1]["note"], report)
 
     def test_a_set_without_the_default_experience_is_refused(self):
         with self.assertRaises(ValueError):
