@@ -5,13 +5,14 @@ reach. Two replays produce one. A prompt whose first line is
 :data:`QUESTION_DIRECTIVE` or :data:`FAILURE_DIRECTIVE` is a replay instead of
 an ask; :func:`parse` reads it.
 
-**A specialist's Slack question.** With ``KAGE_SLACK_UX`` on, a card that blocks on ``needs_input`` in a Slack
-thread posts the specialist's question there itself
-(``gateway/slack_ux_moments.py``, ``needs_you``), and the wake the notifier
-then gives the conversation that filed the card says so. The front door is
-expected to stay out of the way: reply ``[SILENT]`` to the wake, then carry the
-user's answer to the card (``agents/chat/SOUL.md`` §1.5 and §5). None of that
-is reachable from the harness. The API server never subscribes a card the way
+**A specialist's Slack question.** This replay targets a Slack change that is
+not in this tree: with ``KAGE_SLACK_UX`` on, a card that blocks on
+``needs_input`` in a Slack thread posts the specialist's question there itself
+(a ``needs_you`` function in the gateway's Slack module), and the wake the
+notifier then gives the conversation that filed the card says so. That change
+has the front door stay out of the way and carry the user's answer to the
+card; the SOUL text that asks for it lands with it. None of that is reachable
+from the harness. The API server never subscribes a card the way
 a Slack thread does, and on an install with no Slack adapter the notifier skips
 a Slack subscription before it builds any text.
 
