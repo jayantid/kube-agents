@@ -3669,6 +3669,37 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's going to automatically be retried.",
             )
         ),
+        # A retry word that is about the retry succeeding, another clause, an
+        # unrelated question, or a quoted message, beside the stated retry.
+        *(
+            f"{_CRASHED} {reply}"
+            for reply in (
+                "It will be retried automatically. The quota increase you asked for won't be.",
+                "It's being retried. I think the retry will hit the same OOM unless the limit goes up.",
+                "It's retrying on its own; the rest is your call.",
+                "It's being retried. The worker's last log line was `please retry`.",
+                "It's being retried. Hopefully the retry goes through this time.",
+                "It's being retried, though I'm not sure the retry will fix it.",
+                "It's being retried, but it may fail the retry too.",
+                "It's being retried. I can't promise the retry will succeed.",
+                "It's being retried. This won't affect the retry.",
+                "It's being retried. I haven't requeued anything.",
+                "It's being retried. No one is running it again in parallel.",
+                "It's being retried — no manual rerun is needed.",
+                "It's being retried. No manual retry is required.",
+                "It's being retried, so there's nothing to re-run manually.",
+                "It's being retried, so I wouldn't recommend rerunning it yourself.",
+                "It'll retry automatically, should I keep an eye on it?",
+                "It's being retried, but want me to pull the pod events in the meantime?",
+                "The dispatcher will retry it, so want me to look at the logs meanwhile?",
+                "It's being retried. Want me to post the result when the dispatcher retries it?",
+                "It's being retried. Should I look at the OOM before the worker reruns?",
+                "It's being retried. I can share the result of the retry if you'd like.",
+                "It's being retried automatically, so I don't recommend retrying it manually.",
+                "It's being retried. Nothing needs a manual rerun.",
+                "It's being retried. There isn't anything to retry by hand.",
+            )
+        ),
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3998,6 +4029,14 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             ["the-reply-does-not-call-it-final"],
         ),
         (
+            f"{_CRASHED} It's being retried, but I recommend retrying it manually too.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried, but it needs a manual rerun as well.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
             f"{_CRASHED} It's not set to be retried.",
             ["the-reply-does-not-call-it-final"],
         ),
@@ -4082,6 +4121,27 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
 )
 def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry(final_message, missed):
     assert _report_misses(_RETRY_CASE, final_message) == missed
+
+
+@pytest.mark.parametrize(
+    "final_message",
+    [
+        "a: " * 5000,
+        ("want retry: " * 2000)[:20000],
+        ("reason: OOMKilled, exitCode: 137, " * 700)[:20000],
+        ("won't retry " * 1700)[:20000] + " yet",
+        ("file a " * 6000)[:40000],
+        ("want retry " * 4000)[:40000],
+    ],
+    ids=["colons", "offer-colons", "kubelet-fields", "denials-then-yet", "offer-verbs", "offer-wants"],
+)
+def test_the_retry_objectives_are_linear_on_a_long_line(final_message):
+    # One 15-40k character line with a segment boundary or a retry word every
+    # few words: a scan that restarts at each ": " or each retry word and runs
+    # to the end of the line took seconds, ten and more at a colon.
+    began = time.monotonic()
+    _report_misses(_RETRY_CASE, final_message)
+    assert time.monotonic() - began < 1.0
 
 
 def test_the_retry_case_fences_new_work_and_the_worker_verbs():
