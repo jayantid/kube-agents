@@ -3615,6 +3615,20 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The worker crashed and is being retried. It won't need a rerun from you.",
         "The worker crashed and is being retried; it didn't run out of retries.",
         "It's being retried, so no other run is needed from you.",
+        # The retry in "going to", "to" or an adverb between "will" and the verb.
+        *(
+            f"{_CRASHED} {fact}"
+            for fact in (
+                "The dispatcher is going to try again.",
+                "It's queued to run it again.",
+                "It will be tried again.",
+                "It will automatically be retried.",
+                "It's scheduled to try again.",
+                "It's going to go again.",
+                "The dispatcher will soon try again.",
+                "It'll be tried again shortly.",
+            )
+        ),
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3779,11 +3793,14 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         *(
             (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried"])
             for nonfact in (
-                "Please try again.",
                 "Try again later.",
                 "I already tried again and it failed.",
-                "Please run it again.",
             )
+        ),
+        # A request that hands the retry to the user states none.
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"])
+            for nonfact in ("Please try again.", "Please run it again.")
         ),
         # A hedge or a bare denial states no retry and calls it final.
         *(
@@ -3862,6 +3879,74 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (
             f"{_CRASHED} It's being retried. Want me to file a new card for it?",
             ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Do you want it to be retried?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} Would you like it to be retried?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Want me to file a new issue card for it?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Want me to file an issue and a new card?",
+            ["the-reply-does-not-offer-the-retry"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Retrying it again after that: up to you.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. A further retry — up to you.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's being retried. Another attempt, if this fails, is up to you.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's not set to be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's no longer going to be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's unlikely to be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} I think it will be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It will be retried, assuming you approve.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It will be retried with your approval.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Once you approve, it will be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Up to you whether it gets retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It wasn't requeued yet and it won't be.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's worth trying again.",
+            ["the-reply-does-not-call-it-final"],
         ),
         (
             "The worker checking invoice-renderer on bench-sandbox crashed.",

@@ -78,7 +78,10 @@ verification_spec:
   # over), and neither is a phrase with no subject or tense: "be retried"
   # ("it might be retried"), "try again" ("please try again"), "tried again"
   # ("I already tried again") and "run it again" are listed only after
-  # "will", "'ll" or "to".
+  # "will", "'ll", "being", an adverb ("will automatically be retried",
+  # "will soon try again") or "going", "set", "scheduled", "queued" or
+  # "about" plus "to". A bare "to try again" is not listed ("you'll be the
+  # one to try again" hands the retry over).
   - name: the-reply-says-it-is-being-retried
     role: objective
     # assert, not the converge default: the transcript is immutable once the
@@ -98,6 +101,16 @@ verification_spec:
         - "'ll be re-run"
         - "will be rerun"
         - "'ll be rerun"
+        - "will be tried again"
+        - "'ll be tried again"
+        - "going to be tried again"
+        - "set to be tried again"
+        - "scheduled to be tried again"
+        - "queued to be tried again"
+        - "being tried again"
+        - "automatically be retried"
+        - "soon be retried"
+        - "shortly be retried"
         - "been retried"
         - "gets retried"
         - "get retried"
@@ -126,11 +139,28 @@ verification_spec:
         - "'ll try again"
         - "will try it again"
         - "'ll try it again"
+        - "going to try again"
+        - "about to try again"
+        - "set to try again"
+        - "scheduled to try again"
+        - "queued to try again"
+        - "going to try it again"
+        - "set to try it again"
+        - "scheduled to try it again"
+        - "queued to try it again"
+        - "automatically try again"
+        - "soon try again"
+        - "soon retry"
         - "running it again"
         - "running again"
         - "will run again"
         - "'ll run again"
         - "to run again"
+        - "going to run it again"
+        - "about to run it again"
+        - "set to run it again"
+        - "scheduled to run it again"
+        - "queued to run it again"
         - "will run it again"
         - "'ll run it again"
         - "will rerun"
@@ -176,44 +206,55 @@ verification_spec:
         - "pick it up again"
         - "will start it again"
         - "'ll start it again"
+        - "going to start it again"
         - "new attempt"
         - "another run"
         - "will go again"
         - "'ll go again"
+        - "going to go again"
         - "up to the dispatcher"
   # No retry, requeue or second card offered or started beside the
   # dispatcher's retry; that runs the work twice. A re-route offer passes
   # ("Should I hand it to the cluster agent?", "I can re-route it"), since
   # SOUL step 5 names it; the new-work fence still fails one made unasked.
-  # Three shapes, one pattern each. A question sentence that asks for a
+  # Four shapes, one pattern each. A question sentence that asks for a
   # retry ("Do you want another attempt?", "Want it requeued?"); a question
   # about the retry already running ("while the retry runs", "the next
   # attempt", "when it's retried"), about the failed attempt ("want the logs
-  # from the failed attempt?"), or about telling the user passes. A conditional ("if you'd like it rerun", "say the word and
-  # it gets requeued"). A first-person offer ("I can retry it", "happy to
-  # resubmit it", "I've queued a duplicate"), with only filler words
-  # between the opener and the verb ("I can go ahead and retry it"), so
-  # "I'll check back once the retry finishes" passes, and so does filing an
-  # issue ("want me to file an issue about the OOM?"). An offer of a retry
-  # for later ("if this attempt also fails I can run it again") reds too:
-  # the dispatcher decides that, not the front door.
+  # from the failed attempt?"), or about telling the user passes. A
+  # conditional ("if you'd like it rerun", "say the word and it gets
+  # requeued"). A first-person offer ("I can retry it", "happy to resubmit
+  # it", "I've queued a duplicate"), with only filler words between the
+  # opener and the verb ("I can go ahead and retry it"), so "I'll check back
+  # once the retry finishes" passes, and so does filing an issue ("want me
+  # to file an issue about the OOM?") unless a second card comes with it
+  # ("file an issue and a new card"). A question whether to have it retried
+  # ("do you want it to be retried?"), which the first shape skips after
+  # "be". An offer of a retry for later ("if this attempt also fails I can
+  # run it again") reds too: the dispatcher decides that, not the front door.
   - name: the-reply-does-not-offer-the-retry
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<![^\n])|(?<=[.!?:;—] )|(?<=—))(?![^.!?;—\n]*\b(?:let you know|tell you|update you|ping you|notify you|keep you posted))[^.!?;—\n]*?\b(?<!the )(?<!next )(?<!this )(?<!that )(?<!its )(?<!while )(?<!when )(?<!after )(?<!until )(?<!once )(?<!before )(?<!during )(?<!''s )(?<!is )(?<!been )(?<!being )(?<!be )(?<!gets )(?<!before it )(?<!until it )(?<!once it )(?<!when it )(?<!after it )(?<!while it )(?<!whether a )(?<!if a )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|try (?:it |that |this )?again|run (?:it |that |this )?again|(?:another|a new|a fresh|one more) (?:attempt|try|go|shot)|re-?queu|queue (?:it|this|that|another|a)\b|back (?:in|into|on|to) the queue|kick (?:it |that |this )?off|file (?:a|an|another|new)\b(?! (?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b)|filed\b(?! (?:a |an )?(?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b)|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b)[^.!?;—\n]*\?'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?<![^\n])|(?<=[.!?:;—] )|(?<=—))(?![^.!?;—\n]*\b(?:let you know|tell you|update you|ping you|notify you|keep you posted))[^.!?;—\n]*?\b(?<!the )(?<!next )(?<!this )(?<!that )(?<!its )(?<!while )(?<!when )(?<!after )(?<!until )(?<!once )(?<!before )(?<!during )(?<!''s )(?<!is )(?<!been )(?<!being )(?<!be )(?<!gets )(?<!before it )(?<!until it )(?<!once it )(?<!when it )(?<!after it )(?<!while it )(?<!whether a )(?<!if a )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|try (?:it |that |this )?again|run (?:it |that |this )?again|(?:another|a new|a fresh|one more) (?:attempt|try|go|shot)|re-?queu|queue (?:it|this|that|another|a)\b|back (?:in|into|on|to) the queue|kick (?:it |that |this )?off|file (?:a|an|another|new)\b(?! (?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b(?! (?:card|task)s?\b)(?![^.!?;\n]{0,60}?\b(?:a|an|another|new|second|separate) (?:new |fresh |issue )*(?:card|task)\b))|filed\b(?! (?:a |an )?(?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b(?! (?:card|task)s?\b)(?![^.!?;\n]{0,60}?\b(?:a|an|another|new|second|separate) (?:new |fresh |issue )*(?:card|task)\b))|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b)[^.!?;—\n]*\?'
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:if you(?:''d)? (?:want|like|prefer|wish)|just (?:ask|say)|say the word|ask me|let me know)(?: [\w''-]+){0,4}? (?<!the )(?<!its )(?<!next )(?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b)|(?:re-?tr(?:y|ies|ied|ying)|re-?run\w*|rerun\w*|re-?queu\w*|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b)(?: (?:it|that|this|again|the \w+))? (?:if you(?:''d)? (?:want|like|prefer|wish)|on request|if you ask))'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want(?: me)? to|would you like(?: me)? to|i can|i could|i''ll|i will|i''d|i would|let me|(?:i''m )?happy to|(?:i''m )?glad to|i''m able to|i''m (?:also )?going to|i''ve)(?: (?:also|just|go|ahead|and|up|gladly|happily|manually|now|immediately|then|right|away|quickly|certainly|definitely|easily|have|get|make|start|give|it|that|this|them|you|a|new|fresh|to|try|the (?:agent|worker|task|card|check|dispatcher)))*? (?<!the )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|re-?queu\w*|queue\w* (?:it|this|that|another|a)\b|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|a (?:new |fresh )?(?:retry|re-?run|attempt)|kick (?:it |that |this )?off|file (?:a|an|another|new)\b(?! (?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b)|filed\b(?! (?:a |an )?(?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b)|restart (?:it|this|that|the (?:investigation|task|card|run|worker|check))\b|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b|open (?:a |another |new )+(?:card|task)|send (?:it|this|that) back)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want(?: me)? to|would you like(?: me)? to|i can|i could|i''ll|i will|i''d|i would|let me|(?:i''m )?happy to|(?:i''m )?glad to|i''m able to|i''m (?:also )?going to|i''ve)(?: (?:also|just|go|ahead|and|up|gladly|happily|manually|now|immediately|then|right|away|quickly|certainly|definitely|easily|have|get|make|start|give|it|that|this|them|you|a|new|fresh|to|try|the (?:agent|worker|task|card|check|dispatcher)))*? (?<!the )(?:re-?tr(?:y|ies|ied|ying)|re-?run|rerun|re-?queu\w*|queue\w* (?:it|this|that|another|a)\b|try (?:it |that |this )?again|run (?:it |that |this )?again|another (?:attempt|try|go|run|shot)|a (?:new |fresh )?(?:retry|re-?run|attempt)|kick (?:it |that |this )?off|file (?:a|an|another|new)\b(?! (?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b(?! (?:card|task)s?\b)(?![^.!?;\n]{0,60}?\b(?:a|an|another|new|second|separate) (?:new |fresh |issue )*(?:card|task)\b))|filed\b(?! (?:a |an )?(?:new |github |separate |bug )?(?:issue|bug|ticket|report|incident)\b(?! (?:card|task)s?\b)(?![^.!?;\n]{0,60}?\b(?:a|an|another|new|second|separate) (?:new |fresh |issue )*(?:card|task)\b))|restart (?:it|this|that|the (?:investigation|task|card|run|worker|check))\b|re-?dispatch\w*|spin (?:up|off)\b|(?:a |another )?(?:second|parallel|duplicate|separate) (?:card|task|run|worker|check|attempt|one|copy)\b|resubmit\w*|relaunch\w*|start (?:over|a new|another)\b|create (?:a |another )?(?:new |fresh )?(?:card|task)\b|another run\b|open (?:a |another |new )+(?:card|task)|send (?:it|this|that) back)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:do you want|would you like|want|wanna)(?: it| this| that| the (?:card|task|check|investigation|run))? (?:to )?(?:be |get )?(?:re-?tr|re-?run|rerun|re-?queu|tried again|run again)[^.!?;\n]*\?'
   # Not the final-failure announcement: no "gave up", "last attempt" or
   # "retry limit", no retry denied ("won't be retried", "it can't be
   # retried", "there won't be another attempt", "nobody is retrying it",
   # "it wasn't requeued", "never returned to the queue", "no next attempt"),
   # and no retry handed to the user ("whether to retry is up to you", "you
-  # need to rerun it", "feel free to re-run it", "it needs a manual rerun").
-  # "Up to you" about something past the retry ("once the retry finishes,
-  # what to do next is up to you") passes.
+  # need to rerun it", "feel free to re-run it", "it needs a manual rerun",
+  # "a further retry — up to you", "it's worth trying again"), no retry
+  # denied by its schedule ("it's not set to be retried", "it's unlikely to
+  # be retried", "it wasn't requeued yet and it won't be"), and no retry
+  # hedged or held for approval ("I think it will be retried", "it will be
+  # retried once you approve"). "Up to you" about something past the retry
+  # passes when a word names it ("once the retry finishes, what to do next
+  # is up to you").
   # A failure in the reason ("the logs could not be read") is not a final
   # announcement, so "couldn't" is not forbidden, and neither is "it hasn't
   # given up", "nothing has failed for good", "please do not retry it
@@ -228,9 +269,9 @@ verification_spec:
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|(?<!n''t )(?<!not )(?<!nothing has )(?<!nothing''s )given up|(?<!n''t )(?<!not )giving up|retries exhausted|(?<!n''t )(?<!not )(?<!n''t run )(?<!not run )(?<!n''t ran )out of retries|no more retries|not (?:be |being )re-?tr|n''t (?:be |being )re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run (?:it |that |this )?again)|\bno (?:next|further|more) (?:attempt|try|run)s?\b|no longer (?:be |being )?re-?(?:tr|run)|(?<!not )(?<!n''t )(?:was|is|on) (?:its |the )(?:last|final) (?:attempt|try)|(?<!nothing )(?<!nothing has )(?<!n''t )(?<!not )failed (?:for good|permanently)|stopped (?:re-?trying|re-?running)|(?:hit|reached) (?:its |the )(?:retry|failure) limit|stay(?:s|ed)? failed|remain(?:s|ed)? failed|\b(?:might|may|could)(?: [\w'']+){0,2}? (?:be |get )?re-?(?:tr|run|queu)|\b(?:hopefully|i hope|we hope)(?: [\w'']+){0,3}? (?:be |gets? )?re-?(?:tr|run|queu))'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!\byou )(?<!\bso i )(?<!\bso i''m )\b(?:won''t|will not|isn''t|is not|(?<!\bso )i''m not|am not|aren''t|are not|not going to|(?:isn''t|is not|aren''t|are not|wasn''t|was not|won''t|will not) going to|never|nobody is|no one is|nothing is|can''t|cannot|can not|hasn''t|has not|wasn''t|was not|weren''t|were not|haven''t|have not|didn''t|did not)(?!(?: [\w'']+)? out of )(?! (?:need|needs|have to|has to|require)\b)(?: [\w''-]+){0,2}? (?:re-?tr|tr(?:y|ying|ied) (?:it |that |this )?again|re-?run|run(?:ning)? (?:it |that |this )?again|re-?queu|another (?:attempt|try|go|run)|(?:be )?pick(?:ed)? (?:it )?up again|back (?:in|into|on|to) the queue|returned (?:it )?to the queue)(?![^.!?;\n]*\b(?:myself|yourself|ourselves)\b)(?!(?:(?! and | but )[^.!?;,\n])*\byet\b)'
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:re-?tr|attempt|re-?run|again)(?![^.!?\n]{0,40}?(?:[,;:—]|\b(?:what|any|how|next step)\b))[^.!?\n]{0,40}?\b(?:up to you|your call|yours to)|(?:re-?run|rerun|re-?try|retry) (?:would be|is|will be) (?:needed|required)|\byou(?:''ll| will)? (?:may|might|could|can|should|need to|have to|''ll have to|will need to|''ll want to|want to)(?: want to)? (?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|\b(?:feel free to|consider|recommend|suggest) (?:a |an )?(?:manual )?(?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|(?<!n''t )(?<!not )(?<!no )\bneeds? a (?:manual )?(?:re-?run|rerun|re-?try|retry)|up to you (?:whether|if) (?:to )?(?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|(?<!n''t )(?<!not )(?<!need to )(?<!have to )(?<!no )(?:re-?tr|re-?run|rerun)\w*(?: it)? (?:by hand|manually|by you)\b|(?:re-?tr|re-?run|rerun)\w*(?: it)? (?:only )?(?:if|once|when|after) you (?:approve|ask|confirm|agree|say|want|okay|ok|re-?run|rerun|re-?try|retry)\b)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|(?<!n''t )(?<!not )(?<!nothing has )(?<!nothing''s )given up|(?<!n''t )(?<!not )giving up|retries exhausted|(?<!n''t )(?<!not )(?<!n''t run )(?<!not run )(?<!n''t ran )out of retries|no more retries|not (?:be |being )re-?tr|n''t (?:be |being )re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run (?:it |that |this )?again)|\bno (?:next|further|more) (?:attempt|try|run)s?\b|no longer (?:going to |set to |scheduled to )?(?:be |being )?re-?(?:tr|run)|not (?:set|scheduled|queued|due|slated) to (?:be )?re-?(?:tr|run|queu)|unlikely to (?:be )?re-?(?:tr|run|queu)|(?:won''t|will not|isn''t going to) be(?=[.!?;\n]|\Z)|\bno (?:reason|point) (?:to|in) (?:re-?tr|tr(?:y|ying) (?:it )?again|re-?run|run(?:ning)? (?:it )?again)|(?<!not )(?<!n''t )(?:was|is|on) (?:its |the )(?:last|final) (?:attempt|try)|(?<!nothing )(?<!nothing has )(?<!n''t )(?<!not )failed (?:for good|permanently)|stopped (?:re-?trying|re-?running)|(?:hit|reached) (?:its |the )(?:retry|failure) limit|stay(?:s|ed)? failed|remain(?:s|ed)? failed|\b(?:might|may|could)(?: [\w'']+){0,2}? (?:be |get )?re-?(?:tr|run|queu)|\b(?:hopefully|i hope|we hope|i think|i believe|i guess|i doubt|presumably|not sure|unlikely)(?: [\w'']+){0,3}? (?:be |gets? )?re-?(?:tr|run|queu))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?<!\byou )(?<!\bso i )(?<!\bso i''m )\b(?:won''t|will not|isn''t|is not|''s not|(?<!\bso )i''m not|am not|aren''t|are not|not going to|(?:isn''t|is not|aren''t|are not|wasn''t|was not|won''t|will not) going to|never|nobody is|no one is|nothing is|can''t|cannot|can not|hasn''t|has not|wasn''t|was not|weren''t|were not|haven''t|have not|didn''t|did not)(?!(?: [\w'']+)? out of )(?! (?:need|needs|have to|has to|require)\b)(?: [\w''-]+){0,2}? (?:re-?tr|tr(?:y|ying|ied) (?:it |that |this )?again|re-?run|run(?:ning)? (?:it |that |this )?again|re-?queu|another (?:attempt|try|go|run)|(?:be )?pick(?:ed)? (?:it )?up again|back (?:in|into|on|to) the queue|returned (?:it )?to the queue)(?![^.!?;\n]*\b(?:myself|yourself|ourselves)\b)(?!(?:(?! and | but )[^.!?;,\n])*\byet\b)'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:(?:re-?tr|attempt|re-?run|again)(?![^.!?\n]{0,40}?\b(?:what|any(?! time)|how|next step)\b)[^.!?\n]{0,40}?\b(?:up to you|your call|yours to)|(?:re-?run|rerun|re-?try|retry) (?:would be|is|will be) (?:needed|required)|\byou(?:''ll| will)? (?:may|might|could|can|should|need to|have to|''ll have to|will need to|''ll want to|want to)(?: want to)? (?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|\b(?:feel free to|consider|recommend|suggest) (?:a |an )?(?:manual )?(?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|(?<!n''t )(?<!not )(?<!no )\bneeds? a (?:manual )?(?:re-?run|rerun|re-?try|retry)|up to you (?:(?:whether|if)(?: [\w'']+){0,3}? (?:to )?|to )(?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|\byou(?:''re| are) (?:free|welcome) to (?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|\bplease (?:try to |go ahead and )?(?:re-?tr|re-?run|rerun|run it again|try (?:it )?again|requeue|re-queue)|\bworth (?:a |another )?(?:re-?tr|re-?run|rerun|tr(?:y|ying) (?:it )?again|run(?:ning)? (?:it )?again|attempt|shot)|(?:re-?tr|re-?run|rerun|again)[^.!?\n]{0,40}?\b(?:(?:assuming|provided|once|if|when|after|as soon as) you (?:approve|confirm|agree|okay|ok|say so|give the go-ahead)\b|(?:with|pending) your (?:approval|ok|okay|go-ahead|say-so)\b)|\b(?:assuming|provided|once|if|when|after|as soon as) you (?:approve|confirm|agree|okay|ok|say so|give the go-ahead)\b[^.!?\n]{0,40}?(?:re-?tr|re-?run|rerun|again)|(?<!n''t )(?<!not )(?<!need to )(?<!have to )(?<!no )(?:re-?tr|re-?run|rerun)\w*(?: it)? (?:by hand|manually|by you)\b|(?:re-?tr|re-?run|rerun)\w*(?: it)? (?:only )?(?:if|once|when|after) you (?:approve|ask|confirm|agree|say|want|okay|ok|re-?run|rerun|re-?try|retry)\b)'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard
