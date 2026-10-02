@@ -3629,6 +3629,17 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It'll be tried again shortly.",
             )
         ),
+        # A negation that leaves the retry standing, beside the stated retry.
+        *(
+            f"{_CRASHED} {fact}"
+            for fact in (
+                "It's being retried. It hasn't hit its retry limit.",
+                "It's being retried; it hasn't reached the failure limit.",
+                "It will be retried; there's nothing you need to re-run.",
+                "It's being retried. No one needs to rerun it by hand.",
+                "It's being retried, so it won't stay failed.",
+            )
+        ),
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3831,7 +3842,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "It wasn't requeued.",
                 "It is not back in the queue.",
                 "It was never returned to the queue.",
-                "There is no next attempt scheduled.",
+                "No next attempt is scheduled.",
                 "It isn't being re-run.",
                 "It is not trying again.",
             )
@@ -3946,6 +3957,42 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         (
             f"{_CRASHED} It's worth trying again.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            "The worker crashed (exit 137) before it could find out why Kubernetes keeps restarting it.",
+            ["the-reply-says-it-is-being-retried"],
+        ),
+        (
+            "invoice-renderer is OOM-killed and the kubelet restarts it; the worker investigating that crashed too, so the check failed.",
+            ["the-reply-says-it-is-being-retried"],
+        ),
+        (
+            f"{_CRASHED} I'll check another runbook for this.",
+            ["the-reply-says-it-is-being-retried"],
+        ),
+        (
+            f"{_CRASHED} The check failed. On the next attempt you may want more memory.",
+            ["the-reply-says-it-is-being-retried"],
+        ),
+        (
+            f"{_CRASHED} Maybe it will be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} Perhaps the dispatcher will retry.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} I expect the dispatcher will retry it.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} I assume it will be retried.",
+            ["the-reply-does-not-call-it-final"],
+        ),
+        (
+            f"{_CRASHED} It's possible it will be retried.",
             ["the-reply-does-not-call-it-final"],
         ),
         (
