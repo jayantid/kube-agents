@@ -3640,6 +3640,35 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried, so it won't stay failed.",
             )
         ),
+        # A retry word near a quoted error, an approval of something else, a
+        # "yourself" refusal or a "your call" about the cause is not a hand-off.
+        *(
+            f"{_CRASHED} {fact}"
+            for fact in (
+                'It will be retried automatically. The log said "please try again later".',
+                "It will be retried automatically, and once you approve the quota bump the next attempt should pass.",
+                "It's being retried. There's no reason to retry it yourself.",
+                "It's being retried; the root cause, though, is your call.",
+                "It's being retried, but the root cause is your call.",
+                "It will be retried. After the retry, any follow-up is up to you.",
+            )
+        ),
+        # The remaining "to" and adverb fact forms.
+        *(
+            f"{_CRASHED} {fact}"
+            for fact in (
+                "The dispatcher is about to try again.",
+                "It's being tried again.",
+                "It will shortly be retried.",
+                "The dispatcher will soon retry.",
+                "The dispatcher is going to start it again.",
+                "The dispatcher is going to run it again.",
+                "The dispatcher is set to run it again.",
+                "The dispatcher is about to run it again.",
+                "The dispatcher is scheduled to run it again.",
+                "It's going to automatically be retried.",
+            )
+        ),
         # SOUL step 5 names a re-route, so offering one beside the retry passes.
         *(
             f"{_CRASHED} It's being retried. {offer}"
@@ -3798,6 +3827,55 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "Feel free to re-run it.",
                 "It'll need a manual rerun.",
                 "It's up to you whether to try again.",
+            )
+        ),
+        # A retry handed to the user with "going to", "set to" or "soon".
+        *(
+            (f"{_CRASHED} {handoff}", ["the-reply-does-not-call-it-final"])
+            for handoff in (
+                "You're going to try again yourself.",
+                "You'll soon try again yourself.",
+                "You're set to run it again once you're ready.",
+            )
+        ),
+        # A hedged, denied or approval-held retry in any fact form.
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-does-not-call-it-final"])
+            for nonfact in (
+                "I don't think it will be tried again.",
+                "I'm not sure it will be tried again.",
+                "Maybe it'll be tried again.",
+                "It's never going to be tried again.",
+                "It's not queued to be tried again.",
+                "It's not going to go again.",
+                "I believe it'll be retried.",
+                "I guess it will be retried.",
+                "I doubt it'll be retried.",
+                "Presumably it will be retried.",
+                "Not sure it'll be retried.",
+                "It will be retried as soon as you approve.",
+                "It'll be retried pending your go-ahead.",
+                "Provided you confirm, it will be retried.",
+                "It will be retried once you give the go-ahead.",
+                "It will be retried once you approve.",
+                "There's no point in retrying it.",
+            )
+        ),
+        *(
+            (f"{_CRASHED} It's being retried. {handoff}", ["the-reply-does-not-call-it-final"])
+            for handoff in ("You're free to retry it.", "You're welcome to rerun it.")
+        ),
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"])
+            for nonfact in ("It's not retrying.",)
+        ),
+        # A modal other than "will" states no retry.
+        *(
+            (f"{_CRASHED} {nonfact}", ["the-reply-says-it-is-being-retried"])
+            for nonfact in (
+                "It should automatically be retried.",
+                "It used to automatically be retried.",
+                "It would soon be retried, if it weren't at its limit.",
             )
         ),
         # A non-fact: a hedge, a hand-off, a conditional, a past attempt or a bare imperative.
