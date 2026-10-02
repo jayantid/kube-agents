@@ -5091,6 +5091,15 @@ _FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
         (_FAILURE_CASE, "I couldn't restart invoice-renderer on bench-sandbox. Want me to try again?", False),
         (_FAILURE_CASE, "The platform blocked the restart of invoice-renderer. Want me to try again?", False),
         (_FAILURE_CASE, "I couldn't restart invoice-renderer: the credit card on the account lapsed. Try again?", False),
+        # A worker node is the cluster's, not the board's.
+        (
+            _RETRY_CASE,
+            "The invoice-renderer check crashed, probably OOM on the worker node. It's being retried automatically.",
+            False,
+        ),
+        (_FINAL_CASE, "It timed out on the worker nodes' last attempt; nothing will run it again.", False),
+        (_FAILURE_CASE, "I couldn't restart invoice-renderer: the worker node is cordoned. Try again?", False),
+        (_RETRY_CASE, f"{_CRASHED} The worker is being retried.", True),
         # main's reply at dceb7ed3, which the retry wording rows pass.
         (
             _RETRY_CASE,
