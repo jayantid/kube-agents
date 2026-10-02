@@ -207,8 +207,12 @@ def asked(sub: dict, event_id: int) -> bool:
 
 
 def question_card(channel: str, ts: str) -> str | None:
-    """The card whose open question this process posted as ``ts`` in ``channel``, else None."""
-    for key, (_event_id, posted_channel, posted_ts, _blocks, _text) in list(_questions.items()):
+    """The card whose open question this process posted as ``ts`` in ``channel``, else None.
+
+    A question kept in ``_unsettled`` for a retry still has live buttons, so it counts too.
+    """
+    entries = [*_questions.items(), *((key[0], entry) for key, entry in _unsettled.items())]
+    for key, (_event_id, posted_channel, posted_ts, _blocks, _text) in entries:
         if ts and posted_ts == str(ts) and posted_channel == str(channel):
             return key[0] or None
     return None

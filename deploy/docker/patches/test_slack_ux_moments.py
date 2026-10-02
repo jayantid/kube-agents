@@ -352,6 +352,19 @@ class SettleQuestionTest(unittest.TestCase):
         self.assertEqual([u["ts"] for u in adapter.updates], [EARLIER_TS, POSTED_TS])
         self.assertEqual((runtime._questions, runtime._unsettled), ({}, {}))
 
+    def test_a_click_on_a_question_kept_for_retry_still_names_its_card(self):
+        adapter = _Adapter()
+        _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
+        key = runtime._sub_key(SUB)
+        first = runtime._questions[key]
+        runtime._questions[key] = (first[0], first[1], EARLIER_TS, *first[3:])
+        adapter.fail_update = True
+        with self.assertLogs(runtime.logger, "WARNING"):
+            _run(runtime.needs_you(adapter, SUB, QUESTION, 9))
+        self.assertEqual(runtime.question_card("C0KAGE", EARLIER_TS), SUB["task_id"])
+        self.assertEqual(runtime.question_card("C0KAGE", POSTED_TS), SUB["task_id"])
+        self.assertIsNone(runtime.question_card("C0OTHER", EARLIER_TS))
+
     def test_a_clicked_question_is_forgotten_without_a_rewrite(self):
         adapter = _Adapter()
         _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
