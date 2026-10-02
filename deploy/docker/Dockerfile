@@ -706,16 +706,6 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # See the module docstring in
 # deploy/docker/patches/apply_google_chat_attachment_notice.py.
 #
-# Slack agent view, behind KAGE_SLACK_UX (off by default; off leaves both files
-# behaving as upstream). With it on, --agent-view describes the app by its
-# --name, and the adapter answers a new thread or DM open with three suggested
-# prompts when platforms.slack.extra.suggested_prompts is unset. The default
-# stays assistant view: agent view is one-way in Slack. Runs after the
-# reactions-scope patch below because both edit slack_cli.py; the verifier
-# drives the real manifest command and prompt reader with the flag off and on.
-# Rides this COPY and RUN too.
-# See the module docstring in deploy/docker/patches/apply_slack_agent_view.py.
-#
 # Slack: ask for the reactions scope the adapter already spends. `hermes slack
 # manifest` is the only description of the Slack app an installer ever writes --
 # the operator pastes that JSON in and clicks Save -- and its bot_scopes list
@@ -798,10 +788,10 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 #
 # Slack agent view, behind KAGE_SLACK_UX (off by default; off leaves both files
 # behaving as upstream). With it on, --agent-view describes the app by its
-# --name, and the adapter answers a new thread or DM
-# open with three suggested prompts when platforms.slack.extra.suggested_prompts
-# is unset. The default stays assistant view: agent view is one-way in Slack.
-# Runs after the reactions-scope patch because both edit slack_cli.py; the verifier drives the
+# --name, and the adapter answers a new thread or DM open with three suggested
+# prompts when platforms.slack.extra.suggested_prompts is unset. The default
+# stays assistant view: agent view is one-way in Slack. Runs after the
+# reactions-scope patch because both edit slack_cli.py; the verifier drives the
 # real manifest command and prompt reader with the flag off and on.
 # See the module docstring in deploy/docker/patches/apply_slack_agent_view.py.
 #
@@ -847,8 +837,6 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/slack_manifest.json \
      deploy/docker/patches/verify_slack_manifest.py \
      deploy/docker/patches/patchlib.py \
-     deploy/docker/patches/apply_slack_agent_view.py \
-     deploy/docker/patches/verify_slack_agent_view.py \
      /tmp/message-surface/
 RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis.py /opt/hermes && \
     grep -q "_CODE_SENTINEL_RE" /opt/hermes/plugins/platforms/slack/block_kit.py && \
@@ -881,10 +869,6 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     grep -qF "def _kage_slack_ux_on(" /opt/hermes/hermes_cli/slack_cli.py && \
     grep -qF "_KAGE_SUGGESTED_PROMPTS = " /opt/hermes/plugins/platforms/slack/adapter.py && \
     cd /opt/hermes && \
-    /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_agent_view.py /opt/hermes && \
-    grep -qF "def _kage_slack_ux_on(" /opt/hermes/hermes_cli/slack_cli.py && \
-    grep -qF "_KAGE_SUGGESTED_PROMPTS = " /opt/hermes/plugins/platforms/slack/adapter.py && \
-    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_agent_view.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_code_emphasis.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_google_chat_attachment_notice.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_reactions_scope.py && \
