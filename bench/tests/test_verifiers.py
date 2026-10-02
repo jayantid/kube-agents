@@ -3633,6 +3633,12 @@ def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_m
         # A delivered result is the specialist's voice, not the front door's.
         "The worker crashed and is being retried.\n\n"
         "Result of delegated task t_cc52a43d:\nI couldn't read the logs.",
+        # main's own replies (rv reds on main-37c6b216): the queue is the retry.
+        "The task checking the `invoice-renderer` restarts crashed (exit code 137) during its run, "
+        "but it has already been queued to automatically retry.",
+        "The `cluster-bench-project-bench-sandbox-us-central1` agent crashed (exit code 137) while "
+        "checking the `invoice-renderer` pods. The system has automatically returned it to the queue "
+        "to retry, so no action is needed right now.",
     ],
 )
 def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message):

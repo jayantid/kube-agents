@@ -93,6 +93,23 @@ verification_spec:
         - "next attempt"
         - "requeued"
         - "back in the queue"
+        # The queue, as main words it: "queued to automatically retry", "returned
+        # it to the queue to retry". No bare "to retry": "want me to retry it?"
+        # is the offer above, not the fact.
+        - "requeue"
+        - "re-queued"
+        - "queue to retry"
+        - "queued to retry"
+        - "queued for retry"
+        - "queued for a retry"
+        - "queued to automatically retry"
+        - "back to the queue"
+        - "returned to the queue"
+        - "returned it to the queue"
+        - "automatically retry"
+        - "retry automatically"
+        - "set to retry"
+        - "scheduled to retry"
   # No retry offered or started beside the dispatcher's: the reply files
   # nothing beside it, in words as in tools. An offer-only reply is also
   # what main's SOUL produces, so this is the half of the red the fact
