@@ -4581,14 +4581,15 @@ def test_the_final_attempt_objectives_fail_a_reply_that_says_it_is_retried(final
 
 
 _FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
-_FAILURE_WHY = "The platform agent's service account lacks container.deployments.update there."
-_FAILURE_ASK = "Unblock it once that's granted?"
+_FAILURE_WHY = "The service account lacks container.deployments.update there."
+_FAILURE_ASK = "Want me to try again once you've granted it?"
 _FAILURE_RETRY = "the-reply-ends-on-the-retry-question"
+_FAILURE_NOINT = "the-reply-names-no-internals"
 _FAILURE_SHOW = {"name": "kanban_show", "args": {"task_id": "t_cc52a43d"}, "result": "blocked", "status": "completed"}
 # Follows the voice to the letter, then re-routes without being asked.
 _FAILURE_REROUTE = (
     "I couldn't restart **invoice-renderer** on bench-sandbox; its service account was "
-    "denied, so I've asked the cluster agent to check who can. Retry it once they answer?\n\n"
+    "denied, so I've asked another agent to check who can. Retry it once they answer?\n\n"
     "Result of delegated task t_0dd5e7a1:\n"
     "Delegated to the cluster agent. Sorry, let me know if you need more."
 )
@@ -4625,8 +4626,6 @@ def test_the_failure_case_requires_a_successful_card_read():
         "account lacks container.deployments.update there. " + _FAILURE_ASK,
         "I don't have permission to restart invoice-renderer on bench-sandbox: the service "
         "account lacks container.deployments.update there. " + _FAILURE_ASK,
-        "The platform agent couldn't restart invoice-renderer on bench-sandbox: its service "
-        "account lacks container.deployments.update there. " + _FAILURE_ASK,
         # The dots in a permission name do not end the first sentence.
         "Without container.deployments.update, invoice-renderer on bench-sandbox wasn't restarted. "
         + _FAILURE_ASK,
@@ -4661,18 +4660,45 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         # The model's own miss on main and on a green: a status, not a failure verb.
         (
             f"The restart of invoice-renderer on bench-sandbox is blocked. {_FAILURE_WHY} {_FAILURE_ASK}",
-            ["the-reply-leads-with-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
+        ),
+        # A status ahead of the failure verb leads with the status, even in one sentence.
+        (
+            "Invoice-renderer on bench-sandbox is blocked because the service account lacks "
+            "container.deployments.update, so it was not restarted. " + _FAILURE_ASK,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        (
+            "invoice-renderer on bench-sandbox gave up and was not restarted: the service account "
+            "lacks container.deployments.update there. " + _FAILURE_ASK,
+            ["the-reply-opens-on-the-fact"],
+        ),
+        # The agent's name, in a reply that otherwise follows the voice.
+        (
+            "The platform agent couldn't restart invoice-renderer on bench-sandbox: its service "
+            "account lacks container.deployments.update there. " + _FAILURE_ASK,
+            [_FAILURE_NOINT],
+        ),
+        (
+            "I couldn't restart invoice-renderer on bench-sandbox. The specialist's service account "
+            "lacks container.deployments.update there. Re-route it once that's granted?",
+            [_FAILURE_NOINT],
+        ),
+        (
+            "I couldn't restart invoice-renderer on bench-sandbox. The card's service account lacks "
+            "container.deployments.update there. Unblock it once that's granted?",
+            [_FAILURE_NOINT],
         ),
         # A failure verb inside another word is not one.
         (
             "invoice-renderer on bench-sandbox is blocked; it will restart whenever the "
             "service account gets container.deployments.update. " + _FAILURE_ASK,
-            ["the-reply-leads-with-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
         ),
         (
             "invoice-renderer on bench-sandbox is blocked and does nothing until the service "
             "account gets container.deployments.update. " + _FAILURE_ASK,
-            ["the-reply-leads-with-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
         ),
         (
             f"Don't worry: invoice-renderer on bench-sandbox is blocked. {_FAILURE_WHY} {_FAILURE_ASK}",
@@ -4686,12 +4712,12 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             "Restart invoice-renderer on bench-sandbox is blocked and needs attention.\n\n"
             f"{_FAILURE_WHY} {_FAILURE_ASK}",
-            ["the-reply-leads-with-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
         ),
         (
             "The platform agent couldn't restart invoice-renderer on bench-sandbox: it probably "
             "lacks access. " + _FAILURE_ASK,
-            ["the-reply-says-why"],
+            ["the-reply-says-why", _FAILURE_NOINT],
         ),
         (
             "Task t_cc52a43d is blocked and needs attention.\n\n"
@@ -4746,14 +4772,14 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             "The task to restart invoice-renderer is blocked. The service account lacks "
             f"container.deployments.update, so it couldn't perform the restart. {_FAILURE_ASK}",
-            ["the-reply-leads-with-the-fact"],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact"],
         ),
         # A close that asks for something other than the retry or re-route.
         (
             "I couldn't restart invoice-renderer on bench-sandbox: the platform agent's service "
             "account doesn't have container.deployments.update there. Someone who holds it can run "
             "the restart. Want me to draft the command for them?",
-            [_FAILURE_RETRY],
+            [_FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (
             f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} How would you like to proceed?",
@@ -4767,7 +4793,7 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
         (
             f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} "
             "Once you grant it, I can unblock the task to retry.",
-            [_FAILURE_RETRY],
+            [_FAILURE_RETRY, _FAILURE_NOINT],
         ),
         # The ask only in a delegated result is not the front door's.
         (
@@ -4793,7 +4819,7 @@ def _failure_case_fails(final_message: str, trajectory: list[dict]) -> list[str]
 
 
 def test_the_failure_case_passes_a_reply_that_reads_the_card_and_starts_nothing():
-    reply = f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} Want me to re-route it?"
+    reply = f"I couldn't restart invoice-renderer on bench-sandbox. {_FAILURE_WHY} Want me to try again?"
     assert _failure_case_fails(reply, [_FAILURE_SHOW]) == []
 
 
@@ -4812,7 +4838,8 @@ def test_the_failure_case_fails_a_reply_that_never_read_the_card():
 
 # Replies the front door gave this case's wake, verbatim: on main (85e836b4) and on a branch
 # build from before SOUL step 5 named the failure verb and the retry question (1d10bef2).
-# None closes on the retry question, and all but one open on the card's status.
+# None closes on the retry question, all but one open on the card's status, and every one
+# names the platform agent.
 @pytest.mark.parametrize(
     ("final_message", "missed"),
     [
@@ -4820,7 +4847,7 @@ def test_the_failure_case_fails_a_reply_that_never_read_the_card():
             "The task to restart `invoice-renderer` on the `bench-sandbox` cluster is blocked. The "
             "platform agent's service account lacks the required permissions "
             "(`container.deployments.update`) on that cluster to perform the restart.",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # branch 1d10bef2
             "The restart of `invoice-renderer` on `bench-sandbox` was blocked by a permission error. The "
@@ -4828,53 +4855,59 @@ def test_the_failure_case_fails_a_reply_that_never_read_the_card():
             " cluster, so it couldn't execute the rollout. \n\nYou'll need to grant that permission to the "
             "agent's service account. Once you've done that, let me know and I can unblock the task to "
             "try again.",
-            ["the-reply-leads-with-the-fact", "no-apology-let-me-know-or-narration", _FAILURE_RETRY],
+            [
+                "the-reply-leads-with-the-fact",
+                "the-reply-opens-on-the-fact",
+                "no-apology-let-me-know-or-narration",
+                _FAILURE_RETRY,
+                _FAILURE_NOINT,
+            ],
         ),
         (  # branch 1d10bef2
             "The restart of `invoice-renderer` is blocked. The platform agent's service account lacks the"
             " required permission (`container.deployments.update`) on the `bench-sandbox` cluster. \n\nCan "
             "you grant that permission or check if there's another account or agent meant for this "
             "cluster?",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # branch 1d10bef2
             "I couldn't restart invoice-renderer because the platform agent's service account lacks the "
             "`container.deployments.update` permission on the `bench-sandbox` cluster. \n\nIf you or an "
             "admin can grant that permission, let me know and I can unblock the task to retry it. "
             "Alternatively, if another agent already has the right access, we can route it there instead.",
-            ["no-apology-let-me-know-or-narration", _FAILURE_RETRY],
+            ["no-apology-let-me-know-or-narration", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # main 85e836b4
             "The restart for `invoice-renderer` on `bench-sandbox` is currently blocked. The platform "
             "agent does not have the necessary `container.deployments.update` permissions on that cluster"
             " to perform the rollout restart. \n\nHow would you like to proceed with granting those "
             "permissions or having this performed through another account?",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # main 85e836b4
             "The task to restart the `invoice-renderer` on `bench-sandbox` is blocked. The platform "
             "agent's service account lacks the required `container.deployments.update` permission on that"
             " cluster, so it couldn't perform the restart.",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # main 85e836b4
             "The restart of the `invoice-renderer` deployment on `bench-sandbox` is blocked. The platform"
             " agent's service account lacks the `container.deployments.update` permission on that "
             "cluster, so it couldn't execute the rollout. \n\nYou'll need to grant the service account the "
             "correct permissions before the agent can try again.",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # main 85e836b4
             "The task to restart `invoice-renderer` is blocked. The platform agent's service account "
             "doesn't have the required permissions (`container.deployments.update`) on the "
             "`bench-sandbox` cluster, so it couldn't perform the restart.",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
         (  # main 85e836b4
             "The task to restart the invoice-renderer deployment is blocked. The platform agent's service"
             " account lacks the required permissions (`container.deployments.update`) on the "
             "`bench-sandbox` cluster to perform the restart. \n\nHow would you like to proceed?",
-            ["the-reply-leads-with-the-fact", _FAILURE_RETRY],
+            ["the-reply-leads-with-the-fact", "the-reply-opens-on-the-fact", _FAILURE_RETRY, _FAILURE_NOINT],
         ),
     ],
 )

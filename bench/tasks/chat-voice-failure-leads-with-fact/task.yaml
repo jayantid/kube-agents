@@ -45,10 +45,11 @@ prompt: |-
   reason: Permission denied. The platform agent's service account lacks container.deployments.update on bench-sandbox, so invoice-renderer was not restarted.
 expected_output: >-
   The front door reads the blocked card and tells the user in a few warm,
-  full sentences that invoice-renderer on bench-sandbox was not restarted
-  because the agent's service account lacks container.deployments.update
-  there, leading with that fact and saying what would work instead. It
-  carries no apology, no "let me know" and no preamble.
+  full sentences, in its own voice, that invoice-renderer on bench-sandbox
+  was not restarted because the service account lacks
+  container.deployments.update there, leading with that fact and asking
+  whether to try again once that is granted. It names no agent, specialist
+  or card, and carries no apology, no "let me know" and no preamble.
 infrastructure:
   deployer: noop
 validated: false
@@ -86,8 +87,12 @@ verification_spec:
         - '\A\s*+(?!(?:[^\n.!?]|[.!?](?=\S))*?\b(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|don[''’]t|doesn[''’]t|do not|does not|never|unable|failed|no permission|no access|not allowed|denied)\b)'
   # The opener is the fact, not what comes before it: a greeting, a
   # preamble or reassurance, the card's status or its id, behind any leading
-  # mention, emoji or quote marker. The agent's name may open the fact ("The platform agent
-  # couldn't…"), since SOUL §1 has the front door name the agent.
+  # mention, emoji or quote marker. The second pattern reds a first sentence
+  # that reaches the status ("…is blocked", "…gave up") before a failure
+  # verb, so "invoice-renderer is blocked because…, so it was not restarted"
+  # leads with the status even though the fact follows in the same sentence.
+  # The agent's name does not open it either; that is the no-internals check
+  # below, since SOUL step 5 keeps this reply in the front door's own voice.
   - name: the-reply-opens-on-the-fact
     role: objective
     mode: assert
@@ -95,6 +100,7 @@ verification_spec:
       type: report_contains
       forbidden_patterns:
         - '\A\s*+(?:<@[a-z0-9]+(?:\|[^>\n]*)?>\s*+)?[^\w\n]*+(?:hi|hello|hey|heads[ -]up|good news|quick update|looks like|i[''’]m afraid|don[''’]t worry|never mind|no worries|sure|of course|certainly|absolutely|okay|ok|unfortunately|i[''’]ll|i will|let me|update|status|blocked|gave up|task|card|t[0-9a-f]{6,})\b'
+        - '\A\s*+(?:(?!\b(?:couldn[''’]t|could not|can[''’]t|cannot|wasn[''’]t|was not|didn[''’]t|did not|won[''’]t|will not|isn[''’]t|is not|hasn[''’]t|has not|haven[''’]t|have not|don[''’]t|doesn[''’]t|do not|does not|never|unable|failed|no permission|no access|not allowed|denied)\b)(?:[^\n.!?]|[.!?](?=\S)))*?\b(?:blocked|gave up|given up)\b'
   # The wake does not carry the reason, so the front door has to read the
   # card. Objectives, not recoverable safeguards: a recoverable result never
   # fails a run.
@@ -123,7 +129,9 @@ verification_spec:
       forbidden_patterns:
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*(?:sorry|apolog|let me know|let me check|i[''’]ll now|i will now|i[''’]m now\b)'
   # SOUL step 5's close for a blocked card: the retry or re-route, asked as
-  # a question ("Unblock it once that's granted?"). A question that asks for
+  # a question ("Want me to try again once you've granted it?"). "Unblock"
+  # and "re-route" still satisfy this check; the no-internals check reds
+  # them on its own. A question that asks for
   # something else ("How would you like to proceed?", "Can you grant that
   # permission?") is not it, and neither is the retry stated as a plan. It
   # may sit anywhere in the front door's own text, so a sign-off after it
@@ -135,6 +143,20 @@ verification_spec:
       type: report_contains
       forbidden_patterns:
         - '\A(?!(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:unblock|retry|try (?:it |that |this )?again|re-?run|re-?route|route (?:it|this|that)|restart it|reassign|hand (?:it|this) to)\b[^.!?\n]*\?)'
+  # SOUL step 5: the status line already names the agent, so this reply is
+  # in the front door's own voice and names no agent, specialist or card,
+  # and never says "unblock" or "re-route". Whole words, with their plurals
+  # and inflections ("discard" and "routed" do not count), in the front
+  # door's own text only. The card's reason says "the platform agent's
+  # service account", so echoing it reds this; "the service account" does
+  # not, and still satisfies the why-check.
+  - name: the-reply-names-no-internals
+    role: objective
+    mode: assert
+    check:
+      type: report_contains
+      forbidden_patterns:
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:platform[ -]agents?|cluster[ -]agents?|specialists?|cards?|unblock(?:s|ed|ing)?|re-?rout(?:e|es|ed|ing))\b'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard
