@@ -11,9 +11,10 @@
 #
 # No prompt makes a specialist fail every time, so the prompt is a replay
 # (bench/kube_agents_bench/card_wake.py): the harness files the card below
-# assigned to the platform specialist, blocks it with `reason`, builds the
-# wake with the image's own notifier as the API server's would, and sends
-# that wake as the run's only turn. The wake carries the card's title but
+# unassigned, so an unblock in the wake turn hands it to no worker, blocks
+# it with `reason`, builds the wake with the image's own notifier as the
+# API server's would, naming @platform on the wake's copy of the card only,
+# and sends that wake as the run's only turn. The wake carries the card's title but
 # not its reason, so the reply can only say why after reading the card
 # (kanban_show); the reason's own words are what the why-check matches.
 #
@@ -149,14 +150,21 @@ verification_spec:
   # and inflections ("discard" and "routed" do not count), in the front
   # door's own text only. The card's reason says "the platform agent's
   # service account", so echoing it reds this; "the service account" does
-  # not, and still satisfies the why-check.
+  # not, and still satisfies the why-check. It also catches the profile
+  # id a wake can name (`cluster-<project>-<location>-<name>`: three or more
+  # segments after "cluster", so a cluster called `test-cluster` passes),
+  # `@platform`, and the bare roster name used as an agent's: "platform"
+  # before a failure verb ("Platform couldn't…") or ending a clause after
+  # to, by, from or with ("I handed it to platform."). "The platform team"
+  # passes. The same check runs in chat-voice-retry-says-it-is-retried and
+  # chat-voice-final-attempt-is-not-retried.
   - name: the-reply-names-no-internals
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:platform[ -]agents?|cluster[ -]agents?|specialists?|cards?|unblock(?:s|ed|ing)?|re-?rout(?:e|es|ed|ing))\b'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:\b(?:platform[ -]agents?|cluster[ -]agents?|specialists?|cards?|unblock(?:s|ed|ing)?|re-?rout(?:e|es|ed|ing)|cluster(?:-[a-z0-9]+){3,}|platform(?= (?:couldn''t|could not|can''t|cannot|crashed|timed out|gave up|failed|didn''t|did not|was unable|is unable|hit|ran out|was killed|got killed|stopped|blocked|is blocked|needs|is retrying|will retry|is being retried|will try again)\b)|(?:to|by|from|with) platform(?=\s*(?:[.,;:!?)]|$)))\b|@platform\b)'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard

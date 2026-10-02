@@ -3506,16 +3506,22 @@ def test_the_ack_voice_objectives_stop_at_the_delivered_sections(final_message):
 
 _RETRY_CASE = TASKS / "chat-voice-retry-says-it-is-retried" / "task.yaml"
 _CRASHED = "The worker checking invoice-renderer on bench-sandbox crashed."
+_NO_INTERNALS = "the-reply-names-no-internals"
 
 
 def _report_misses(case: Path, final_message: str) -> list[str]:
-    """``case``'s report_contains objectives that fail on ``final_message``."""
+    """``case``'s report_contains objectives that fail on ``final_message``.
+
+    The no-internals check has its own test, so the retry wording rows
+    can keep their worker, card and agent names.
+    """
     spec = yaml.safe_load(case.read_text())
     transcript.set(final_message, [], final_message=final_message)
     return [
         entry["name"]
         for entry in spec["verification_spec"]
         if entry["check"]["type"] == "report_contains"
+        and entry["name"] != _NO_INTERNALS
         and not ReportContainsVerifier(**entry["check"]).verify(timeout_sec=1).success
     ]
 
@@ -4609,6 +4615,51 @@ def test_the_final_attempt_objectives_fail_a_reply_that_says_it_is_retried(final
 
 
 _FAILURE_CASE = TASKS / "chat-voice-failure-leads-with-fact" / "task.yaml"
+
+
+@pytest.mark.parametrize(
+    ("case", "final_message", "named"),
+    [
+        (_RETRY_CASE, f"{_CRASHED} It's being retried.", False),
+        (_RETRY_CASE, "Want me to hand this to another agent?", False),
+        (_RETRY_CASE, "The platform team can raise the memory limit.", False),
+        (_RETRY_CASE, "It crashed on test-cluster and is being retried.", False),
+        (_RETRY_CASE, "The cluster-autoscaler crashed; it's being retried.", False),
+        (_FINAL_CASE, f"{_GAVE_UP} Nothing will run it again unless you ask.", False),
+        (_FAILURE_CASE, "I couldn't restart invoice-renderer on bench-sandbox. Want me to try again?", False),
+        # A live green that now reds (rv on main-64cb68bb at 9b36715b, green3).
+        (
+            _RETRY_CASE,
+            "The cluster agent checking the `invoice-renderer` restarts crashed unexpectedly during its "
+            "run. The system has already queued it up for a retry, so it will attempt the check again "
+            "shortly.",
+            True,
+        ),
+        # The profile id a live run on main named (rv on main-37c6b216, red3).
+        (
+            _RETRY_CASE,
+            "The `cluster-bench-project-bench-sandbox-us-central1` agent crashed (exit code 137); "
+            "it's being retried.",
+            True,
+        ),
+        (_RETRY_CASE, f"{_CRASHED} It's being retried. Want me to re-route it instead?", True),
+        (_RETRY_CASE, f"{_CRASHED} It's being retried; the card doesn't need re-running by hand.", True),
+        (_RETRY_CASE, "Platform crashed; it's being retried.", True),
+        (_RETRY_CASE, "It crashed, and @platform is retrying it.", True),
+        (_FINAL_CASE, "It stopped. Say yes and the cluster agent will try again.", True),
+        (_FINAL_CASE, "The specialist timed out on its last attempt; nothing will run it again.", True),
+        (_FINAL_CASE, "It stopped. I can hand it back to platform.", True),
+        (_FAILURE_CASE, "Platform couldn't restart invoice-renderer on bench-sandbox. Want me to try again?", True),
+        (_FAILURE_CASE, "I couldn't restart invoice-renderer, and neither could @platform. Want me to try again?", True),
+    ],
+)
+def test_every_failure_voice_case_names_no_internals(case, final_message, named):
+    spec = yaml.safe_load(case.read_text())["verification_spec"]
+    (check,) = [e["check"] for e in spec if e["name"] == _NO_INTERNALS]
+    transcript.set(final_message, [], final_message=final_message)
+    assert ReportContainsVerifier(**check).verify(timeout_sec=1).success is not named
+
+
 _FAILURE_WHY = "The service account lacks container.deployments.update there."
 _FAILURE_ASK = "Want me to try again once you've granted it?"
 _FAILURE_RETRY = "the-reply-ends-on-the-retry-question"
