@@ -12,14 +12,13 @@
 # already making.
 #
 # main already answers this way, and the case guards that answer.
-# agents/chat/SOUL.md §2 step 5 lists crashed among the wakes to act on and
-# says to "retry or re-route if that is the better answer", so offering a
-# re-route passes ("want me to hand this to the cluster agent?"). Making
-# one unasked does not: this run has one turn, so a kanban_create in it is
-# a second run the user never chose, beside the dispatcher's retry. SOUL
-# does not say the dispatcher already retries a crashed card, so redding a
-# retry offer grades past what SOUL states; it rests on the dispatcher
-# behaviour above.
+# agents/chat/SOUL.md §2 step 5 says the dispatcher runs a crashed card
+# again, so the reply says in a line that it is being retried, offers no
+# retry of its own and files nothing beside it. A re-route offer is not a
+# retry, so it passes ("want me to hand this to the cluster agent?").
+# Making one unasked does not: this run has one turn, so a kanban_create
+# in it is a second run the user never chose, beside the dispatcher's
+# retry.
 #
 # No prompt makes a worker crash, so the prompt is a replay
 # (bench/kube_agents_bench/card_wake.py, outcome crashed): the harness files
@@ -302,7 +301,8 @@ verification_spec:
   # No retry, requeue or second card offered or started beside the
   # dispatcher's retry; that runs the work twice. A re-route offer passes
   # ("Should I hand it to the cluster agent?", "I can re-route it"), since
-  # SOUL step 5 names it; the new-work fence still fails one made unasked.
+  # SOUL step 5 forbids only a retry offer; the new-work fence still fails
+  # one made unasked.
   # Four shapes, one pattern each. A question sentence that asks for a
   # retry ("Do you want another attempt?", "Want it requeued?"); a question
   # about the retry already running ("while the retry runs", "the next
