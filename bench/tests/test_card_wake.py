@@ -365,7 +365,7 @@ def test_without_the_module_nothing_posts_and_the_wake_is_plain(
 def test_a_failed_wake_archives_the_card_it_filed(hermes_root: Path, tmp_path: Path) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAKE_WAKE_FAILS="1")
 
-    with pytest.raises(card_wake.ReplayUnavailable, match="notifier exploded"):
+    with pytest.raises(card_wake.ReplayFailed, match="notifier exploded"):
         card_wake.plant(shell, card_wake.parse(PROMPT), timeout=30)
 
     [card] = _board(tmp_path)["tasks"].values()
@@ -386,13 +386,30 @@ def test_archive_archives_the_card(hermes_root: Path, tmp_path: Path) -> None:
         ("", "did not run"),
         (f"{card_wake.REPLAY_PRESENT}\nnot json", "not JSON"),
         (f"{card_wake.REPLAY_PRESENT}\n[]", "not an object"),
+    ],
+)
+def test_plant_refuses_a_reply_it_cannot_read(reply: str, reason: str) -> None:
+    with pytest.raises(card_wake.ReplayUnavailable, match=reason):
+        card_wake.plant(lambda command, timeout: reply, card_wake.parse(PROMPT), 30)
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason"),
+    [
         (f'{card_wake.REPLAY_PRESENT}\n{{"error": "ImportError: no hermes"}}', "no hermes"),
         (f'{card_wake.REPLAY_PRESENT}\n{{"card": "t_1", "wake": " "}}', "no wake"),
     ],
 )
-def test_plant_refuses_a_reply_it_cannot_trust(reply: str, reason: str) -> None:
-    with pytest.raises(card_wake.ReplayUnavailable, match=reason):
+def test_plant_fails_on_a_script_that_ran_and_reported_no_wake(reply: str, reason: str) -> None:
+    # Not ReplayUnavailable: the harness records it as errored, not infrastructure.
+    with pytest.raises(card_wake.ReplayFailed, match=reason) as raised:
         card_wake.plant(lambda command, timeout: reply, card_wake.parse(PROMPT), 30)
+    assert not isinstance(raised.value, card_wake.ReplayMismatch)
+
+
+def test_archive_is_best_effort_when_its_script_reports_an_error() -> None:
+    reply = f'{card_wake.REPLAY_PRESENT}\n{{"archived": false, "error": "OSError: board locked"}}'
+    assert card_wake.archive(lambda command, timeout: reply, "t_1", 30) is False
 
 
 def test_archive_is_best_effort() -> None:
@@ -552,7 +569,7 @@ def test_a_worker_failure_the_breaker_disagrees_with_is_a_mismatch_and_archives_
     assert card["status"] == "archived"
 
 
-def test_a_blocked_failure_wakes_through_the_api_server_with_the_card_assigned(
+def test_a_blocked_failure_wakes_through_the_api_server_naming_an_assignee_the_board_lacks(
     hermes_root: Path, tmp_path: Path
 ) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT)
@@ -568,10 +585,11 @@ def test_a_blocked_failure_wakes_through_the_api_server_with_the_card_assigned(
     card = board["tasks"][planted.card]
     assert card["status"] == "blocked"
     assert card["body"] == "Roll the checkout-gateway Deployment on seeded-a."
-    assert card["assignee"] == card_wake.FAILURE_ASSIGNEE
+    # Only the wake names the assignee: it is a real profile, so an unblock
+    # in the wake turn would make the card ready for a real worker.
+    assert card["assignee"] is None
     assert card["max_retries"] is None
-    # Blocked first, assigned after, so the dispatcher never sees it ready.
-    assert [e["kind"] for e in board["events"]] == ["blocked", "assigned"]
+    assert [e["kind"] for e in board["events"]] == ["blocked"]
     assert board["events"][0]["payload"] == {"reason": FAILURE_REASON, "kind": None}
 
 
@@ -606,7 +624,7 @@ def test_a_failed_failure_wake_archives_the_card_it_filed(
 ) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT, FAKE_WAKE_FAILS="1")
 
-    with pytest.raises(card_wake.ReplayUnavailable, match="failure wake: .*notifier exploded"):
+    with pytest.raises(card_wake.ReplayFailed, match="failure wake: .*notifier exploded"):
         card_wake.plant(shell, card_wake.parse(FAILURE_PROMPT), timeout=30)
 
     [card] = _board(tmp_path)["tasks"].values()

@@ -33,11 +33,12 @@ wake is the user's only announcement of the failure (``agents/chat/SOUL.md``
 §2, step 5). The harness never reads it: its own poll turns ask for a status
 recital, and no prompt makes a specialist fail every time. For
 :data:`FAILURE_DIRECTIVE` the in-pod script files the card and either blocks
-it with the case's reason, then assigns it to :data:`FAILURE_ASSIGNEE`
-(``outcome: blocked``), or trips its failure breaker with it as the error
-(``outcome: gave_up``, the event the dispatcher records when its retries run
-out). A gave_up card is filed with ``max_retries=1`` and never assigned, so
-the dispatcher cannot re-arm it; only its wake names the assignee. Then it
+it with the case's reason (``outcome: blocked``) or trips its failure breaker
+with it as the error (``outcome: gave_up``, the event the dispatcher records
+when its retries run out). Neither card is assigned on the board, and a
+gave_up card is filed with ``max_retries=1``: the dispatcher cannot re-arm
+it, and a ``kanban_unblock`` in the wake turn leaves a ready card no worker
+takes. Only the wake names :data:`FAILURE_ASSIGNEE`, a real profile. Then it
 builds the wake with the image's notifier through a non-push stub adapter, as
 the API server's is. The harness sends that wake as the run's only turn. The
 wake names the card but not the reason, so the front door reads the card
@@ -74,17 +75,19 @@ reaches Slack. The wake under test is the notifier's, built by the image's own
 code.
 
 Unlike :mod:`kube_agents_bench.board`, a failed plant is not best effort: a
-run that never saw the wake grades nothing, so :func:`plant` raises and the
-harness records the run as infrastructure. The exception is a breaker that
-disagrees with the outcome (a retry that trips it, a final attempt that does
-not): the image's dispatcher no longer retries the way the case asserts, so
-:func:`plant` raises :class:`ReplayMismatch` and the harness records an
-errored run rather than an infrastructure one, which the gate excludes. An
-errored run has no trajectory and a null token count, so a single repetition
-of it stops at one of the gate's absolute rungs (a check that did not run, or
-"not evidence of a real agent run"): an absolute red, admitted case or not.
-The printed reason names the rung, not the mismatch; the run's error names
-the mismatch.
+run that never saw the wake grades nothing, so :func:`plant` raises. Only a
+reply the harness cannot read (no sentinel, or no JSON object after it) is
+:class:`ReplayUnavailable`, which the harness records as infrastructure and
+the gate excludes. A script that ran and reported an error, or no card or
+wake, raises :class:`ReplayFailed`, and a breaker that disagrees with the
+outcome (a retry that trips it, a final attempt that does not) raises its
+subclass :class:`ReplayMismatch`: the image no longer builds the wake or
+retries the way the case asserts, and an excluded run would leave the case
+silent. The harness records either as an errored run. An errored run has no
+trajectory and a null token count, so a single repetition of it stops at one
+of the gate's absolute rungs (a check that did not run, or "not evidence of a
+real agent run"): an absolute red, admitted case or not. The printed reason
+names the rung; the run's error names the script's.
 """
 
 from __future__ import annotations
@@ -104,6 +107,7 @@ __all__ = [
     "Failure",
     "Planted",
     "Replay",
+    "ReplayFailed",
     "ReplayMismatch",
     "ReplayUnavailable",
     "archive",
@@ -154,8 +158,9 @@ SCRIPTS_DIR = "/opt/defaults/scripts"
 SLACK_UX_FLAG = "KAGE_SLACK_UX"
 FLAG_ON = "1"
 
-# Who the card says filed it, who a failed card says was working it, and the
-# stub thread a question is posted in. Slack never sees the thread.
+# Who the card says filed it, who a blocked or gave_up card's wake says was
+# working it (never the board: the profile is real), and the stub thread a
+# question is posted in. Slack never sees the thread.
 CARD_CREATOR = "devops-bench"
 FAILURE_ASSIGNEE = "platform"
 # Who a crashed or timed-out card says was working it: shaped like a
@@ -232,9 +237,10 @@ try:
         moments = None
     conn = connect()
     gave_up = OUTCOME == "gave_up"
-    # A gave_up card is never assigned, and max_retries=1 keeps it parked:
-    # assign_task resets an unassigned card's failure count, and
-    # recompute_ready then promotes it to a real worker.
+    # A blocked or gave_up card is never assigned: its assignee is a real
+    # profile, so an unblock in the wake turn would hand it to a worker, and
+    # on a gave_up card assign_task resets the failure count, which lets
+    # recompute_ready promote it. max_retries=1 keeps a gave_up card parked.
     limit = {"max_retries": 1} if gave_up else {}
     card = kb.create_task(conn, title=TITLE, body=BODY, created_by=CREATOR, **limit)
     out["card"] = card
@@ -282,9 +288,6 @@ try:
         if not kb.block_task(conn, card, reason=REASON, kind=block_kind):
             raise RuntimeError("card %s would not block" % card)
         kind = "blocked"
-    # A blocked card is assigned only once it can no longer be dispatched.
-    if ASSIGNEE and not gave_up and not kb.assign_task(conn, card, ASSIGNEE):
-        raise RuntimeError("card %s would not take assignee %s" % (card, ASSIGNEE))
     events = [e for e in kb.list_events(conn, card) if e.kind != "assigned"][-batch:]
     if not events or events[-1].kind != kind:
         raise RuntimeError("card %s has no %s event" % (card, kind))
@@ -299,8 +302,9 @@ try:
                "delivery_mode": "notify+wake"}
         adapter = _ApiServerAdapter()
     task = kb.get_task(conn, card)
-    if gave_up and ASSIGNEE:
-        # The wake names the worker that gave up; only this copy carries it.
+    if ASSIGNEE:
+        # The wake names the worker that blocked or gave up; only this copy
+        # carries it.
         task = dataclasses.replace(task, assignee=ASSIGNEE)
     wake = notifier._KanbanNotification(
         None, {"sub": sub, "task": task, "board": kb.DEFAULT_BOARD, "events": events},
@@ -344,10 +348,14 @@ print(json.dumps(out))
 
 
 class ReplayUnavailable(RuntimeError):
-    """The replay's card or wake could not be produced in the pod."""
+    """The in-pod script's reply could not be read: it never ran, or printed no JSON object."""
 
 
-class ReplayMismatch(RuntimeError):
+class ReplayFailed(RuntimeError):
+    """The in-pod script ran and could not produce the replay's card or wake."""
+
+
+class ReplayMismatch(ReplayFailed):
     """The image's failure breaker disagrees with the replay's outcome."""
 
 
@@ -477,7 +485,7 @@ def _reply(text: str, what: str) -> dict:
     if payload.get("mismatch"):
         raise ReplayMismatch(f"{what}: {payload['mismatch']}")
     if payload.get("error"):
-        raise ReplayUnavailable(f"{what}: {payload['error']}")
+        raise ReplayFailed(f"{what}: {payload['error']}")
     return payload
 
 
@@ -485,16 +493,17 @@ def plant(shell: Callable[[str, float], str], replay: Replay | Failure, timeout:
     """File the replay's card, park it, and return the wake the image builds for it.
 
     ``shell`` is :func:`harness._agent_shell`. Raises
-    :class:`ReplayUnavailable` when the script did not run, its reply is not
-    JSON, or it reported an error, and :class:`ReplayMismatch` when the
-    image's failure breaker disagreed with the outcome; the script archives a
-    card it filed before failing.
+    :class:`ReplayUnavailable` when the script did not run or its reply is not
+    a JSON object, :class:`ReplayFailed` when it reported an error or no card
+    or wake, and :class:`ReplayMismatch` when the image's failure breaker
+    disagreed with the outcome; the script archives a card it filed before
+    failing.
     """
     what = "failure wake" if isinstance(replay, Failure) else "question wake"
     payload = _reply(shell(plant_command(replay), timeout), what)
     card, wake = payload.get("card"), payload.get("wake")
     if not isinstance(card, str) or not card or not isinstance(wake, str) or not wake.strip():
-        raise ReplayUnavailable(f"{what}: no card or no wake in {payload!r}")
+        raise ReplayFailed(f"{what}: no card or no wake in {payload!r}")
     posted = payload.get("posted")
     return Planted(card, wake, posted if isinstance(posted, int) else 0)
 
@@ -503,7 +512,7 @@ def archive(shell: Callable[[str, float], str], card: str, timeout: float) -> bo
     """Archive the replay's card. Best effort: ``False`` when it could not be confirmed."""
     try:
         reply = _reply(shell(archive_command(card), timeout), f"archiving {card}")
-    except ReplayUnavailable:
+    except (ReplayUnavailable, ReplayFailed):
         return False
     return bool(reply.get("archived"))
 
