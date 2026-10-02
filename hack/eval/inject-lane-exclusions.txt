@@ -54,3 +54,10 @@ chat-voice-final-attempt-is-not-retried
 # answers it. Returns to the lane when the door routes through the chat
 # profile.
 chat-voice-failure-leads-with-fact
+
+# #2039: grades the chat front door's silence on the wake a card sends when
+# its question is already posted (bench/kube_agents_bench/card_wake.py
+# replays that wake as the run's first turn). The inject door addresses
+# `platform` directly, so no front door answers the wake. Returns to the
+# lane when the door routes through the chat profile.
+chat-question-wake-stays-silent

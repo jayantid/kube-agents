@@ -4,18 +4,18 @@ The in-pod scripts run here under the test interpreter, the way
 ``test_board.py`` runs its sibling, against a stand-in hermes tree: a
 ``kanban_db`` that keeps its board in a JSON file, a dispatcher whose failure
 breaker counts and trips as the real one does, and a notifier whose wake
-passes through
-``slack_ux_moments.wake_text`` when the module is there, as the patched one
-does. The module itself is the real
-``deploy/docker/patches/slack_ux_moments.py``, with the real
-``agents/platform/scripts`` beside it, so the note under test is the one the
-image ships. The harness-side parsers are tested with canned replies.
+passes through ``slack_ux_moments.wake_text`` when that module is there.
+Where the tree has ``deploy/docker/patches/slack_ux_moments.py``, the tests
+that need it copy the real one in, with the real ``agents/platform/scripts``
+beside it; where it does not, they skip. The harness-side parsers are tested
+with canned replies.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -75,21 +75,37 @@ def _save(state):
         json.dump(state, fh)
 
 
-@dataclass
-class Task:
-    id: str
-    title: str
-    assignee: object
+class _Conn:
+    # The one query the archive script makes: a key's live cards, newest first.
+    def execute(self, sql, params):
+        assert "idempotency_key" in sql, sql
+        tasks = _load()["tasks"]
+        return [(tid,) for tid in sorted(tasks, reverse=True)
+                if tasks[tid]["key"] == params[0] and tasks[tid]["status"] != "archived"]
 
 
-def create_task(conn, *, title, body=None, created_by=None, max_retries=None):
+def connect():
+    return _Conn()
+
+
+def create_task(conn, *, title, body=None, created_by=None, idempotency_key=None):
     state = _load()
     task_id = "t_%08d" % (len(state["tasks"]) + 1)
     state["tasks"][task_id] = {"title": title, "body": body, "created_by": created_by,
-                               "status": "ready", "assignee": None, "failures": 0,
-                               "max_retries": max_retries}
+                               "status": "ready", "assignee": None, "key": idempotency_key,
+                               "comments": [], "failures": 0}
     _save(state)
     return task_id
+
+
+def comment(task_id, author, body):
+    state = _load()
+    state["tasks"][task_id]["comments"].append({"author": author, "body": body})
+    _save(state)
+
+
+def list_comments(conn, task_id):
+    return [SimpleNamespace(**c) for c in _load()["tasks"][task_id]["comments"]]
 
 
 @contextlib.contextmanager
@@ -126,13 +142,34 @@ def block_task(conn, task_id, *, reason=None, kind=None):
     return True
 
 
+def unblock_task(conn, task_id):
+    # As the real one: back to ready with a fresh failure count; the assignee is untouched.
+    state = _load()
+    task = state["tasks"][task_id]
+    if task["status"] != "blocked":
+        return False
+    task["status"], task["failures"], task["last_failure_error"] = "ready", 0, None
+    state["events"].append({"id": len(state["events"]) + 1, "task_id": task_id,
+                            "kind": "unblocked", "payload": None})
+    _save(state)
+    return True
+
+
 def list_events(conn, task_id):
     return [SimpleNamespace(**e) for e in _load()["events"] if e["task_id"] == task_id]
 
 
+@dataclass
+class Task:
+    id: str
+    title: str
+    status: str
+    assignee: str | None
+
+
 def get_task(conn, task_id):
     row = _load()["tasks"][task_id]
-    return Task(id=task_id, title=row["title"], assignee=row["assignee"])
+    return Task(id=task_id, title=row["title"], status=row["status"], assignee=row["assignee"])
 
 
 def archive_task(conn, task_id):
@@ -166,6 +203,12 @@ def _record_task_failure(conn, task_id, error, *, outcome, force_trip=False,
                             "payload": payload})
     _save(state)
     return True
+'''
+
+# A moments module that imports but never posts: a broken patch.
+_SILENT_MOMENTS = '''
+async def needs_you(adapter, sub, payload, event_id):
+    return False
 '''
 
 _FAKE_NOTIFIER = '''
@@ -219,9 +262,8 @@ def hermes_root(tmp_path: Path) -> Path:
     (root / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_cli" / "kanban_db.py").write_text(_FAKE_KANBAN_DB)
     (root / "hermes_cli" / "kanban_db_dispatch.py").write_text(_FAKE_DISPATCH)
-    # Only the split module opens the board: a script that reaches for
-    # kanban_db.connect, the compat shim, fails here.
-    (root / "hermes_cli" / "kanban_db_connect.py").write_text("def connect():\n    return object()\n")
+    # The split module opens the board, as on the image.
+    (root / "hermes_cli" / "kanban_db_connect.py").write_text("from hermes_cli.kanban_db import connect\n")
     (root / "gateway" / "__init__.py").write_text("")
     (root / "gateway" / "kanban_watchers_notifier.py").write_text(_FAKE_NOTIFIER)
     return root
@@ -248,47 +290,39 @@ def _run(script: str, args: list[str], tmp_path: Path, **env: str) -> str:
     return proc.stdout
 
 
-def _plant_args(root: Path, replay: card_wake.Replay | card_wake.Failure) -> list[str]:
-    if isinstance(replay, card_wake.Failure):
-        assignee = (
-            card_wake.WORKER_ASSIGNEE
-            if replay.outcome in card_wake.WORKER_OUTCOMES
-            else card_wake.FAILURE_ASSIGNEE
-        )
-        tail = [replay.body, replay.reason, replay.outcome, assignee]
-    else:
-        tail = [replay.reason, replay.reason, card_wake.OUTCOME_QUESTION, ""]
-    return [
-        card_wake.REPLAY_PRESENT,
-        str(root),
-        str(SCRIPTS),
-        card_wake.SLACK_UX_FLAG,
-        card_wake.FLAG_ON,
-        card_wake.CARD_CREATOR,
-        card_wake.STUB_CHANNEL,
-        card_wake.STUB_THREAD,
-        replay.title,
-        *tail,
-    ]
+KEY = f"{card_wake.REPLAY_KEY_PREFIX}test"
 
 
 def _shell_for(root: Path, tmp_path: Path, prompt: str = PROMPT, **env: str):
-    """A stand-in for ``harness._agent_shell`` that runs the scripts locally."""
+    """A stand-in for ``harness._agent_shell`` that runs the scripts locally.
+
+    Each command must be the one :func:`card_wake.plant_command`,
+    :func:`card_wake.read_command` or :func:`card_wake.archive_command` builds
+    for :data:`KEY`; it runs with
+    the stand-in tree in place of ``/opt/hermes`` and ``/opt/defaults/scripts``.
+    """
+    replay = card_wake.parse(prompt)
+    assert replay is not None
+    commands = {
+        card_wake.plant_command(replay, KEY): card_wake._PLANT_SCRIPT,
+        card_wake.read_command(KEY): card_wake._READ_SCRIPT,
+        card_wake.archive_command(KEY): card_wake._ARCHIVE_SCRIPT,
+    }
 
     def shell(command: str, timeout: float) -> str:
-        replay = card_wake.parse(prompt)
-        assert replay is not None
-        if command == card_wake.plant_command(replay):
-            return _run(card_wake._PLANT_SCRIPT, _plant_args(root, replay), tmp_path, **env)
-        card = command.rsplit(" ", 1)[1]
-        assert command == card_wake.archive_command(card)
-        return _run(
-            card_wake._ARCHIVE_SCRIPT,
-            [card_wake.REPLAY_PRESENT, str(root), card],
-            tmp_path,
-        )
+        script = commands[command]
+        tokens = shlex.split(command)
+        args = tokens[tokens.index("-c") + 2 :]
+        args[1] = str(root)
+        if script is card_wake._PLANT_SCRIPT:
+            args[2] = str(SCRIPTS)
+        return _run(script, args, tmp_path, **env)
 
     return shell
+
+
+def _plant(shell, prompt: str = PROMPT) -> card_wake.Planted:
+    return card_wake.plant(shell, card_wake.parse(prompt), timeout=30, key=KEY)
 
 
 def _moments_note() -> str:
@@ -338,11 +372,12 @@ def test_with_the_module_the_question_posts_once_and_the_wake_carries_the_note(
 ) -> None:
     shell = _shell_for(_with_moments(hermes_root), tmp_path)
 
-    planted = card_wake.plant(shell, card_wake.parse(PROMPT), timeout=30)
+    planted = _plant(shell)
 
     assert planted.posted == 1
     assert planted.wake == (
-        f"[kanban] Task {planted.card} blocked; needs attention.\n\n{_moments_note()}"
+        f"[kanban] Task {planted.card} blocked; needs attention.\n"
+        f"Assignee: @{card_wake.WAKE_ASSIGNEE}\n\n{_moments_note()}"
     )
     card = _board(tmp_path)["tasks"][planted.card]
     assert card["status"] == "blocked"
@@ -354,66 +389,120 @@ def test_without_the_module_nothing_posts_and_the_wake_is_plain(
     hermes_root: Path, tmp_path: Path
 ) -> None:
     """The image on main: the case's red comes from this wake."""
-    planted = card_wake.plant(
-        _shell_for(hermes_root, tmp_path), card_wake.parse(PROMPT), timeout=30
-    )
+    planted = _plant(_shell_for(hermes_root, tmp_path))
 
     assert planted.posted == 0
-    assert planted.wake == f"[kanban] Task {planted.card} blocked; needs attention."
+    assert planted.key == KEY
+    assert planted.wake == (
+        f"[kanban] Task {planted.card} blocked; needs attention.\nAssignee: @{card_wake.WAKE_ASSIGNEE}"
+    )
+    card = _board(tmp_path)["tasks"][planted.card]
+    # Only the notifier's copy is assigned: unblocked, an assigned card is one a worker would claim.
+    assert card["assignee"] is None
+    assert card["key"] == KEY
+
+
+def test_a_moments_module_that_posts_nothing_is_a_broken_plant(
+    hermes_root: Path, tmp_path: Path
+) -> None:
+    """The plain wake it would build is the red one, so it must not pass for a red run or infrastructure."""
+    (hermes_root / "gateway" / "slack_ux_moments.py").write_text(_SILENT_MOMENTS)
+
+    with pytest.raises(card_wake.ReplayBroken, match="posted nothing"):
+        _plant(_shell_for(hermes_root, tmp_path))
+    assert [card["status"] for card in _board(tmp_path)["tasks"].values()] == ["archived"]
 
 
 def test_a_failed_wake_archives_the_card_it_filed(hermes_root: Path, tmp_path: Path) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAKE_WAKE_FAILS="1")
 
-    with pytest.raises(card_wake.ReplayFailed, match="notifier exploded"):
-        card_wake.plant(shell, card_wake.parse(PROMPT), timeout=30)
+    with pytest.raises(card_wake.ReplayBroken, match="notifier exploded"):
+        _plant(shell)
 
     [card] = _board(tmp_path)["tasks"].values()
     assert card["status"] == "archived"
 
 
-def test_archive_archives_the_card(hermes_root: Path, tmp_path: Path) -> None:
+def test_archive_reads_the_card_as_the_run_left_it_then_archives_it(
+    hermes_root: Path, tmp_path: Path
+) -> None:
     shell = _shell_for(hermes_root, tmp_path)
-    planted = card_wake.plant(shell, card_wake.parse(PROMPT), timeout=30)
+    planted = _plant(shell)
+    _run(
+        "import sys; sys.path.insert(0, sys.argv[1]); from hermes_cli import kanban_db as kb;"
+        " kb.comment(sys.argv[2], 'default', 'seeded-b')",
+        [str(hermes_root), planted.card],
+        tmp_path,
+    )
 
-    assert card_wake.archive(shell, planted.card, timeout=30) is True
+    settled = card_wake.archive(shell, KEY, timeout=30)
+
+    assert settled == card_wake.Settled("blocked", ({"author": "default", "body": "seeded-b"},))
+    assert settled.archived
     assert _board(tmp_path)["tasks"][planted.card]["status"] == "archived"
 
 
-@pytest.mark.parametrize(
-    ("reply", "reason"),
-    [
-        ("", "did not run"),
-        (f"{card_wake.REPLAY_PRESENT}\nnot json", "not JSON"),
-        (f"{card_wake.REPLAY_PRESENT}\n[]", "not an object"),
-    ],
-)
-def test_plant_refuses_a_reply_it_cannot_read(reply: str, reason: str) -> None:
-    with pytest.raises(card_wake.ReplayUnavailable, match=reason):
-        card_wake.plant(lambda command, timeout: reply, card_wake.parse(PROMPT), 30)
+def test_an_archive_that_times_out_keeps_the_card_it_read(hermes_root: Path, tmp_path: Path) -> None:
+    shell = _shell_for(hermes_root, tmp_path)
+    _plant(shell)
+
+    def archive_timed_out(command: str, timeout: float) -> str:
+        return "" if command == card_wake.archive_command(KEY) else shell(command, timeout)
+
+    settled = card_wake.archive(archive_timed_out, KEY, timeout=30)
+
+    assert settled == card_wake.Settled("blocked", ())
+    assert not settled.archived
+
+
+def test_no_card_carrying_the_key_reads_as_unknown(hermes_root: Path, tmp_path: Path) -> None:
+    """Not as a card with no status, which ``status_not_in`` would pass."""
+    shell = _shell_for(hermes_root, tmp_path)
+    assert card_wake.archive(shell, KEY, timeout=30) is None
+
+
+def test_a_plant_whose_exec_gave_out_sweeps_the_card_it_filed(
+    hermes_root: Path, tmp_path: Path
+) -> None:
+    """The script filed the card, then ``kubectl exec`` timed out: the reply is empty."""
+    shell = _shell_for(hermes_root, tmp_path)
+
+    def timed_out(command: str, timeout: float) -> str:
+        reply = shell(command, timeout)
+        return "" if command != card_wake.archive_command(KEY) else reply
+
+    with pytest.raises(card_wake.ReplayUnavailable, match="did not run"):
+        _plant(timed_out)
+    assert [card["status"] for card in _board(tmp_path)["tasks"].values()] == ["archived"]
 
 
 @pytest.mark.parametrize(
-    ("reply", "reason"),
+    ("reply", "error", "reason"),
     [
-        (f'{card_wake.REPLAY_PRESENT}\n{{"error": "ImportError: no hermes"}}', "no hermes"),
-        (f'{card_wake.REPLAY_PRESENT}\n{{"card": "t_1", "wake": " "}}', "no wake"),
+        ("", card_wake.ReplayUnavailable, "did not run"),
+        (f"{card_wake.REPLAY_PRESENT}\nnot json", card_wake.ReplayBroken, "not JSON"),
+        (f"{card_wake.REPLAY_PRESENT}\n[]", card_wake.ReplayBroken, "not an object"),
+        (f'{card_wake.REPLAY_PRESENT}\n{{"error": "ImportError: no hermes"}}', card_wake.ReplayBroken, "no hermes"),
+        (f'{card_wake.REPLAY_PRESENT}\n{{"card": "t_1", "wake": " "}}', card_wake.ReplayBroken, "no wake"),
     ],
 )
-def test_plant_fails_on_a_script_that_ran_and_reported_no_wake(reply: str, reason: str) -> None:
-    # Not ReplayUnavailable: the harness records it as errored, not infrastructure.
-    with pytest.raises(card_wake.ReplayFailed, match=reason) as raised:
+def test_plant_refuses_a_reply_it_cannot_trust(reply: str, error: type, reason: str) -> None:
+    """Only a script that never finished is infrastructure; one that ran and failed is the image's."""
+    with pytest.raises(error, match=reason):
         card_wake.plant(lambda command, timeout: reply, card_wake.parse(PROMPT), 30)
-    assert not isinstance(raised.value, card_wake.ReplayMismatch)
-
-
-def test_archive_is_best_effort_when_its_script_reports_an_error() -> None:
-    reply = f'{card_wake.REPLAY_PRESENT}\n{{"archived": false, "error": "OSError: board locked"}}'
-    assert card_wake.archive(lambda command, timeout: reply, "t_1", 30) is False
 
 
 def test_archive_is_best_effort() -> None:
-    assert card_wake.archive(lambda command, timeout: "", "t_1", 30) is False
+    assert card_wake.archive(lambda command, timeout: "", KEY, 30) is None
+    read = f'{card_wake.REPLAY_PRESENT}\n{{"card": "t_1", "status": "ready", "comments": [], "error": null}}'
+    refused = f'{card_wake.REPLAY_PRESENT}\n{{"archived": false, "error": "OperationalError: locked"}}'
+
+    def shell(command: str, timeout: float) -> str:
+        return read if command == card_wake.read_command(KEY) else refused
+
+    settled = card_wake.archive(shell, KEY, 30)
+    assert settled == card_wake.Settled("ready", ())
+    assert not settled.archived
 
 
 def test_parse_reads_a_failure_prompt() -> None:
@@ -475,7 +564,7 @@ def test_a_failure_prompt_reads_a_worker_outcome(outcome: str) -> None:
 
     assert isinstance(replay, card_wake.Failure)
     assert replay.outcome == outcome
-    assert card_wake.plant_command(replay).endswith(f" {outcome} {card_wake.WORKER_ASSIGNEE}")
+    assert card_wake.plant_command(replay, KEY).endswith(f" {outcome} {card_wake.WORKER_ASSIGNEE} {KEY}")
 
 
 @pytest.mark.parametrize(
@@ -491,7 +580,7 @@ def test_a_retried_worker_failure_wakes_alone_and_leaves_the_card_ready(
     prompt = FAILURE_PROMPT.replace("outcome: blocked", f"outcome: {outcome}")
     shell = _shell_for(hermes_root, tmp_path, prompt)
 
-    planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+    planted = _plant(shell, prompt)
 
     assert planted.wake == (
         f"[kanban] Task {planted.card} {status}.\n"
@@ -519,7 +608,7 @@ def test_a_final_worker_failure_wakes_with_its_gave_up(
     prompt = FAILURE_PROMPT.replace("outcome: blocked", f"outcome: {outcome}")
     shell = _shell_for(hermes_root, tmp_path, prompt)
 
-    planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+    planted = _plant(shell, prompt)
 
     # One wake, both kinds: the breaker's gave_up and the attempt's own
     # "dispatcher will retry".
@@ -544,7 +633,7 @@ def test_a_final_worker_failure_follows_the_images_failure_limit(
     prompt = FAILURE_PROMPT.replace("outcome: blocked", "outcome: timed_out_final")
     shell = _shell_for(hermes_root, tmp_path, prompt, FAKE_FAILURE_LIMIT="3")
 
-    planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+    planted = _plant(shell, prompt)
 
     assert planted.wake.startswith(
         f"[kanban] Task {planted.card} gave up (retries exhausted), timed out; dispatcher will retry.\n"
@@ -563,34 +652,56 @@ def test_a_worker_failure_the_breaker_disagrees_with_is_a_mismatch_and_archives_
     # A mismatch, not ReplayUnavailable: the harness records it as errored, so
     # the case reds rather than being excluded as infrastructure.
     with pytest.raises(card_wake.ReplayMismatch, match="tripped its failure breaker"):
-        card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+        _plant(shell, prompt)
 
     [card] = _board(tmp_path)["tasks"].values()
     assert card["status"] == "archived"
 
 
-def test_a_blocked_failure_wakes_through_the_api_server_naming_an_assignee_the_board_lacks(
+def test_a_blocked_failure_wakes_through_the_api_server_with_only_the_wake_assigned(
     hermes_root: Path, tmp_path: Path
 ) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT)
 
-    planted = card_wake.plant(shell, card_wake.parse(FAILURE_PROMPT), timeout=30)
+    planted = _plant(shell, FAILURE_PROMPT)
 
     assert planted.posted == 0
     assert planted.wake == (
         f"[kanban] Task {planted.card} blocked; needs attention.\n"
-        f"Assignee: @{card_wake.FAILURE_ASSIGNEE}\nVia: api_server"
+        f"Assignee: @{card_wake.WAKE_ASSIGNEE}\nVia: api_server"
     )
     board = _board(tmp_path)
     card = board["tasks"][planted.card]
     assert card["status"] == "blocked"
     assert card["body"] == "Roll the checkout-gateway Deployment on seeded-a."
-    # Only the wake names the assignee: it is a real profile, so an unblock
-    # in the wake turn would make the card ready for a real worker.
+    # Only the notifier's copy is assigned, so an unblock hands no worker the card.
     assert card["assignee"] is None
-    assert card["max_retries"] is None
     assert [e["kind"] for e in board["events"]] == ["blocked"]
     assert board["events"][0]["payload"] == {"reason": FAILURE_REASON, "kind": None}
+
+
+def test_an_unblock_in_the_wake_turn_leaves_the_blocked_card_ready_for_no_worker(
+    hermes_root: Path, tmp_path: Path
+) -> None:
+    shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT)
+    planted = _plant(shell, FAILURE_PROMPT)
+
+    # What a kanban_unblock from the woken turn does to the board's card.
+    _run(
+        "import sys; sys.path.insert(0, sys.argv[1]);"
+        " from hermes_cli import kanban_db as kb;"
+        " assert kb.unblock_task(kb.connect(), sys.argv[2])",
+        [str(hermes_root), planted.card],
+        tmp_path,
+    )
+
+    board = _board(tmp_path)
+    card = board["tasks"][planted.card]
+    # Ready with no assignee: the dispatcher files that under skipped_unassigned
+    # and spawns nothing, so no real worker picks the replayed card up.
+    assert card["status"] == "ready"
+    assert card["assignee"] is None
+    assert [e["kind"] for e in board["events"]] == ["blocked", "unblocked"]
 
 
 def test_a_gave_up_failure_trips_the_breaker_with_the_reason_as_its_error(
@@ -599,18 +710,15 @@ def test_a_gave_up_failure_trips_the_breaker_with_the_reason_as_its_error(
     prompt = FAILURE_PROMPT.replace("outcome: blocked", "outcome: gave_up")
     shell = _shell_for(hermes_root, tmp_path, prompt)
 
-    planted = card_wake.plant(shell, card_wake.parse(prompt), timeout=30)
+    planted = _plant(shell, prompt)
 
     assert planted.wake == (
         f"[kanban] Task {planted.card} gave up (retries exhausted).\n"
-        f"Assignee: @{card_wake.FAILURE_ASSIGNEE}\nVia: api_server"
+        f"Assignee: @{card_wake.WAKE_ASSIGNEE}\nVia: api_server"
     )
     board = _board(tmp_path)
-    # Never assigned, and one failure is its limit: assigning would reset the
-    # failure count and let recompute_ready hand it to a real worker.
-    card = board["tasks"][planted.card]
-    assert card["assignee"] is None
-    assert card["max_retries"] == 1
+    # Never assigned: an unblock or a reset failure count hands no worker the card.
+    assert board["tasks"][planted.card]["assignee"] is None
     assert [e["kind"] for e in board["events"]] == ["gave_up"]
     assert board["events"][0]["payload"] == {
         "error": FAILURE_REASON,
@@ -624,8 +732,8 @@ def test_a_failed_failure_wake_archives_the_card_it_filed(
 ) -> None:
     shell = _shell_for(hermes_root, tmp_path, FAILURE_PROMPT, FAKE_WAKE_FAILS="1")
 
-    with pytest.raises(card_wake.ReplayFailed, match="failure wake: .*notifier exploded"):
-        card_wake.plant(shell, card_wake.parse(FAILURE_PROMPT), timeout=30)
+    with pytest.raises(card_wake.ReplayBroken, match="failure wake: .*notifier exploded"):
+        _plant(shell, FAILURE_PROMPT)
 
     [card] = _board(tmp_path)["tasks"].values()
     assert card["status"] == "archived"
@@ -656,7 +764,11 @@ def test_merge_grades_the_wake_reply_and_keeps_both_trajectories() -> None:
 
     assert merged.output == "[SILENT]"
     assert merged.metadata["final_message"] == "[SILENT]"
-    assert [step["name"] for step in merged.trajectory] == ["kanban_comment", "kanban_unblock"]
+    assert [step["name"] for step in merged.trajectory] == [
+        "kanban_comment",
+        "kanban_unblock",
+        card_wake.SETTLED_ENTRY,
+    ]
     # One session: the answer turn's row already counts the wake turn.
     assert merged.tokens == {"input": 30, "output": 5, "total": 35}
     assert merged.metadata["question_wake"]["answer_output"] == "Passed seeded-b to the card."
@@ -681,6 +793,64 @@ def test_merge_keeps_both_turns_errors() -> None:
     assert card_wake.merge(_PLANTED, wake, answer).errors == ["first", "second"]
 
 
+def test_merge_records_the_card_as_the_run_left_it() -> None:
+    settled = card_wake.Settled("ready", ({"author": "default", "body": "seeded-b"},))
+
+    merged = card_wake.merge(_PLANTED, _result("", [], {}), _result("", [], {}), settled)
+
+    assert merged.metadata["question_wake"]["settled"] == {
+        "status": "ready",
+        "comments": [{"author": "default", "body": "seeded-b"}],
+    }
+    unknown = card_wake.merge(_PLANTED, _result("", [], {}), _result("", [], {}))
+    assert unknown.metadata["question_wake"]["settled"] is None
+
+
+def test_merge_sums_nested_token_buckets_across_sessions() -> None:
+    wake = _result("", [], {"input": 10, "workers": {"input": 3, "output": None}}, session_id="s1")
+    answer = _result("done", [], {"input": 30, "workers": {"input": 4, "output": 2}}, session_id="s2")
+
+    merged = card_wake.merge(_PLANTED, wake, answer)
+
+    assert merged.tokens == {"input": 40, "workers": {"input": 7, "output": 2}}
+
+
+def test_merge_keeps_the_worker_capture_of_the_turn_that_delegated() -> None:
+    wake = _result("[SILENT]", [], {}, worker_commands=None, worker_trajectory=None)
+    capture = {"sessions": {"t_2": "w1"}, "unread": []}
+    answer = _result(
+        "done", ["kanban_create"], {}, worker_commands=[{"cmd": "kubectl get pods"}], worker_trajectory=capture
+    )
+
+    merged = card_wake.merge(_PLANTED, wake, answer)
+
+    assert merged.metadata["worker_commands"] == [{"cmd": "kubectl get pods"}]
+    assert merged.metadata["worker_trajectory"] == capture
+
+
+def test_merge_combines_two_worker_captures() -> None:
+    wake = _result(
+        "", [], {}, worker_commands=[{"cmd": "a"}], worker_trajectory={"sessions": {"t_1": "w1"}, "unread": ["x"]}
+    )
+    answer = _result(
+        "", [], {}, worker_commands=[{"cmd": "b"}], worker_trajectory={"sessions": {"t_2": "w2"}, "unread": ["y"]}
+    )
+
+    merged = card_wake.merge(_PLANTED, wake, answer)
+
+    assert merged.metadata["worker_commands"] == [{"cmd": "a"}, {"cmd": "b"}]
+    assert merged.metadata["worker_trajectory"] == {"sessions": {"t_1": "w1", "t_2": "w2"}, "unread": ["x", "y"]}
+
+
+def test_merge_keeps_the_wake_turns_workers_on_one_session() -> None:
+    wake = _result("", [], {"input": 13, "workers": {"input": 3}}, session_id="s1")
+    answer = _result("done", [], {"input": 54, "workers": {"input": 4}}, session_id="s1")
+
+    merged = card_wake.merge(_PLANTED, wake, answer)
+
+    assert merged.tokens == {"input": 57, "workers": {"input": 7}}
+
+
 def test_tag_keeps_the_wake_reply_and_records_the_card() -> None:
     wake = _result(
         "I couldn't restart checkout-gateway on seeded-a.",
@@ -694,10 +864,26 @@ def test_tag_keeps_the_wake_reply_and_records_the_card() -> None:
 
     assert tagged.output == wake.output
     assert tagged.metadata["final_message"] == "I couldn't restart checkout-gateway on seeded-a."
-    assert tagged.trajectory == wake.trajectory
+    assert tagged.trajectory == [
+        *wake.trajectory,
+        {"name": card_wake.SETTLED_ENTRY, "args": {"card": "t_1"}, "result": None, "status": "harness"},
+    ]
     assert tagged.tokens == wake.tokens
     assert tagged.metadata["failure_wake"] == {
         "card": "t_1",
         "wake": "[kanban] Task t_1 blocked.",
         "posted": 1,
+        "settled": None,
+    }
+
+
+def test_the_settled_card_rides_on_the_trajectory_for_the_verifier() -> None:
+    settled = card_wake.Settled("ready", ({"author": "default", "body": "seeded-b"},))
+    merged = card_wake.merge(_PLANTED, _result("", [], {}), _result("", [], {}), settled)
+
+    assert merged.trajectory[-1] == {
+        "name": card_wake.SETTLED_ENTRY,
+        "args": {"card": "t_1"},
+        "result": {"status": "ready", "comments": [{"author": "default", "body": "seeded-b"}]},
+        "status": "harness",
     }
