@@ -511,6 +511,9 @@ class BlocksReportTest(unittest.TestCase):
         self.assertEqual(len(blocks[0]["elements"]), 1)
         self.assertEqual(blocks[4]["elements"][0]["elements"], [{"type": "text", "text": "Also found: 18 more."}])
         self.assertEqual(self._report(after_rows="  "), self._report())
+        long_line = self._report(after_rows="**x** " * 200)[4]["elements"][0]["elements"][0]["text"]
+        self.assertLessEqual(len(long_line), sp.ROW_TEXT_MAX)
+        self.assertNotIn("**", long_line)
 
     def test_fold_first_puts_the_fold_above_the_buttons(self):
         self.assertEqual([b["type"] for b in self._report(fold_first=True)][-2:], ["container", "actions"])
