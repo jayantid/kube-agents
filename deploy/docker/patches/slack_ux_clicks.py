@@ -232,19 +232,22 @@ def _comparable(text: str) -> str:
 
 
 def _turn(label: str, value: Any, message: dict) -> str:
-    """The clicker's turn: ``value`` when it is ``label`` naming a whole line the message shows, else ``label``.
+    """The clicker's turn: ``label`` and the line it names when ``value`` names a whole line the message shows, else ``label``.
 
     The named line must equal a shown line, not sit inside one: a card showing
     "Do not drain node-pool-a" must not pass a value naming "drain node-pool-a".
+    The turn carries the line as shown, not the value's own markup, which the
+    match ignores: "~Do not~ drain node-pool-a" would read as striking "Do not".
     """
     prefix = label + TURN_JOIN
     if not (isinstance(value, str) and value.startswith(prefix)):
         return label
     named = value[len(prefix):].strip()
     want = _comparable(named)
-    if want and "\n" not in named and any(_comparable(line) == want for line in _shown_lines(message.get("blocks"))):
-        return label + TURN_JOIN + named
-    return label
+    if not want or "\n" in named:
+        return label
+    shown = next((line for line in _shown_lines(message.get("blocks")) if _comparable(line) == want), None)
+    return label if shown is None else label + TURN_JOIN + " ".join(shown.split())
 
 
 def _gated_out(adapter: Any, channel_id: str) -> bool:
