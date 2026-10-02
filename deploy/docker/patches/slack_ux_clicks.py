@@ -282,10 +282,10 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
     """``blocks`` with the answered buttons dropped, and ``note`` as a context line after them.
 
     An actions block left with no buttons is dropped; one that still holds a
-    link keeps it. Section and context texts are clipped to Slack's cap and the
-    message to its block cap, the note kept. Section fields and header texts
-    are not clipped: the presenter lays out neither.
-    So is the "waiting on you" line, now that it is answered.
+    link keeps it. So is the "waiting on you" line, now that it is answered.
+    Section and context texts are clipped to Slack's cap and the message to its
+    block cap, the note kept. Section fields and header texts are not clipped:
+    the presenter lays out neither.
     """
     out: list[dict] = []
     for block in blocks or ():
