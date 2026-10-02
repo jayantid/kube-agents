@@ -351,6 +351,8 @@ async def _pause(adapter: Any, channel: str, asks: list) -> None:
     blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
     for ask in asks:
         if not ask.paused:
+            # Marked before the add: a failed add warns once and is not retried,
+            # which a later block retrying it would turn into a warning per card.
             ask.paused = True
             await _add_reaction(adapter, channel, ask.ts, blocked, ask.team_id)
 

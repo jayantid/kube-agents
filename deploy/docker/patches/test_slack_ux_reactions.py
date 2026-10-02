@@ -767,6 +767,12 @@ class RuntimeTest(unittest.TestCase):
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
         self.assertEqual(adapter.calls[-1], ("white_check_mark", False))
 
+    def test_a_block_the_turn_saw_is_not_paused_again_by_the_notifier(self):
+        adapter = _Stub()
+        self._turn_racing("fix it", {}, _cards("t_a", status="blocked"), [("t_a", "blocked")], adapter)
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("double_vertical_bar", False)])
+
     def test_a_card_that_blocks_and_resumes_within_the_turn_does_not_pause_the_ask(self):
         adapter = _Stub()
         self._turn_racing("fix it", {}, _cards("t_a"), [("t_a", "blocked")], adapter)
