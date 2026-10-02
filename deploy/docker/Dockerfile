@@ -739,7 +739,8 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # See the module docstring in
 # deploy/docker/patches/apply_slack_reactions_scope.py.
 #
-# Slack: with KAGE_SLACK_UX on, react to each ask by its kind (eyes, hammer and
+# Slack: with KAGE_SLACK_UX on, react to each ask the channel gate admits, not
+# only DMs and @mentions, by its kind (eyes, hammer and
 # wrench, clipboard, rotating light) and add a settle reaction beside it when
 # the work ends, never removing one -- the credential proxy refuses reactions.remove,
 # so upstream's eyes-for-a-tick swap leaves both. The two hooks gain a guard

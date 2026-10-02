@@ -22,6 +22,10 @@ turn ends. Two things go wrong in a kube-agents install:
 
 With the flag on:
 
+* Every ask the channel gate admits is reacted to. Upstream reacts only to a
+  1:1 DM or a message that @mentions the bot, so a thread reply admitted
+  without a mention got nothing; this module tracks it itself when its turn
+  starts (:func:`_admitted_target`).
 * The arrival reaction says what kind of ask this is, chosen from its words
   before any model call (``slack_presenter.arrival_reaction``): 👀 a question
   or check, 🛠️ a change, 📋 the board, 🚨 an incident.
@@ -52,8 +56,8 @@ settle, and the ask keeps its arrival reaction alone; nothing is ever put on a
 message this process did not see arrive.
 
 Fail-soft throughout: a kanban read that fails, on any board, settles the ask
-at once as a direct answer, and a reaction that fails is logged at debug and
-the turn carries on, as upstream's ``_react`` already does.
+at once as a direct answer, and a reaction that fails is logged at warning and
+the turn carries on. Upstream's ``_react`` logs Slack's error at debug only.
 """
 
 from __future__ import annotations
@@ -78,6 +82,11 @@ FLAG_ENV = "KAGE_SLACK_UX"
 #: ``slack_presenter.FLAG_ON_VALUES``, copied because the warning below fires
 #: exactly when that module cannot be imported.
 FLAG_ON_VALUES = frozenset({"1", "true", "yes", "on"})
+
+#: The key upstream sets on the Slack event it builds for a reaction trigger
+#: (``_synthetic_reaction_event``). Its ``ts`` is the reaction's, not a
+#: message's, so there is nothing to react to.
+FORCED_EVENT_KEY = "_hermes_force_process"
 
 #: The platform name kanban subscriptions carry for Slack.
 PLATFORM = "slack"
@@ -299,6 +308,39 @@ def _descendants(card: tuple, creators: dict, still_open: frozenset = frozenset(
     return found
 
 
+def _admitted_target(adapter: Any, event: Any) -> tuple | None:
+    """``(ts, team_id, marker)`` for an ask to react to, as upstream's ``_reacting_target``.
+
+    Upstream tracks an inbound message only when it is a 1:1 DM or @mentions
+    the bot. Any other inbound Slack message reaching the processing hooks was
+    admitted by the channel gate, so it is tracked here, at its turn's start,
+    and upstream's own target and tracked set carry it from then on. Inbound
+    means the event Slack sent: ``raw_message`` is its dict, whose ``ts`` is
+    the event's ``message_id``. A slash command, a reaction trigger and a
+    synthetic drain are none of those, and stay untracked.
+    """
+    target = adapter._reacting_target(event)
+    if target is not None or getattr(event, "internal", False):
+        return target
+    ts = getattr(event, "message_id", None)
+    raw = getattr(event, "raw_message", None)
+    if not ts or not isinstance(raw, dict) or raw.get(FORCED_EVENT_KEY) or str(raw.get("ts") or "") != str(ts):
+        return None
+    if not adapter._reactions_enabled():
+        return None
+    adapter._track_reacting_message(str(getattr(event.source, "scope_id", "") or ""), ts)
+    return adapter._reacting_target(event)
+
+
+async def _add_reaction(adapter: Any, channel: str, ts: str, emoji: str, team_id: Any) -> None:
+    """Add ``emoji`` through upstream's ``_react``, warning when it reports a failure."""
+    if not await adapter._react(channel, ts, emoji, team_id, remove=False):
+        logger.warning(
+            "slack_ux_reactions: reactions.add %s on %s/%s failed; upstream's debug log has Slack's error",
+            emoji, channel, ts,
+        )
+
+
 def _where(event: Any) -> tuple[str | None, str]:
     source = getattr(event, "source", None)
     return getattr(source, "chat_id", None), str(getattr(source, "thread_id", "") or "")
@@ -330,7 +372,7 @@ def _own_cards(before: dict, after: dict, finished: dict) -> set:
 
 async def on_processing_start(adapter: Any, event: Any) -> None:
     """Add the arrival reaction for this ask's kind, and note the thread's open cards."""
-    target = adapter._reacting_target(event)
+    target = _admitted_target(adapter, event)
     if target is None:
         return
     ts, team_id, marker = target
@@ -338,7 +380,7 @@ async def on_processing_start(adapter: Any, event: Any) -> None:
     if not chat_id:
         return
     emoji = _presenter.arrival_reaction(getattr(event, "text", ""))
-    await adapter._react(chat_id, ts, emoji, team_id, remove=False)
+    await _add_reaction(adapter, chat_id, ts, emoji, team_id)
     # After the reaction, so the read never delays it; the model has not
     # created a card yet, since the turn has not reached its first tool call.
     # Events are recorded from here on. One can lag the change it reports, so
@@ -381,11 +423,11 @@ async def on_processing_complete(adapter: Any, event: Any, outcome: Any) -> None
             paused = {card for card in waiting & turn.paused if card in after}
             if any(after[card].status not in RESUMED_STATUSES for card in paused):
                 blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
-                await adapter._react(chat_id, ts, blocked, team_id, remove=False)
+                await _add_reaction(adapter, chat_id, ts, blocked, team_id)
             return
         if failed:
             settle = _presenter.SETTLE_FAILED
-    await adapter._react(chat_id, ts, _presenter.settle_reaction(settle), team_id, remove=False)
+    await _add_reaction(adapter, chat_id, ts, _presenter.settle_reaction(settle), team_id)
 
 
 async def settle_delegated(adapter: Any, sub: dict, kind: str, board: str | None = None) -> None:
@@ -435,7 +477,7 @@ async def settle_delegated(adapter: Any, sub: dict, kind: str, board: str | None
         return
     if provisional:
         for ask in asks:
-            await adapter._react(key[0], ask.ts, _presenter.settle_reaction(settle), ask.team_id, remove=False)
+            await _add_reaction(adapter, key[0], ask.ts, _presenter.settle_reaction(settle), ask.team_id)
         return
     follow_ups = {}
     if settle == _presenter.SETTLE_DONE:
@@ -463,7 +505,7 @@ async def settle_delegated(adapter: Any, sub: dict, kind: str, board: str | None
     if waits_on_user:
         blocked = _presenter.settle_reaction(_presenter.SETTLE_BLOCKED)
         for ask in asks:
-            await adapter._react(key[0], ask.ts, blocked, ask.team_id, remove=False)
+            await _add_reaction(adapter, key[0], ask.ts, blocked, ask.team_id)
     for ask in settled:
         outcome = _presenter.SETTLE_FAILED if ask.failed else _presenter.SETTLE_DONE
-        await adapter._react(key[0], ask.ts, _presenter.settle_reaction(outcome), ask.team_id, remove=False)
+        await _add_reaction(adapter, key[0], ask.ts, _presenter.settle_reaction(outcome), ask.team_id)

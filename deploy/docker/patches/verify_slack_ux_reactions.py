@@ -15,8 +15,13 @@ Three things are checked:
    one. The import the guard names is bound at module level. The
    members the runtime calls on the adapter are still there in the shape it
    calls them: ``_reacting_target(event)`` returning a 3-tuple,
-   ``_react(channel, ts, emoji, team_id, *, remove)``, and
-   ``_reacting_message_ids`` as a set.
+   ``_react(channel, ts, emoji, team_id, *, remove)``,
+   ``_reacting_message_ids`` as a set, ``_reactions_enabled()``, and
+   ``_track_reacting_message(team_id, ts)``. And what the runtime reads to
+   tell an admitted inbound message from the rest: ``_build_message_event``
+   passes the Slack event as ``raw_message`` and its ts as ``message_id``, and
+   ``_synthetic_reaction_event`` marks a reaction trigger with the key the
+   runtime skips.
 2. The board read. The runtime's own kanban query runs against real boards
    made with the built tree's ``hermes_cli``: an open card subscribed to the
    thread on the default board and on a second board is found, and a finished
@@ -25,11 +30,12 @@ Three things are checked:
    Hermes copies onto it, with that card as its creator.
 3. The runtime module, loaded by path from ``gateway/`` and driven with a stub
    adapter: flag off it is inert; flag on, an ask gets the arrival reaction for
-   its kind, a direct answer settles at once, a delegated one waits for the
+   its kind, an admitted one upstream did not track included, while a
+   reaction trigger gets none, a direct answer settles at once, a delegated one waits for the
    notifier, and no call anywhere is a removal.
 
-Every failure here is silent in production — a reaction that does not land
-raises nothing and logs at debug — so the build is where it is caught.
+Every failure here is silent in production — a reaction the runtime never
+attempts raises and logs nothing — so the build is where it is caught.
 """
 
 from __future__ import annotations
@@ -64,6 +70,17 @@ REACT_POSITIONAL = ("channel", "timestamp", "emoji", "team_id")
 REACT_KEYWORD = "remove"
 #: ``_reacting_target``'s return, in the order the runtime unpacks it.
 TARGET_RETURN = ("ts", "team_id", "marker")
+ENABLED_HELPER = "_reactions_enabled"
+TRACK_HELPER = "_track_reacting_message"
+#: ``_track_reacting_message``'s parameters after ``self``, as the runtime passes them.
+TRACK_POSITIONAL = ("team_id", "ts")
+#: Where upstream builds an inbound message's ``MessageEvent``, and the keywords
+#: the runtime reads to know it for one: the Slack event, and that event's ts.
+BUILD_EVENT = "_build_message_event"
+BUILD_EVENT_KEYWORDS = {"raw_message": "event", "message_id": "ts"}
+SYNTHETIC_REACTION = "_synthetic_reaction_event"
+#: The runtime's ``FORCED_EVENT_KEY``.
+FORCED_EVENT_KEY = "_hermes_force_process"
 
 #: Environment the board check pins, as the sibling kanban verifiers do.
 KANBAN_HOME_ENV = "HERMES_KANBAN_HOME"
@@ -201,6 +218,38 @@ def _check_members(tree: ast.Module) -> None:
             )
     if not kinds or not all(kinds):
         raise _fail(f"{ADAPTER_CLASS} does not only ever assign self.{TRACKED_SET} a set")
+    enabled = _method(adapter, ENABLED_HELPER)
+    if isinstance(enabled, ast.AsyncFunctionDef) or len(enabled.args.args) != 1:
+        raise _fail(f"{ENABLED_HELPER}() is not a plain (self) method")
+    track = _method(adapter, TRACK_HELPER)
+    if isinstance(track, ast.AsyncFunctionDef) or tuple(a.arg for a in track.args.args[1:]) != TRACK_POSITIONAL:
+        raise _fail(f"{TRACK_HELPER}() is not a plain (self, {', '.join(TRACK_POSITIONAL)}) method")
+    _check_inbound(adapter)
+
+
+def _check_inbound(adapter: ast.ClassDef) -> None:
+    """What the runtime reads to tell an admitted inbound message from a trigger or a command.
+
+    Drift here is silent: a renamed keyword drops admitted thread replies back
+    to no reaction at all, and a renamed key reacts to a reaction's own ts.
+    """
+    build = _method(adapter, BUILD_EVENT)
+    calls = [
+        node for node in ast.walk(build)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "MessageEvent"
+    ]
+    if len(calls) != 1:
+        raise _fail(f"{BUILD_EVENT}() does not build exactly one MessageEvent: {len(calls)}")
+    passed = {k.arg: k.value.id for k in calls[0].keywords if isinstance(k.value, ast.Name)}
+    if any(passed.get(key) != name for key, name in BUILD_EVENT_KEYWORDS.items()):
+        raise _fail(f"{BUILD_EVENT}() no longer passes {BUILD_EVENT_KEYWORDS} to MessageEvent: {passed}")
+    synthetic = _method(adapter, SYNTHETIC_REACTION)
+    keys = {
+        key.value for node in ast.walk(synthetic) if isinstance(node, ast.Dict)
+        for key in node.keys if isinstance(key, ast.Constant)
+    }
+    if FORCED_EVENT_KEY not in keys:
+        raise _fail(f"{SYNTHETIC_REACTION}() no longer marks its event with {FORCED_EVENT_KEY!r}")
 
 
 def check_board_read(module, root: Path) -> None:
@@ -292,20 +341,30 @@ def check_board_read(module, root: Path) -> None:
 
 
 class _StubAdapter:
-    def __init__(self) -> None:
+    def __init__(self, tracked: bool = True) -> None:
         self.calls: list[tuple] = []
-        self._reacting_message_ids = {MARKER}
+        self._reacting_message_ids = {MARKER} if tracked else set()
 
     def _reacting_target(self, event):
         return (ASK_TS, TEAM, MARKER) if MARKER in self._reacting_message_ids else None
+
+    def _reactions_enabled(self):
+        return True
+
+    def _track_reacting_message(self, team_id, ts):
+        if (team_id, ts) == (TEAM, ASK_TS):
+            self._reacting_message_ids.add(MARKER)
 
     async def _react(self, channel, ts, emoji, team_id, *, remove):
         self.calls.append((channel, ts, emoji, team_id, remove))
         return True
 
 
-def _event(text: str) -> SimpleNamespace:
-    return SimpleNamespace(text=text, source=SimpleNamespace(chat_id=CHANNEL, thread_id=THREAD))
+def _event(text: str, raw: dict | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        text=text, message_id=ASK_TS, raw_message=raw,
+        source=SimpleNamespace(chat_id=CHANNEL, thread_id=THREAD, scope_id=TEAM),
+    )
 
 
 def _load_runtime(root: Path):
@@ -352,6 +411,21 @@ async def _drive(module) -> None:
     if adapter.calls != expected:
         raise _fail(f"direct answer reacted {adapter.calls!r}, expected {expected!r}")
 
+    # A thread reply admitted without a mention, which upstream does not track.
+    adapter = _StubAdapter(tracked=False)
+    boards[:] = [{}, {}]
+    await module.on_processing_start(adapter, _event("fix it", {"ts": ASK_TS}))
+    await module.on_processing_complete(adapter, _event("fix it", {"ts": ASK_TS}), success)
+    if adapter.calls != expected:
+        raise _fail(f"admitted untracked ask reacted {adapter.calls!r}, expected {expected!r}")
+    # A reaction trigger: its ts is the reaction's, so nothing.
+    adapter = _StubAdapter(tracked=False)
+    trigger = {"ts": ASK_TS, FORCED_EVENT_KEY: True}
+    await module.on_processing_start(adapter, _event("reaction:added:+1", trigger))
+    await module.on_processing_complete(adapter, _event("reaction:added:+1", trigger), success)
+    if adapter.calls:
+        raise _fail(f"reaction trigger reacted {adapter.calls!r}")
+
     # A delegated answer: nothing at completion; the notifier's terminal event settles it.
     adapter = _StubAdapter()
     # The third read is the settle's look for follow-up cards: none.
@@ -380,7 +454,7 @@ def main(root: Path = Path("/opt/hermes"), *, board_read: bool = True) -> None:
     print(
         "slack_ux_reactions verify: both hooks guarded ahead of upstream's body; "
         "adapter members in the shape the runtime calls; board read finds open cards on every board; "
-        "runtime reacts by kind, settles direct answers, defers delegated ones, never removes"
+        "runtime reacts by kind, to admitted asks upstream did not track too, settles direct answers, defers delegated ones, never removes"
     )
 
 

@@ -53,6 +53,15 @@ class SlackAdapter:
     def _workspace_message_marker(self, team_id, ts):
         return "m"
 
+    def _track_reacting_message(self, team_id, ts):
+        self._reacting_message_ids.add(self._workspace_message_marker(team_id, ts))
+
+    async def _build_message_event(self, event, *, ts):
+        return MessageEvent(text=event.get("text", ""), raw_message=event, message_id=ts)
+
+    def _synthetic_reaction_event(self, event, action, thread_ts, team_id):
+        return {"type": "message", "ts": event.get("event_ts"), "_hermes_force_process": True}
+
     async def _react(self, channel, timestamp, emoji, team_id, *, remove):
         self.calls.append((channel, timestamp, emoji, team_id, remove))
         return True
@@ -187,6 +196,15 @@ class ApplierTest(unittest.TestCase):
                 'self._reacting_message_ids = {"m"}',
                 'self._reacting_message_ids = {"m"}\n        self._reacting_message_ids = []',
             ),
+            "enabled gone": ("def _reactions_enabled(self):", "def _reactions_on(self):"),
+            "track gone": ("def _track_reacting_message(self, team_id, ts):", "def _track(self, team_id, ts):"),
+            "track order": (
+                "def _track_reacting_message(self, team_id, ts):",
+                "def _track_reacting_message(self, ts, team_id):",
+            ),
+            "raw message": ("raw_message=event, message_id=ts", "raw_message=None, message_id=ts"),
+            "message id": ("raw_message=event, message_id=ts", "raw_message=event, message_id=None"),
+            "forced key": ('"_hermes_force_process": True', '"_hermes_forced": True'),
         }
         for name, (old, new) in drifts.items():
             with self.subTest(drift=name):
@@ -285,6 +303,8 @@ class FlagOffIdentityTest(unittest.TestCase):
 
 
 class _Stub:
+    reactions = True
+
     def __init__(self, ts=ASK, log=None):
         self.calls = []
         self.ts = ts
@@ -293,6 +313,13 @@ class _Stub:
 
     def _reacting_target(self, event):
         return (self.ts, TEAM, "m") if "m" in self._reacting_message_ids else None
+
+    def _reactions_enabled(self):
+        return self.reactions
+
+    def _track_reacting_message(self, team_id, ts):
+        if (team_id, ts) == (TEAM, self.ts):
+            self._reacting_message_ids.add("m")
 
     async def _react(self, channel, ts, emoji, team_id, *, remove):
         self.calls.append((emoji, remove))
@@ -359,6 +386,57 @@ class RuntimeTest(unittest.TestCase):
         _run(runtime.on_processing_start(adapter, _event("fix it")))
         _run(runtime.on_processing_complete(adapter, _event("fix it"), SimpleNamespace(value="success")))
         self.assertEqual(adapter.calls, [])
+
+    def test_an_admitted_ask_upstream_did_not_track_is_reacted_to(self):
+        # A thread reply the channel gate let through without a mention.
+        adapter = _Stub()
+        adapter._reacting_message_ids = set()
+        event = _event("fix it")
+        event.raw_message = {"ts": ASK, "thread_ts": "110.000"}
+        _run(runtime.on_processing_start(adapter, event))
+        _run(runtime.on_processing_complete(adapter, event, SimpleNamespace(value="success")))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("white_check_mark", False)])
+        self.assertEqual(adapter._reacting_message_ids, set())
+
+    def test_only_an_inbound_message_is_tracked(self):
+        cases = {
+            "reaction trigger": dict(raw_message={"ts": ASK, runtime.FORCED_EVENT_KEY: True}),
+            "slash command": dict(message_id=None, raw_message={"command": "/kage"}),
+            "synthetic drain": dict(raw_message=None),
+            "internal": dict(raw_message={"ts": ASK}, internal=True),
+            "another ts": dict(raw_message={"ts": "999.000"}),
+        }
+        for name, fields in cases.items():
+            with self.subTest(case=name):
+                adapter = _Stub()
+                adapter._reacting_message_ids = set()
+                event = _event("fix it")
+                for key, value in fields.items():
+                    setattr(event, key, value)
+                _run(runtime.on_processing_start(adapter, event))
+                _run(runtime.on_processing_complete(adapter, event, SimpleNamespace(value="success")))
+                self.assertEqual(adapter.calls, [])
+                self.assertEqual(adapter._reacting_message_ids, set())
+
+    def test_reactions_off_tracks_nothing(self):
+        adapter = _Stub()
+        adapter._reacting_message_ids = set()
+        adapter.reactions = False
+        event = _event("fix it")
+        event.raw_message = {"ts": ASK}
+        _run(runtime.on_processing_start(adapter, event))
+        self.assertEqual((adapter.calls, adapter._reacting_message_ids), ([], set()))
+
+    def test_a_failed_reaction_logs_a_warning(self):
+        adapter = _Stub()
+        adapter._react = mock.AsyncMock(return_value=False)
+        self.boards[:] = [{}]
+        with self.assertLogs(runtime.logger, "WARNING") as logged:
+            _run(runtime.on_processing_start(adapter, _event("fix it")))
+        self.assertIn("hammer_and_wrench", logged.output[0])
+
+    def test_the_forced_key_is_the_one_the_verifier_pins(self):
+        self.assertEqual(runtime.FORCED_EVENT_KEY, verifier.FORCED_EVENT_KEY)
 
     def test_old_open_card_does_not_defer(self):
         # A card from an earlier ask is still running; this turn answered directly.
