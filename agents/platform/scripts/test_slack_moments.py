@@ -93,6 +93,33 @@ class OpenedPrTest(unittest.TestCase):
         ):
             self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
 
+    def test_i_or_we_after_a_leading_clause_is_ours(self):
+        for lead in (
+            "Tests pass, so I opened", "Once CI was green I opened", "Done — I opened",
+            "Dependabot's PR was stale and I opened", "Fix verified - I've opened", "It built, and we have opened",
+        ):
+            self.assertEqual(m.opened_pr(f"{lead} {PR}")[0], PR, lead)
+
+    def test_a_label_before_the_url_is_an_opened_pr(self):
+        for line in (
+            f"Opened: {PR}", f"Opened: <{PR}>", f"PR opened: {PR}", f"**Opened PR:** <{PR}>",
+            f"*Opened PR* {PR}", f"**Opened:** [PR #412]({PR})", f"`Created` {PR}",
+        ):
+            self.assertEqual(m.opened_pr(line)[0], PR, line)
+        self.assertIsNone(m.opened_pr(f"Bob's PR opened: {PR}"))
+
+    def test_a_labels_evidence_keeps_its_markup_and_drops_the_url(self):
+        blocks, _ = m.pr_opened(*m.opened_pr(f"**Opened PR:** <{PR}>"))
+        self.assertEqual(_contexts(blocks)[0], "**Opened PR #412**")
+
+    def test_another_subject_after_our_first_step_is_not_ours(self):
+        for lead in (
+            "Checked with Bob and he then opened", "Confirmed with Alice, who then opened",
+            "Reviewed Alice's branch, which she then opened", "Asked the team and they opened",
+            "Ran the bot, which then opened",
+        ):
+            self.assertIsNone(m.opened_pr(f"{lead} {PR}"), lead)
+
     def test_a_long_line_is_clipped_under_the_headline(self):
         line = f"Opened {PR} " + "because " * 1000
         blocks, _ = m.pr_opened(*m.opened_pr(line))
@@ -205,6 +232,15 @@ class NeedsYouTest(unittest.TestCase):
         blocks, _ = m.needs_you(reason)
         self.assertEqual(_buttons(blocks), [])
         self.assertEqual(_contexts(blocks)[0], "I found:\n- pod a is OOMKilled\n- pod b is Pending")
+
+    def test_a_plan_after_a_proceed_question_is_not_choices(self):
+        for question in ("Shall I proceed?", "OK to go ahead?", "Should I continue?", "Do you approve?"):
+            reason = f"Here is the fix. {question}\n1. Drain node-pool-a\n2. Upgrade to 1.31\n3. Uncordon"
+            blocks, text = m.needs_you(reason)
+            self.assertEqual(_buttons(blocks), [], question)
+            self.assertIn("1. Drain node-pool-a", text, question)
+        blocks, _ = m.needs_you("Which step should I proceed with?\n- Drain\n- Upgrade")
+        self.assertEqual([b["text"]["text"] for b in _buttons(blocks)], ["Drain", "Upgrade"])
 
     def test_a_list_that_does_not_end_the_reason_is_not_choices(self):
         blocks, _ = m.needs_you("Which cluster?\n- seeded-a\n- seeded-b\nThe preflight failed on both.")

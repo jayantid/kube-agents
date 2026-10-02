@@ -38,9 +38,11 @@ PR_URL = re.compile(r"https://github\.com/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: What must sit right before the url for a line to announce the PR as ours:
 #: the verb, then optionally "a"/"the", "new", "PR"/"pull request" with its
 #: number, a colon, dash or "(", and the opening of a ``[label](`` or ``<`` link.
+#: A label's colon may follow the verb ("Opened: <url>"), and its closing bold
+#: or code may sit before the url ("**Opened PR:** <url>").
 OPENED_BEFORE_URL = re.compile(
-    r"\b(?:opened|created|raised|filed|submitted)\s+(?:(?:an?|the)\s+)?(?:new\s+)?"
-    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?\s*)?(?:\[[^\]]*\]\(|<)?$",
+    r"\b(?:opened|created|raised|filed|submitted)(?:[*_`]*:)?[*_`]*\s+(?:(?:an?|the)\s+)?(?:new\s+)?"
+    r"(?:(?:PR|pull\s+request)(?:\s*#\d+)?\s*[:(—–-]?[*_`]*\s*)?(?:\[[^\]]*\]\(|<)?$",
     re.IGNORECASE,
 )
 #: A negation just before the verb: "not opened", "haven't yet opened".
@@ -62,6 +64,12 @@ FILLER = frozenset({
 #: Joins the verb to the worker's earlier step: "Fixed it and opened".
 JOIN = frozenset({"and", "then"})
 OUR_LEAD = frozenset({"i", "we", "i've", "we've", "i’ve", "we’ve"})
+#: A label naming the PR with no subject: "PR opened: <url>".
+PR_LABEL = (["pr"], ["pull", "request"])
+#: Someone else as the subject after the worker's first step: "Checked with Bob
+#: and he then opened", "Confirmed with Alice, who then opened". Not "it", the
+#: object of "Fixed it and opened".
+OTHER_SUBJECT = frozenset({"he", "she", "they", "who", "which"})
 #: The worker's own earlier steps. A list rather than "-ed", which would take
 #: "Ahmed then opened" and "Fred reviewed and opened" as ours.
 OUR_VERB = frozenset({
@@ -96,7 +104,7 @@ PR_REF = "PR #{number}"
 #: around it goes too, and so does a tail after the number (``/files``).
 PR_URL_TAIL = r"(?:[/?#][^\s<>|()\[\]]*)?"
 PR_REF_URL = r"(?:<{url}{tail}(?:\|[^>]*)?>|\[[^\]]*\]\({url}{tail}\)|{url}{tail})"
-PR_REF_SPAN = r"(?:\bPR\s+(?:#{number}\s*[:—–-]?\s*)?)?(?:\(\s*{ref}\s*\)|{ref})"
+PR_REF_SPAN = r"(?:\bPR(?:\s+#{number})?\s*[:—–-]?(?P<mark>[*_`]*)\s*)?(?:\(\s*{ref}\s*\)|{ref})"
 OPEN_PR = "Open PR ↗"
 FILES_CHANGED = "Files changed ↗"
 FILES_PATH = "/files"
@@ -107,6 +115,10 @@ OPTION_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 #: How the line right before the options must end for them to be choices; a
 #: list after "I found:" is evidence, not answers.
 QUESTION_END = "?"
+#: A question asking leave to go on: a list after it is the plan, not answers,
+#: unless the question also offers a choice ("Which step should I proceed with?").
+PROCEED_QUESTION = re.compile(r"\b(?:proceed|go ahead|continue|approve)\b", re.IGNORECASE)
+CHOICE_WORD = re.compile(r"\b(?:which|or|what)\b", re.IGNORECASE)
 #: Buttons only for two to five options that end the reason, right after a
 #: question, each short enough that Slack shows all of it; otherwise the
 #: options stay in the text.
@@ -146,25 +158,31 @@ def _ours(before: str) -> bool:
 
     One rule, read on the sentence the verb is in with :data:`FILLER` words
     trimmed from both ends: it is ours when nothing is left ("- Opened",
-    "Done: opened", "Successfully opened"), when a comma ends it (the verb
-    opens a clause), when "I"/"we" alone is left ("I have just opened"), or
-    when it ends in "and"/"then" and starts with "I"/"we" or one of
-    :data:`OUR_VERB` ("Bumped values.yaml and opened"). Anything else names
-    someone else: "Dependabot opened", "`dependabot[bot]` opened", "Ahmed
-    then opened", "bob reviewed and opened".
+    "Done: opened", "Successfully opened") or only a label ("PR opened"), when
+    a comma ends it (the verb opens a clause), when it ends in "I"/"we" ("I
+    have just opened", "Tests pass, so I opened"), or when it ends in
+    "and"/"then", starts with "I"/"we" or one of :data:`OUR_VERB` ("Bumped
+    values.yaml and opened") and names no :data:`OTHER_SUBJECT` after that.
+    Anything else names someone else: "Dependabot opened", "`dependabot[bot]`
+    opened", "Ahmed then opened", "bob reviewed and opened", "Checked with
+    Bob and he then opened".
     """
     sentence = SENTENCE_BREAK.split(before)[-1]
     if sentence.rstrip().endswith(","):
         return True
     words = _trimmed([w.lower() for w in CLAUSE_WORD.findall(sentence)])
-    if not words or (len(words) == 1 and words[0] in OUR_LEAD):
+    if not words or words in PR_LABEL or words[-1] in OUR_LEAD:
         return True
     if words[-1] not in JOIN:
         return False
     while words and words[-1] in JOIN:
         words.pop()
     words = _trimmed(words)
-    return bool(words) and (words[0] in OUR_LEAD or words[0] in OUR_VERB)
+    return (
+        bool(words)
+        and (words[0] in OUR_LEAD or words[0] in OUR_VERB)
+        and not OTHER_SUBJECT.intersection(words[1:])
+    )
 
 
 def _escape(text: str) -> str:
@@ -191,7 +209,9 @@ def pr_opened(url: str, repo: str, number: str, line: str) -> tuple[list[dict], 
     headline = PR_HEADLINE.format(number=number, repo=repo)
     ref = PR_REF_URL.format(url=re.escape(url), tail=PR_URL_TAIL)
     span = re.compile(PR_REF_SPAN.format(number=number, ref=ref), re.IGNORECASE)
-    evidence = _presenter._clip(span.sub(PR_REF.format(number=number), line).strip(), EVIDENCE_MAX)
+    # A label's closing markup ("**Opened PR:** <url>") stays after the reference.
+    shortened = span.sub(lambda m: PR_REF.format(number=number) + (m.group("mark") or ""), line)
+    evidence = _presenter._clip(shortened.strip(), EVIDENCE_MAX)
     links = [(OPEN_PR, url), (FILES_CHANGED, url + FILES_PATH)]
     blocks = _presenter.blocks_answer(headline, links=links, action_id_prefix=PR_ACTION_PREFIX)
     first, *rest = _presenter.fallback_text(headline, links=links).split("\n")
@@ -220,7 +240,10 @@ def _trailing_options(lines: Sequence[str]) -> tuple[int, list[str]]:
         start -= 1
     # A button is plain text: `code` and **bold** would show their markup.
     options = [_unmarked(m.group(1)) for m in (OPTION_LINE.match(line) for line in lines[start:]) if m]
-    if not options or not lines[start - 1].rstrip().endswith(QUESTION_END):
+    question = lines[start - 1].rstrip()
+    if not options or not question.endswith(QUESTION_END):
+        return len(lines), []
+    if PROCEED_QUESTION.search(question) and not CHOICE_WORD.search(question):
         return len(lines), []
     return start, options
 

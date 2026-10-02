@@ -320,15 +320,20 @@ def _clamped(block: dict) -> dict:
     return block
 
 
-def _without_choices_line(text: str) -> str:
-    """``text`` without the fallback's "Reply with one of:" line, which only its first
-    paragraph carries; the same words further down are the report's own and stay."""
+def _without_choices_line(text: str, question: bool = False) -> str:
+    """``text`` without the fallback's "Reply with one of:" line, which an incident
+    alert carries in its first paragraph; the same words further down are the report's
+    own and stay. A card's ``question`` carries it as its last line, after a detail
+    that can hold blank lines."""
     head, _sep, rest = text.partition("\n\n")
     head = "\n".join(line for line in head.split("\n") if not line.startswith(_presenter.CHOICES_LEAD))
+    body, _nl, last = rest.rpartition("\n")
+    if question and last.startswith(_presenter.CHOICES_LEAD):
+        rest = body.rstrip("\n")
     return "\n\n".join(part for part in (head, rest) if part)
 
 
-def _answered_text(note: str, message: dict) -> str:
+def _answered_text(note: str, message: dict, question: bool = False) -> str:
     """``note`` with the message's own text under it, clipped to ``SLACK_TEXT_MAX``.
 
     The adapter reads a thread back from ``text`` and top-level blocks, and an
@@ -337,7 +342,7 @@ def _answered_text(note: str, message: dict) -> str:
     thread, without the report. The "Reply with one of:" line goes: it asks for
     an answer the note already records.
     """
-    original = _without_choices_line(str(message.get("text") or ""))
+    original = _without_choices_line(str(message.get("text") or ""), question)
     return _presenter._clip(f"{note}\n\n{original}", SLACK_TEXT_MAX) if original else note
 
 
@@ -647,7 +652,8 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
     card = _question_card(channel_id, msg_ts)
     try:
         await client.chat_update(
-            channel=channel_id, ts=msg_ts, text=_answered_text(note, message),
+            channel=channel_id, ts=msg_ts,
+            text=_answered_text(note, message, not action_id.startswith(INCIDENT_CHOICE_PREFIX)),
             blocks=answered_blocks(message.get("blocks"), _answered_by, note),
         )
         if key in _answered:
