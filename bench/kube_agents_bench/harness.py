@@ -1619,8 +1619,9 @@ class KubeAgentsHarness(AgentHarness):
     ) -> AgentResult:
         """Send a planted card's wake and, for a question, the user's answer, on one conversation.
 
-        See :mod:`kube_agents_bench.card_wake`. A plant that fails is
-        infrastructure, not an answer: no agent saw anything. The card is
+        See :mod:`kube_agents_bench.card_wake`. A plant whose reply cannot be
+        read is infrastructure, not an answer: no agent saw anything. One whose
+        script ran and failed errors instead. The card is
         archived whatever the turns did, so a parked card does not outlive
         the run.
         """
@@ -1633,11 +1634,12 @@ class KubeAgentsHarness(AgentHarness):
             )
         try:
             planted = card_wake.plant(_agent_shell, replay, _EXEC_TIMEOUT)
-        except card_wake.ReplayMismatch as exc:
-            # Not infrastructure: the image no longer retries as the case
-            # asserts, and an excluded run would leave the case silent. One
-            # such repetition is an absolute red at the gate (empty
-            # trajectory, null tokens); the error names the mismatch.
+        except card_wake.ReplayFailed as exc:
+            # Not infrastructure: the script ran, and the image no longer
+            # builds the wake or retries as the case asserts; an excluded run
+            # would leave the case silent. One such repetition is an absolute
+            # red at the gate (empty trajectory, null tokens); the error names
+            # what the script reported.
             return AgentResult.errored(str(exc))
         except card_wake.ReplayUnavailable as exc:
             return _infra_failure(str(exc))

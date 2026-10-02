@@ -4560,6 +4560,8 @@ _SAYS_STOPPED = "the-reply-says-it-stopped"
         "It timed out again and nothing is retrying it. Want me to run it again?",
         "It timed out on every attempt, so it won't rerun. Run it again with more time?",
         "It timed out and won't be tried again. Retry it with a narrower scope?",
+        "Nothing is retrying it automatically. Run it again with a longer limit?",
+        "Nothing retries it automatically now. Re-run it?",
         # A first-person offer:
         "It stopped. I'll retry it if you ask.",
         "It stopped. If you like, I'll try again.",

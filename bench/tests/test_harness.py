@@ -3305,6 +3305,23 @@ def test_a_failure_wake_whose_breaker_disagrees_is_an_errored_run_not_infrastruc
     assert stub_agent.requests == []
 
 
+def test_a_failure_wake_whose_script_reports_an_error_is_an_errored_run_not_infrastructure(
+    monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
+) -> None:
+    failed = json.dumps(
+        {"card": None, "wake": None, "posted": 0, "error": "AttributeError: no build_wake_text",
+         "mismatch": None}
+    )
+    reply = f"{card_wake.REPLAY_PRESENT}\n{failed}"
+    monkeypatch.setattr(harness, "_agent_shell", _replay_shell([], plant_reply=reply))
+
+    result = KubeAgentsHarness().run(_FAILURE_PROMPT)
+
+    assert result.errors == ["failure wake: AttributeError: no build_wake_text"]
+    assert harness.INFRA_FAILURE_MARKER not in result.errors[0]
+    assert stub_agent.requests == []
+
+
 def test_a_failure_wake_needs_the_api_transport(
     monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgentServer
 ) -> None:
