@@ -106,6 +106,14 @@ class OpenedPrTest(unittest.TestCase):
     def test_an_issue_url_is_not_a_pr(self):
         self.assertIsNone(m.opened_pr("Opened https://github.com/acme/fleet-config/issues/9"))
 
+    def test_a_pr_off_github_or_over_http_is_not_announced(self):
+        for url in (
+            "http://evil.example/acme/payments/pull/42", "https://evil.example/acme/payments/pull/42",
+            "http://github.com/acme/payments/pull/42", "https://github.com.evil.example/acme/payments/pull/42",
+            "https://evilgithub.com/acme/payments/pull/42",
+        ):
+            self.assertIsNone(m.opened_pr(f"Opened {url} to fix the probe."), url)
+
     def test_empty_and_none(self):
         self.assertIsNone(m.opened_pr(""))
         self.assertIsNone(m.opened_pr(None))

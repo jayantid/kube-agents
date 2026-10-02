@@ -28,9 +28,13 @@ from collections.abc import Sequence
 
 import slack_presenter as _presenter
 
-#: A pull request url: host, owner, repo and number, with any trailing path
-#: (``/files``, ``#discussion``) left out of the match.
-PR_URL = re.compile(r"https?://[^\s/<>|]+/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
+#: A pull request url on GitHub over https: owner, repo and number, with any
+#: trailing path (``/files``, ``#discussion``) left out of the match. Any other
+#: host is left to the ordinary line: the headline vouches for the url in the
+#: bot's voice and the evidence line hides its host, so a note echoing someone
+#: else's link must not become a button. GitHub alone, as in
+#: ``repo_ref.GITHUB_HOSTS``, which names no enterprise host.
+PR_URL = re.compile(r"https://github\.com/([^\s/<>|]+)/([^\s/<>|]+)/pull/(\d+)")
 #: What must sit right before the url for a line to announce the PR as ours:
 #: the verb, then optionally "a"/"the", "new", "PR"/"pull request" with its
 #: number, a colon, dash or "(", and the opening of a ``[label](`` or ``<`` link.
