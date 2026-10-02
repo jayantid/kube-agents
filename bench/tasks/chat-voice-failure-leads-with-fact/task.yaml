@@ -145,7 +145,7 @@ verification_spec:
       type: report_contains
       forbidden_patterns:
         - '\A(?!(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:unblock|retry|try (?:it |that |this )?again|re-?run|re-?route|route (?:it|this|that)|restart it|reassign|hand (?:it|this) to)\b[^.!?\n]*\?)'
-  # SOUL step 5: the status line already names the agent, so this reply is
+  # SOUL step 5: the reply answers for the whole team, so this reply is
   # in the front door's own voice and names no agent, specialist or card,
   # and never says "unblock" or "re-route". Whole words, with their plurals
   # and inflections ("discard" and "routed" do not count), in the front
