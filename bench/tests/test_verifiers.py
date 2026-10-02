@@ -4736,6 +4736,11 @@ def test_the_final_attempt_objectives_pass_a_reply_that_says_it_stopped(final_me
         ("It stopped. I'm going to retry it.", [_SAYS_RETRIED]),
         ("It stopped. I will run it again.", [_SAYS_RETRIED]),
         ("It timed out twice.", [_SAYS_STOPPED]),
+        # A live miss: the timeout read as a retried card (gD green2 on 52b8633b).
+        (
+            "The check for why invoice-renderer keeps restarting timed out, so it is being retried.",
+            [_SAYS_RETRIED, _SAYS_STOPPED],
+        ),
     ],
 )
 def test_the_final_attempt_objectives_fail_a_reply_that_says_it_is_retried(final_message, missed):
@@ -4849,6 +4854,9 @@ def test_the_failure_case_requires_a_successful_card_read():
         "account lacks container.deployments.update there. " + _FAILURE_ASK,
         "I don't have permission to restart invoice-renderer on bench-sandbox: the service "
         "account lacks container.deployments.update there. " + _FAILURE_ASK,
+        # SOUL's own wording for the identity.
+        "I couldn't restart invoice-renderer on bench-sandbox. My service account lacks the "
+        "`container.deployments.update` permission there. " + _FAILURE_ASK,
         # The dots in a permission name do not end the first sentence.
         "Without container.deployments.update, invoice-renderer on bench-sandbox wasn't restarted. "
         + _FAILURE_ASK,
