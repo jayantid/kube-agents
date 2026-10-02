@@ -708,6 +708,30 @@ class RuntimeTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": "0"}):
             self.assertFalse(runtime.enabled())
 
+    def test_report_buttons_are_answered_and_an_unlisted_click_changes_nothing(self):
+        row = {"severity": "critical", "text": "seeded-b and -c admit privileged pods"}
+        blocks = presenter.blocks_report(
+            "Security & RBAC audit: 7 findings, 2 critical.", rows=[row], choices=["look at: seeded-b"],
+            links=[("Ledger issue #231 ↗", "https://github.com/acme/fleet-config/issues/231")],
+            action_id_prefix="kage_audit",
+        )
+        choice, link = next(b for b in blocks if b["type"] == "actions")["elements"]
+        self.assertRegex(choice["action_id"], presenter.CHOICE_ACTION_ID_PATTERN)
+        self.assertRegex(link["action_id"], presenter.LINK_ACTION_ID_PATTERN)
+        body = {"message": {"ts": MESSAGE_TS, "text": "fallback", "blocks": blocks, "thread_ts": THREAD}}
+        action = {"action_id": choice["action_id"], "text": choice["text"], "value": choice["value"], "action_ts": ACTION_TS}
+        unlisted = _Adapter(authorized=False)
+        self._answer(unlisted, body, action)
+        self.assertEqual(unlisted.log, [])
+        listed = _Adapter()
+        self._answer(listed, body, action)
+        update, echo, turn = (entry[1] for entry in listed.log)
+        kept = [b for b in update["blocks"] if b["type"] == "actions"]
+        self.assertEqual([[e["action_id"] for e in b["elements"]] for b in kept], [["kage_audit.link.0"]])
+        self.assertIn("rich_text", [b["type"] for b in update["blocks"]])
+        self.assertEqual(echo["text"], "↳ <@U1>: look at: seeded-b")
+        self.assertEqual(turn["text"], "look at: seeded-b")
+
 
 class AnsweredBlocksTest(unittest.TestCase):
     def test_non_action_blocks_are_kept_in_order(self):

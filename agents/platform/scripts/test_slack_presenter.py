@@ -6,6 +6,7 @@ Run: python3 -m pytest agents/platform/scripts/test_slack_presenter.py
 import asyncio
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -209,6 +210,43 @@ class SplitAnswerTest(unittest.TestCase):
         for line in ("Node pool np-1 at rev. 7 is cordoned.", "Certs expired Sept. 30 on seeded-a."):
             self.assertEqual(sp.split_answer(line), (line, []))
 
+    def test_an_abbreviation_in_parentheses_does_not_end_the_headline(self):
+        for line, headline in (
+            ("Several pods fail (e.g. Checkout) in prod. Raise it.", "Several pods fail (e.g. Checkout) in prod."),
+            ("Pods fail (i.e. Checkout). Raise it.", "Pods fail (i.e. Checkout)."),
+        ):
+            self.assertEqual(sp.split_answer(line)[0], headline)
+
+    def test_no_before_a_number_and_ex_do_not_end_the_headline(self):
+        # The incident card's headline is split_answer's first sentence of "What's wrong".
+        for line, headline in (
+            ("Ticket No. 3 is open. Second sentence.", "Ticket No. 3 is open."),
+            ("payments-api fails readiness since deploy No. 42. Restore the secret.", "payments-api fails readiness since deploy No. 42."),
+            ("See No. 3. Second sentence.", "See No. 3."),
+            ("Use the default, ex. Checkout. More.", "Use the default, ex. Checkout."),
+            ("Disk is at 90% (approx. Two hours left). Then it fills.", "Disk is at 90% (approx. Two hours left)."),
+            ("Latency is high vs. Yesterday. Scale up.", "Latency is high vs. Yesterday."),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(sp.split_answer(line)[0], headline)
+
+    def test_max_min_and_no_end_a_sentence(self):
+        for line, headline in (
+            ("Replicas are at max. Raise the HPA ceiling.", "Replicas are at max."),
+            ("Restarted after 5 min. Raise it.", "Restarted after 5 min."),
+            ("The answer is no. Checkout is down.", "The answer is no."),
+        ):
+            self.assertEqual(sp.split_answer(line)[0], headline)
+
+    def test_a_nul_in_the_answer_is_dropped(self):
+        self.assertEqual(sp.split_answer("Hello \x005\x00 world. More."), ("Hello 5 world.", ["More."]))
+
+    def test_many_abbreviations_stay_linear(self):
+        line = "See e.g. A " * 4000 + "end."
+        started = time.monotonic()
+        sp.split_answer(line)
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_plain_leaves_code_spans_and_globs_alone(self):
         self.assertEqual(sp._plain("`__init__.py` is missing"), "__init__.py is missing")
         self.assertEqual(sp._plain("Delete `__pycache__` and **this**"), "Delete __pycache__ and this")
@@ -263,6 +301,24 @@ class ButtonsTest(unittest.TestCase):
         self.assertNotIn("url", button)
         self.assertRegex(button["action_id"], sp.CHOICE_ACTION_ID_PATTERN)
         self.assertIsNone(sp.LINK_ACTION_ID_PATTERN.search(button["action_id"]))
+
+    def test_a_long_choice_posts_only_what_its_button_shows(self):
+        # The click handler posts the value as the user's turn, so a value
+        # longer than the label would send words the user never saw.
+        choice = "look at: " + "word " * 40 + "HIDDEN-TAIL"
+        actions = [b for b in sp.blocks_report("h", choices=[choice], action_id_prefix="kage") if b["type"] == "actions"]
+        (button,) = actions[0]["elements"]
+        self.assertEqual(button["value"], button["text"]["text"])
+        self.assertLessEqual(len(button["value"]), sp.BUTTON_TEXT_MAX)
+        self.assertNotIn("HIDDEN-TAIL", button["value"])
+
+    def test_a_choice_pair_shows_its_label_and_carries_its_turn(self):
+        blocks = sp.blocks_report("h", choices=[("Fix it", "Fix it: the row"), "See all 3"], action_id_prefix="kage")
+        buttons = next(b for b in blocks if b["type"] == "actions")["elements"]
+        self.assertEqual(
+            [(b["text"]["text"], b["value"]) for b in buttons], [("Fix it", "Fix it: the row"), ("See all 3", "See all 3")]
+        )
+        self.assertEqual(buttons[0]["style"], "primary")
 
     def test_buttons_wrap_at_five(self):
         rows = sp._actions([sp._button(str(i), f"kage.choice.{i}", value=str(i)) for i in range(7)])
@@ -342,14 +398,94 @@ class BlocksAnswerTest(unittest.TestCase):
 
 class FallbackTextTest(unittest.TestCase):
     def test_same_layout_as_mrkdwn(self):
-        text = sp.fallback_text("Two findings.", links=[("Open PR", "https://p")], choices=["Yes", "No"])
-        self.assertEqual(text, "*Two findings.*\n<https://p|Open PR>\nReply with one of: Yes · No")
+        text = sp.fallback_text(
+            "Two findings.",
+            rows=[{"text": "seeded-a: OOM", "severity": "warning"}],
+            links=[("Open PR", "https://p")],
+            choices=["Yes", "No"],
+        )
+        self.assertEqual(text, "*Two findings.*\n`warning` seeded-a: OOM\n<https://p|Open PR>\nReply with one of: Yes · No")
+
+    def test_rows_are_mrkdwn(self):
+        text = sp.fallback_text("h", rows=[{"text": "**seeded-a**: see [PR](https://p)"}, "plain `x`"])
+        self.assertEqual(text, "*h*\n• *seeded-a*: see <https://p|PR>\n• plain `x`")
+
+    def test_rows_cannot_mention_anyone(self):
+        text = sp.fallback_text("h", rows=[{"text": "<!channel> & <@U1>", "severity": "<!here>"}])
+        self.assertNotIn("<!", text)
+        self.assertNotIn("<@", text)
+        self.assertIn("&lt;!channel&gt; &amp; &lt;@U1&gt;", text)
+
+    def test_a_row_link_cannot_become_a_mention(self):
+        rows = [{"text": "ask [bob](@U024BE7LH) or [team](!channel) in [ops](#C1)"}, "[PR](https://p)"]
+        text = sp.fallback_text("h", rows=rows)
+        self.assertNotIn("<@", text)
+        self.assertNotIn("<!", text)
+        self.assertNotIn("<#", text)
+        self.assertIn("• ask bob or team in ops", text)
+        self.assertIn("<https://p|PR>", text)
+        nested = [
+            "[[x](@U1)](!channel)",
+            "**[minor] c [[z](#a)](@U024BE7LH)**",
+            "[[[y](!here)](#C1)](@U2)",
+            "[[w](https://p)](!here)",
+        ]
+        for row in nested:
+            with self.subTest(row=row):
+                line = sp.fallback_text("h", rows=[row]).splitlines()[1]
+                self.assertNotIn("<@", line)
+                self.assertNotIn("<!", line)
+                self.assertNotIn("<#", line)
+
+    def test_a_rich_text_link_that_is_not_a_web_url_is_text(self):
+        elements = sp._rich_elements("see [bob](@U1) and [PR](https://p)")
+        self.assertNotIn("@U1", [e.get("url") for e in elements])
+        self.assertIn({"type": "text", "text": "bob"}, elements)
+        self.assertIn({"type": "link", "url": "https://p", "text": "PR"}, elements)
+
+    def test_a_nul_in_a_row_is_dropped(self):
+        self.assertEqual(sp.fallback_text("h", rows=["a \x000\x00 b"]), "*h*\n• a 0 b")
+
+    def test_urls_keep_their_underscores_and_asterisks(self):
+        cases = {
+            "[docs](https://x.io/__init__/y)": "<https://x.io/__init__/y|docs>",
+            "see https://x.io/a/**b**/c now": "see https://x.io/a/**b**/c now",
+            "**https://x.io/a_b_**": "*https://x.io/a_b_*",
+            "[**docs**](https://x.io/__a__)": "<https://x.io/__a__|*docs*>",
+        }
+        for row, line in cases.items():
+            with self.subTest(row=row):
+                self.assertEqual(sp.fallback_text("h", rows=[row]).splitlines()[1], sp.BULLET + line)
+
+    def test_a_rich_text_link_keeps_parentheses_in_its_url(self):
+        elements = sp._rich_elements("[w](https://en.wikipedia.org/wiki/Foo_(bar)) after")
+        self.assertEqual(elements[0], {"type": "link", "url": "https://en.wikipedia.org/wiki/Foo_(bar)", "text": "w"})
+        self.assertEqual(elements[1], {"type": "text", "text": " after"})
+
+    def test_a_rich_text_link_that_is_not_a_safe_url_is_text(self):
+        elements = sp._rich_elements("[a](https://x.io|y) [b](javascript:alert)")
+        self.assertNotIn("link", [e["type"] for e in elements])
+        self.assertIn({"type": "text", "text": "a"}, elements)
+        self.assertIn({"type": "text", "text": "b"}, elements)
+
+    def test_empty_rows_are_skipped(self):
+        self.assertEqual(sp.fallback_text("h", rows=["", "  ", {"text": ""}, "x"]), "*h*\n• x")
 
     def test_labels_cannot_mention_anyone(self):
         text = sp.fallback_text("h", links=[("<!here>", "https://p")], choices=["<@U1> & <!channel>", "No"])
         self.assertNotIn("<!", text)
         self.assertNotIn("<@", text)
         self.assertIn("&lt;@U1&gt; &amp; &lt;!channel&gt;", text)
+
+
+    def test_urls_cannot_mention_anyone_or_break_the_link(self):
+        links = [("x", "!channel"), ("y", "@U123"), ("z", "https://a?b=>c|d"), ("ok", "https://p")]
+        self.assertEqual(sp.fallback_text("h", links=links), "*h*\n<https://p|ok>")
+
+    def test_a_url_slack_would_refuse_is_dropped(self):
+        too_long = "https://x/" + "a" * sp.URL_MAX
+        links = [("a", too_long), ("b", "https://p\n"), ("c", "https://"), ("d", "HTTPS://P")]
+        self.assertEqual(sp.fallback_text("h", links=links), "*h*\n<HTTPS://P|d>")
 
 
 class LinkAckTest(unittest.TestCase):
@@ -359,6 +495,185 @@ class LinkAckTest(unittest.TestCase):
         asyncio.run(sp.ack_link_click(ack, body, {"action_id": "kage.link.0"}))
         ack.assert_awaited_once_with()
         self.assertEqual(body.mock_calls, [])
+
+
+class BlocksReportTest(unittest.TestCase):
+    ROWS = [
+        {"severity": "critical", "text": "seeded-b and -c admit privileged pods"},
+        {"severity": "critical", "text": "default SA is `cluster-admin` on seeded-c"},
+    ]
+
+    def _report(self, **kwargs):
+        args = dict(
+            headline="Security & RBAC audit: 7 findings, 2 critical.",
+            note="2 are new since the last run.",
+            rows=self.ROWS,
+            choices=["look at: seeded-b and -c admit privileged pods"],
+            links=[("Ledger issue #231 ↗", "https://l/231")],
+            action_id_prefix="kage_audit",
+        )
+        args.update(kwargs)
+        return sp.blocks_report(**args)
+
+    def test_headline_group_then_the_buttons(self):
+        blocks = self._report()
+        self.assertEqual([b["type"] for b in blocks], ["rich_text", "divider", "rich_text", "divider", "actions"])
+        self.assertEqual(
+            blocks[0]["elements"][0]["elements"],
+            [
+                {"type": "text", "text": "Security & RBAC audit: 7 findings, 2 critical.", "style": {"bold": True}},
+                {"type": "text", "text": " 2 are new since the last run."},
+            ],
+        )
+
+    def test_the_rows_have_no_header_and_lead_with_a_code_tag(self):
+        first, second = self._report()[2]["elements"]
+        self.assertEqual(
+            first["elements"],
+            [
+                {"type": "text", "text": "critical", "style": {"code": True}},
+                {"type": "text", "text": " "},
+                {"type": "text", "text": "seeded-b and -c admit privileged pods"},
+            ],
+        )
+        self.assertIn({"type": "text", "text": "cluster-admin", "style": {"code": True}}, second["elements"])
+        self.assertNotIn("•", str(first) + str(second))
+
+    def test_primary_choice_first_then_the_link(self):
+        buttons = self._report()[4]["elements"]
+        self.assertEqual([b["action_id"] for b in buttons], ["kage_audit.choice.0", "kage_audit.link.0"])
+        self.assertEqual(buttons[0]["style"], "primary")
+        self.assertEqual(buttons[0]["value"], "look at: seeded-b and -c admit privileged pods")
+        self.assertEqual(buttons[1]["url"], "https://l/231")
+        self.assertNotIn("style", buttons[1])
+        self.assertTrue(sp.CHOICE_ACTION_ID_PATTERN.search(buttons[0]["action_id"]))
+        self.assertTrue(sp.LINK_ACTION_ID_PATTERN.search(buttons[1]["action_id"]))
+
+    def test_detail_is_a_plain_line_under_the_headline(self):
+        head = self._report(detail="Security audit: 2 new across 3 clusters")[0]["elements"]
+        self.assertEqual(len(head), 2)
+        self.assertEqual(head[1]["elements"], [{"type": "text", "text": "Security audit: 2 new across 3 clusters"}])
+
+    def test_empty_parts_are_omitted(self):
+        self.assertEqual(
+            [b["type"] for b in sp.blocks_report("h")], ["rich_text"]
+        )
+
+    def test_rows_with_no_text_and_no_severity_are_skipped(self):
+        self.assertEqual(sp.blocks_report("h", rows=["", "  "]), sp.blocks_report("h"))
+        group = sp.blocks_report("h", rows=["", {"text": "", "severity": "major"}, "x"])[2]["elements"]
+        self.assertEqual(group[0]["elements"][0]["text"], "major")
+        self.assertEqual(len(group), 2)
+        for section in group:
+            self.assertTrue(section["elements"])
+
+    def test_after_rows_is_a_plain_line_below_the_rows(self):
+        blocks = self._report(after_rows="Also found: 18 more.")
+        self.assertEqual([b["type"] for b in blocks], ["rich_text", "divider", "rich_text", "divider", "rich_text", "actions"])
+        self.assertEqual(len(blocks[0]["elements"]), 1)
+        self.assertEqual(blocks[4]["elements"][0]["elements"], [{"type": "text", "text": "Also found: 18 more."}])
+        self.assertEqual(self._report(after_rows="  "), self._report())
+        long_line = self._report(after_rows="**x** " * 200)[4]["elements"][0]["elements"][0]["text"]
+        self.assertLessEqual(len(long_line), sp.ROW_TEXT_MAX)
+        self.assertNotIn("**", long_line)
+
+    def test_a_row_is_clipped_to_row_text_max(self):
+        text = self._report(rows=["x" * (sp.ROW_TEXT_MAX + 50)])[2]["elements"][0]["elements"][0]["text"]
+        self.assertLessEqual(len(text), sp.ROW_TEXT_MAX)
+
+    def test_detail_is_plained_and_clipped(self):
+        detail = self._report(detail="**" + "y" * (sp.ROW_TEXT_MAX + 50) + "**")[0]["elements"][1]["elements"][0]["text"]
+        self.assertLessEqual(len(detail), sp.ROW_TEXT_MAX)
+        self.assertNotIn("*", detail)
+
+    def test_shown_text_is_the_rows_rich_text_joined(self):
+        for markdown in ("*seeded-b* admits _privileged_ ~pods~", "`cluster-admin` on **seeded-c**", "[logs](https://x/1) say so"):
+            row = sp.blocks_report("h", rows=[markdown])[2]["elements"][0]["elements"]
+            self.assertEqual(sp.shown_text(markdown), "".join(e["text"] for e in row))
+        self.assertEqual(sp.shown_text("*seeded-b* admits _privileged_ ~pods~"), "seeded-b admits privileged pods")
+        self.assertLessEqual(len(sp.shown_text("x " * sp.ROW_TEXT_MAX)), sp.ROW_TEXT_MAX)
+
+    def test_names_gap_reads_a_negation_as_no_gap(self):
+        self.assertTrue(sp.names_gap("seeded-c could not be scanned"))
+        self.assertTrue(sp.names_gap("No drift, but 2 clusters were unreachable"))
+        self.assertFalse(sp.names_gap("No clusters were unreachable"))
+        self.assertFalse(sp.names_gap("with no unreachable nodes"))
+        self.assertFalse(sp.names_gap("Clusters skipped: none"))
+        self.assertFalse(sp.names_gap("unreachable", ": 0."))
+        self.assertTrue(sp.names_gap("seeded-b unreachable", ": 2 nodes."))
+        self.assertTrue(sp.names_gap("seeded-b skipped: no credentials"))
+        self.assertTrue(sp.names_gap("unreachable", ": 0 of 3 control planes answered."))
+
+    def test_names_gap_does_not_read_a_url(self):
+        self.assertFalse(sp.names_gap("see https://x.example/unreachable for details"))
+        self.assertTrue(sp.names_gap("seeded-b unreachable, see https://x.example/runbook"))
+
+    def test_gap_parts_keeps_every_gap_and_leaves_the_counts(self):
+        for text, parts in (
+            ("1 skipped, 2 unreachable", ["1 skipped", "2 unreachable"]),
+            ("3 new, 1 resolved, 1 skipped", ["1 skipped"]),
+            ("2 new and 1 skipped", ["1 skipped"]),
+            ("2 new but 1 unreachable", ["1 unreachable"]),
+            ("I scanned 3 clusters, but seeded-d was unreachable", ["seeded-d was unreachable"]),
+            ("No drift (seeded-d unreachable, 5 namespaces clean)", ["seeded-d unreachable"]),
+            ("seeded-c could not be scanned (permission denied)", ["seeded-c could not be scanned (permission denied)"]),
+            ("unreachable: none", []),
+            ("I scanned 3 clusters and 41 workloads", []),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(sp.gap_parts(text), parts)
+
+    def test_gap_parts_keeps_the_names_a_colon_lists_but_not_a_reason(self):
+        for text, parts in (
+            ("skipped: seeded-d (no credentials).", ["skipped: seeded-d (no credentials)."]),
+            ("2 clusters could not be scanned: seeded-d, seeded-e.", ["2 clusters could not be scanned: seeded-d, seeded-e."]),
+            ("seeded-b unreachable: no response from the control plane.", ["seeded-b unreachable"]),
+            ("skipped: seeded-d, 2 new", ["skipped: seeded-d"]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(sp.gap_parts(text), parts)
+
+    def test_as_line_keeps_a_name_lowercase(self):
+        self.assertEqual(sp.as_line("2 clusters were unreachable"), "2 clusters were unreachable.")
+        self.assertEqual(sp.as_line("but some were skipped"), "But some were skipped.")
+        self.assertEqual(sp.as_line("seeded-c could not be scanned"), "seeded-c could not be scanned.")
+        self.assertEqual(sp.as_line("Done!"), "Done!")
+
+    def test_row_links_keep_only_urls_slack_accepts(self):
+        too_long = "https://x/" + "a" * sp.URL_MAX
+        for url, linked in ((too_long, False), ("HTTPS://P/q", True), ("https://", False)):
+            elements = sp._rich_elements(f"[d]({url})")
+            self.assertEqual(elements[0]["type"] == "link", linked, url)
+            self.assertEqual(f"<{url}|d>" in sp.to_mrkdwn(f"[d]({url})"), linked, url)
+
+    def test_a_row_link_with_parentheses_in_its_url_is_whole_in_both_views(self):
+        url = "https://console.cloud.google.com/logs/query;query=resource.type%3D(k8s_container)"
+        self.assertEqual(sp._rich_elements(f"[logs]({url})"), [{"type": "link", "url": url, "text": "logs"}])
+        self.assertEqual(sp.to_mrkdwn(f"[logs]({url})"), f"<{url}|logs>")
+
+    def test_a_row_detail_is_a_second_line_in_both_views(self):
+        row = {"severity": "critical", "text": "privileged pods", "detail": "Any pod can reach the node; **enforce** PSA."}
+        section = self._report(rows=[row])[2]["elements"][0]["elements"]
+        self.assertEqual(section[3], {"type": "text", "text": "\n"})
+        self.assertIn({"type": "text", "text": "enforce", "style": {"bold": True}}, section)
+        self.assertEqual(
+            sp.fallback_text("h", rows=[row]), "*h*\n`critical` privileged pods\nAny pod can reach the node; *enforce* PSA."
+        )
+
+    def test_a_long_row_and_detail_are_clipped_alike_in_both_views(self):
+        long = "x" * (sp.ROW_TEXT_MAX + 50)
+        _, row_line, detail_line = sp.fallback_text("h", rows=[{"text": long, "detail": long}]).split("\n")
+        self.assertEqual(row_line, sp.BULLET + sp._clip(long, sp.ROW_TEXT_MAX))
+        self.assertEqual(detail_line, sp._clip(long, sp.ROW_TEXT_MAX))
+
+
+class SeverityRowTest(unittest.TestCase):
+    def test_tag_then_text(self):
+        self.assertEqual(sp.severity_row("critical", "x"), "`critical` x")
+        self.assertFalse(hasattr(sp, "SEVERITY_MARKERS"))
+
+    def test_any_severity_is_tagged_and_cannot_break_the_code_span(self):
+        self.assertEqual(sp.fallback_text("h", rows=[{"text": "t", "severity": "cri`tical"}]), "*h*\n`critical` t")
 
 
 if __name__ == "__main__":
