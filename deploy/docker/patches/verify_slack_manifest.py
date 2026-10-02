@@ -12,6 +12,9 @@ real ``_build_full_manifest`` once per messaging experience, normalizes each the
 - the record's newest ``changes`` entry does not carry the manifests' digests, or
   has no note. That entry is the manifest's release-note line, so a change to the
   manifest cannot merge without one;
+- an entry repeats the digest of the entry before it, which would be a second
+  note for a manifest that did not change (a return to an earlier manifest is
+  fine);
 - the interactivity and Socket Mode settings, or ``assistant:write`` on the two
   experiences with a view, are gone. Losing any of them breaks a kube-agents
   install without an error, and nothing else asserts them;

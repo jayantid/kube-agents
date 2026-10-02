@@ -1508,9 +1508,13 @@ check_slack_manifest() {
   installed="\"assistant\": $(cat "${read_dir}/assistant")"
   if read_slack_manifest "$namespace" "${read_dir}/agent" --agent-view; then
     installed="${installed}, \"agent\": $(cat "${read_dir}/agent")"
+  else
+    print_info "The running image could not print the --agent-view manifest, so that experience is not compared."
   fi
   if read_slack_manifest "$namespace" "${read_dir}/none" --no-assistant; then
     installed="${installed}, \"none\": $(cat "${read_dir}/none")"
+  else
+    print_info "The running image could not print the --no-assistant manifest, so that experience is not compared."
   fi
   rm -rf "$read_dir"
   local report="" status=0
@@ -1555,8 +1559,8 @@ print_slack_manifest_steps() {
   local namespace="$1"
   print_info "Once the upgrade completes, re-apply the manifest:"
   echo "    1. kubectl exec deploy/${PLATFORM_AGENT_DEPLOYMENT} -c ${PLATFORM_AGENT_CONTAINER} -n ${namespace} -- hermes slack manifest"
-  echo "       Add the flag your app was created with: --agent-view or --no-assistant. The output resets the app's name,"
-  echo "       description and long description; add --name, --description and --long-description to keep your own."
+  echo "       Add the flag your app was created with: --agent-view or --no-assistant. The output resets the app's name and"
+  echo "       description and clears its long description; add --name, --description and --long-description to keep your own."
   echo "    2. In the Slack App Console, open the app's Features -> App Manifest, replace the JSON with that output, and save."
   echo "    3. Reinstall the app to the workspace when Slack prompts, which grants any new scope."
 }

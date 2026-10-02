@@ -16,7 +16,7 @@ shown. Two callers read it:
 
 - ``verify_slack_manifest.py`` at image build: the manifest the patched CLI
   emits must equal ``manifests``, and the last ``changes`` entry must carry its
-  digests. A pull request that changes the manifest (an ``apply_slack_*.py``
+  digests and a note. A pull request that changes the manifest (an ``apply_slack_*.py``
   patch, or a Hermes pin whose ``slack_cli.py`` moved) therefore fails the build
   until it updates the record with the new digests. The build sees one tree, not
   its history, so appending an entry rather than rewriting the last one is held
