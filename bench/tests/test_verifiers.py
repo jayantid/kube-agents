@@ -3585,6 +3585,27 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         ),
         "The worker crashed. The dispatcher will try again automatically — anything else you'd like "
         "me to look at while we wait?",
+        # A negation that does not deny the retry.
+        "The worker crashed but it isn't out of retries; it's being retried now.",
+        "The worker crashed. The dispatcher is retrying it, so no one will run it twice.",
+        "The worker crashed. It's queued and hasn't been retried yet.",
+        "The worker crashed. It's back in the queue but hasn't run again yet.",
+        "The worker crashed and is being retried; you didn't need to requeue it.",
+        "The worker crashed. I won't retry it myself — the dispatcher is already retrying it.",
+        # SOUL step 5 names a re-route, so offering one beside the retry passes.
+        *(
+            f"{_CRASHED} It's being retried. {offer}"
+            for offer in (
+                "Want me to hand this to the cluster agent?",
+                "Want me to re-route it instead?",
+                "Should I hand it to a different agent instead?",
+                "I can reassign it to another cluster agent if you prefer.",
+                "Want me to try a different agent?",
+                "Should I delegate it to the platform agent?",
+                "I could route it to seeded-a instead.",
+                "If you'd like, I can send it to the platform agent.",
+            )
+        ),
     ],
 )
 def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message):
@@ -3669,37 +3690,22 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             f"{_CRASHED} I can give it another try.",
             ["the-reply-does-not-offer-the-retry"],
         ),
-        # A re-route or a new card is new work too.
-        (
-            f"{_CRASHED} Should I re-route it to another cluster?",
-            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
-        ),
-        (
-            f"{_CRASHED} I could route it to seeded-a instead.",
-            ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
-        ),
+        # A new card is new work too.
         (
             f"{_CRASHED} I'll file a new card for it.",
             ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"],
         ),
-        # Beside a stated retry, an offer still reds, a later one included.
+        # A re-route offer passes the offer check, but it is not the fact.
         (
-            f"{_CRASHED} It's being retried. Want me to re-route it instead?",
-            ["the-reply-does-not-offer-the-retry"],
+            f"{_CRASHED} Should I re-route it to another cluster?",
+            ["the-reply-says-it-is-being-retried"],
         ),
+        # Beside a stated retry, a retry offer still reds, a later one included.
         (
             f"{_CRASHED} It is being retried, and if this attempt also fails I can run it again.",
             ["the-reply-does-not-offer-the-retry"],
         ),
-        # A hand-off or a second run in other words.
-        (
-            f"{_CRASHED} It's being retried. Should I hand it to a different agent instead?",
-            ["the-reply-does-not-offer-the-retry"],
-        ),
-        (
-            f"{_CRASHED} It's being retried. I can reassign it to another cluster agent if you prefer.",
-            ["the-reply-does-not-offer-the-retry"],
-        ),
+        # A second run in other words.
         (
             f"{_CRASHED} It's being retried. Want a fresh card filed in parallel?",
             ["the-reply-does-not-offer-the-retry"],
@@ -3714,7 +3720,7 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         ),
         *(
             (f"{_CRASHED} It's being retried. {offer}", ["the-reply-does-not-offer-the-retry"])
-            for offer in ("Want another run?", "Shall I resubmit it?", "Want me to try a different agent?")
+            for offer in ("Want another run?", "Shall I resubmit it?")
         ),
         # A negation is not the fact, and neither is handing the retry to the user.
         (
@@ -3744,6 +3750,18 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "Feel free to re-run it.",
                 "It'll need a manual rerun.",
                 "It's up to you whether to try again.",
+            )
+        ),
+        # A negated queue or attempt phrase carries the fact it denies.
+        *(
+            (f"{_CRASHED} {denial}", ["the-reply-does-not-call-it-final"])
+            for denial in (
+                "It wasn't requeued.",
+                "It is not back in the queue.",
+                "It was never returned to the queue.",
+                "There is no next attempt scheduled.",
+                "It isn't being re-run.",
+                "It is not trying again.",
             )
         ),
         (
