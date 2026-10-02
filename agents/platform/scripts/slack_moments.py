@@ -83,6 +83,9 @@ OPTION_MARKUP = re.compile(r"`([^`]+)`|\*\*([^*]+)\*\*")
 HEADLINE_MARKUP = re.compile(
     r"`([^`]+)`|\*\*([^*]+)\*\*|(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])"
 )
+#: Characters Slack mrkdwn reads as markup and has no escape for, so a headline
+#: holding one goes out as plain text.
+MRKDWN_MARK = re.compile(r"[*_`~]")
 
 PR_HEADLINE = "I opened PR #{number} in {repo}. It's yours to review."
 PR_REF = "PR #{number}"
@@ -225,7 +228,9 @@ def _question(reason: str, buttons: bool) -> tuple[str, list[str], list[str]]:
     """The reason's first line, the lines after it, and its options when they can be buttons."""
     lines = str(reason or "").strip().splitlines()
     # A line of markup alone (a bare "```") has no text to head the question.
-    while lines and not _presenter._plain(lines[0]):
+    while lines and (
+        not any(ch.isalnum() for ch in _presenter._plain(lines[0])) or _presenter.FENCE.match(lines[0])
+    ):
         lines.pop(0)
     if not lines:
         return "", [], []
@@ -266,9 +271,9 @@ def needs_you(reason: str, buttons: bool = True) -> tuple[list[dict], str] | Non
         "block_id": _presenter.WAITING_BLOCK_ID,
         "elements": [{"type": "mrkdwn", "text": WAITING}],
     })
-    first, *more = _presenter.fallback_text(headline, choices=options).split("\n")
+    first, *more = _presenter.fallback_text(_presenter._plain(headline), choices=options).split("\n")
     title = _headline_text(headline)
-    if title != _presenter._plain(headline):
+    if title != _presenter._plain(headline) or MRKDWN_MARK.search(title):
         # Slack mrkdwn has no escape for "*", so a headline the presenter would
         # change goes out as plain text, unbolded but with its characters.
         title = _presenter._clip(title, _presenter.HEADLINE_MAX)

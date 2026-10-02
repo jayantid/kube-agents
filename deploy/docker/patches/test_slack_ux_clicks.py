@@ -90,7 +90,7 @@ class SlackAdapter:
         return False
 
     async def _handle_slack_message(self, event, payload=None):
-        return None
+        return bool(event.get("_hermes_force_process"))
 
     _slack_disable_dms = _flag_getter("disable_dms")
     _slack_allowed_channels = _channel_set_getter("allowed_channels")
@@ -188,6 +188,7 @@ class ApplierTest(unittest.TestCase):
         for old, new, named in (
             ("def _get_client(", "def _client_for(", "_get_client"),
             ("_slack_disable_dms = ", "_disable_dms = ", "_slack_disable_dms"),
+            ('event.get("_hermes_force_process")', 'event.get("force")', "_hermes_force_process"),
             ("_slack_allowed_channels = ", "_allowed_channels = ", "_slack_allowed_channels"),
             ("def _handle_slack_message(", "def _handle_message(", "_handle_slack_message"),
             ("def _begin_interaction(", "def _start_interaction(", "_begin_interaction"),
@@ -197,11 +198,6 @@ class ApplierTest(unittest.TestCase):
             ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, *, team=None)",
              "_get_client no longer accepts"),
             ("*, team_scoped=True)", "*, team_scoped)", "_begin_interaction requires a keyword"),
-            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, team_id)",
-             "_get_client no longer accepts 1 positional argument(s) and ()"),
-            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, team_id=None, /)",
-             "_get_client no longer accepts 1 positional argument(s) and ('team_id',)"),
-            ("    def _get_client(", "    @property\n    def _get_client(", "_get_client is no longer a method"),
             ("def _is_ignored_channel(", "def _ignored(", "_is_ignored_channel"),
             ("def _is_ignored_channel(self, channel_id)", "def _is_ignored_channel(self)",
              "_is_ignored_channel no longer accepts"),
@@ -209,6 +205,9 @@ class ApplierTest(unittest.TestCase):
              "_is_ignored_channel is now async"),
             ("async def _handle_slack_message(", "def _handle_slack_message(",
              "_handle_slack_message is no longer async"),
+            ("def _get_client(self, chat_id, team_id=None)", "def _get_client(self, chat_id, team_id=None, /)",
+             "_get_client no longer accepts 1 positional argument(s) and ('team_id',)"),
+            ("    def _get_client(", "    @property\n    def _get_client(", "_get_client is no longer a method"),
             ("def _handle_slack_message(self, event, payload=None)",
              "def _handle_slack_message(self, event, payload)", "_handle_slack_message no longer accepts"),
             ('_slack_disable_dms = _flag_getter("disable_dms")', "_slack_disable_dms = property(bool)",
@@ -356,9 +355,9 @@ def _message(thread=THREAD):
     return message
 
 
-def _choice(index=1, value="Leave it", shown=None, **message_kwargs):
+def _choice(index=1, value="Leave it", shown=None, prefix="kage", **message_kwargs):
     action = {
-        "action_id": f"kage.choice.{index}",
+        "action_id": f"{prefix}.choice.{index}",
         "text": {"type": "plain_text", "text": value if shown is None else shown, "emoji": True},
         "value": value,
         "action_ts": ACTION_TS,
@@ -384,7 +383,8 @@ class RuntimeTest(unittest.TestCase):
 
     def test_choice_is_the_clickers_turn_with_an_echo(self):
         adapter = _Adapter()
-        self._answer(adapter, *_choice())
+        with self.assertNoLogs(runtime.logger, level="WARNING"):
+            self._answer(adapter, *_choice())
         self.assertEqual([entry[0] for entry in adapter.log], ["chat_update", "chat_postMessage", "message"])
         update, echo, turn = (entry[1] for entry in adapter.log)
         self.assertEqual((update["channel"], update["ts"]), (CHANNEL, MESSAGE_TS))
@@ -393,8 +393,8 @@ class RuntimeTest(unittest.TestCase):
             [[e["action_id"] for e in b["elements"]] for b in actions], [["kage.link.0"]]
         )
         self.assertEqual(update["blocks"][-1]["elements"][0]["text"], "✓ <@U1>: Leave it")
-        # The notification text no longer offers the choices the blocks dropped.
-        self.assertEqual(update["text"], "✓ <@U1>: Leave it")
+        # The note leads the text; the message's own text stays under it for a later thread read.
+        self.assertEqual(update["text"], "✓ <@U1>: Leave it\n\nfallback")
         self.assertEqual(echo, {"channel": CHANNEL, "thread_ts": THREAD, "text": "↳ <@U1>: Leave it"})
         self.assertEqual(
             turn,
@@ -618,8 +618,10 @@ class RuntimeTest(unittest.TestCase):
         adapter = _Adapter()
         body, action = _choice()
         del action["text"]
-        self._answer(adapter, body, action)
+        with self.assertLogs(runtime.logger, level="WARNING") as logs:
+            self._answer(adapter, body, action)
         self.assertEqual(adapter.log, [])
+        self.assertTrue(any("dropping a kage choice click" in line and "no button text" in line for line in logs.output))
 
     def test_command_shaped_label_is_an_answer_not_a_command(self):
         for label in ("/stop", "!approve"):
@@ -649,6 +651,17 @@ class RuntimeTest(unittest.TestCase):
         listed = _Adapter(allowed_channels={CHANNEL})
         self._answer(listed, *_choice())
         self.assertEqual(len(listed.log), 3)
+
+    def test_a_click_in_a_group_dm_with_dms_disabled_changes_nothing(self):
+        # The gateway ignores an mpim as it does an im when DMs are disabled.
+        for disable_dms, calls in ((True, 0), (False, 3)):
+            with self.subTest(disable_dms=disable_dms):
+                importlib.reload(runtime)
+                adapter = _Adapter(disable_dms=disable_dms)
+                body, action = _choice()
+                body["channel"] = {"id": CHANNEL, "name": "mpdm-alice--bob--kage-1"}
+                self._answer(adapter, body, action)
+                self.assertEqual(len(adapter.log), calls)
 
     def _dm_begin(self, adapter):
         async def begin(ack, body, action, kind, *, team_scoped=True):
@@ -681,8 +694,10 @@ class RuntimeTest(unittest.TestCase):
 
     def test_empty_label_does_nothing(self):
         adapter = _Adapter()
-        self._answer(adapter, *_choice(value="  "))
+        with self.assertLogs(runtime.logger, level="WARNING") as logs:
+            self._answer(adapter, *_choice(value="  "))
         self.assertEqual(adapter.log, [])
+        self.assertTrue(any("with no button text" in line for line in logs.output))
 
     def test_link_click_is_acked_only(self):
         acks = []
@@ -692,6 +707,54 @@ class RuntimeTest(unittest.TestCase):
 
         _run(presenter.ack_link_click(ack, {}, {"action_id": "kage.link.0"}))
         self.assertEqual(acks, [True])
+
+    def test_the_answered_alert_keeps_its_report_for_the_clicks_own_turn(self):
+        report = "*Pod OOMKilled*\nOption A: raise the limit\nOption B: roll back checkout-gateway"
+        adapter = _Adapter()
+        seen = []
+
+        async def turn(event, payload=None):
+            seen.append([entry[1]["text"] for entry in adapter.log if entry[0] == "chat_update"])
+
+        adapter._handle_slack_message = turn
+        body, action = _choice(1, "Apply Option B")
+        body["message"]["text"] = report
+        self._answer(adapter, body, action)
+        self.assertEqual(seen, [[f"✓ <@U1>: Apply Option B\n\n{report}"]])
+
+    def test_a_reply_with_line_alone_leaves_the_note_and_the_report(self):
+        body, action = _choice(1, "Apply Option B")
+        body["message"]["text"] = f"{presenter.CHOICES_LEAD}Apply Option A\n\nthe report"
+        adapter = _Adapter()
+        self._answer(adapter, body, action)
+        update = next(entry[1] for entry in adapter.log if entry[0] == "chat_update")
+        self.assertEqual(update["text"], "✓ <@U1>: Apply Option B\n\nthe report")
+
+    def test_a_headline_quoting_the_reply_with_words_stays(self):
+        headline = f"*{presenter.CHOICES_LEAD}nobody answered*"
+        body, action = _choice(1, "Apply Option B")
+        body["message"]["text"] = f"{headline}\n{presenter.CHOICES_LEAD}Apply Option A\n\nthe report"
+        adapter = _Adapter()
+        self._answer(adapter, body, action)
+        update = next(entry[1] for entry in adapter.log if entry[0] == "chat_update")
+        self.assertEqual(update["text"], f"✓ <@U1>: Apply Option B\n\n{headline}\n\nthe report")
+
+    def test_answered_text_is_clipped_to_slacks_limit_and_keeps_the_note(self):
+        adapter = _Adapter()
+        body, action = _choice()
+        body["message"]["text"] = "word " * runtime.SLACK_TEXT_MAX
+        self._answer(adapter, body, action)
+        text = adapter.log[0][1]["text"]
+        self.assertLessEqual(len(text), runtime.SLACK_TEXT_MAX)
+        self.assertTrue(text.startswith("✓ <@U1>: Leave it\n\nword word"))
+        self.assertTrue(text.endswith(presenter.ELLIPSIS))
+
+    def test_a_message_with_no_text_is_answered_with_the_note_alone(self):
+        adapter = _Adapter()
+        body, action = _choice()
+        del body["message"]["text"]
+        self._answer(adapter, body, action)
+        self.assertEqual(adapter.log[0][1]["text"], "✓ <@U1>: Leave it")
 
     def test_flag_off_is_disabled(self):
         with mock.patch.dict(os.environ, {"KAGE_SLACK_UX": "0"}):

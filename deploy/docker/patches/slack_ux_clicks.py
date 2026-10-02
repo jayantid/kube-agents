@@ -16,8 +16,8 @@ With the flag on, :func:`register` adds two listeners:
 
 * A choice button (``<prefix>.choice.<n>``) is the clicker answering in the
   thread with the button's text as Slack showed it. Not its ``value``: the
-  presenter clips the text to Slack's 75 characters but keeps up to 2000 in
-  the value, and a click must not send words the clicker did not see.
+  presenter clips the text to ``BUTTON_TEXT_MAX`` but keeps up to
+  ``BUTTON_VALUE_MAX`` in the value, and a click must not send words the clicker did not see.
   The one exception keeps that rule: a value that is the label, ": ", and a
   whole line the message itself shows ("Fix the first one: <the first row>",
   markup and a row's severity aside) is the turn, so a session that never
@@ -28,7 +28,8 @@ With the flag on, :func:`register` adds two listeners:
   authorization; an unlisted user's click is logged and changes nothing, and
   so does one in a channel or DM the adapter would ignore a typed message in.
   Then the message is rewritten with the choice buttons replaced by
-  a line naming who chose what, a short echo ("↳ @user: label") is posted in
+  a line naming who chose what (the same line goes above the message's text,
+  which is kept: a later read of the thread looks nowhere else), a short echo ("↳ @user: label") is posted in
   the thread, since a bot token cannot post as the user, and the label is fed
   to the adapter's message handler as that user's message in that thread, the
   path a reaction trigger already takes. That path applies the channel and user checks a typed message gets, so a click
@@ -116,11 +117,18 @@ ROW_SEVERITIES = frozenset({"critical", "major", "minor"})
 #: A DM channel id's first letter, as the adapter's message handler reads it.
 DM_CHANNEL_PREFIX = "D"
 
+#: A group DM's name in a click's payload, which carries no ``channel_type`` to read ``mpim`` from.
+#: Not yet seen in a live click: a payload naming it otherwise reads as a channel, as before.
+GROUP_DM_NAME_PREFIX = "mpdm-"
+
 #: A synthetic message's ts when the payload carries no ``action_ts``.
 FALLBACK_TS = "kage-click-{ts}-{action}-{user}"
 
 #: Bound on the answered-message map, oldest evicted first.
 ANSWERED_MAX = 512
+
+#: Slack truncates a message's ``text`` past this many characters.
+SLACK_TEXT_MAX = 40000
 
 #: ``(channel, ts, kind)`` a click answered.
 _answered: OrderedDict[tuple, None] = OrderedDict()
@@ -198,6 +206,26 @@ def answered_blocks(blocks: Any, answered: Any, note: str) -> list[dict]:
     return out
 
 
+def _without_choices_line(text: str) -> str:
+    """``text`` without the fallback's "Reply with one of:" line, which only its first
+    paragraph carries; the same words further down are the report's own and stay."""
+    head, _sep, rest = text.partition("\n\n")
+    head = "\n".join(line for line in head.split("\n") if not line.startswith(_presenter.CHOICES_LEAD))
+    return "\n\n".join(part for part in (head, rest) if part)
+
+
+def _answered_text(note: str, message: dict) -> str:
+    """``note`` with the message's own text under it, clipped to ``SLACK_TEXT_MAX``.
+
+    The adapter reads a thread back from ``text`` and top-level blocks, so
+    replacing the text with the note would leave the click's own turn, and
+    every later read of the thread, without what the message said. The "Reply with one of:" line goes: it asks for
+    an answer the note already records.
+    """
+    original = _without_choices_line(str(message.get("text") or ""))
+    return _presenter._clip(f"{note}\n\n{original}", SLACK_TEXT_MAX) if original else note
+
+
 def _shown_text(action: dict) -> str:
     """The clicked button's text as Slack displayed it."""
     text = action.get("text") or {}
@@ -250,16 +278,16 @@ def _turn(label: str, value: Any, message: dict) -> str:
     return label if shown is None else label + TURN_JOIN + " ".join(shown.split())
 
 
-def _gated_out(adapter: Any, channel_id: str) -> bool:
+def _gated_out(adapter: Any, channel_id: str, body: dict) -> bool:
     """Whether the adapter would ignore a typed message in ``channel_id``: an ignored
-    channel, outside ``allowed_channels``, or a DM with DMs disabled. Checked before
-    anything is shown."""
+    channel, outside ``allowed_channels``, or a DM, 1:1 or group, with DMs disabled.
+    Checked before anything is shown."""
     if adapter._is_ignored_channel(channel_id):
         return True
     allowed = adapter._slack_allowed_channels()
     if allowed and channel_id not in allowed:
         return True
-    return channel_id.startswith(DM_CHANNEL_PREFIX) and bool(adapter._slack_disable_dms())
+    return (channel_id.startswith(DM_CHANNEL_PREFIX) or _is_group_dm(body)) and bool(adapter._slack_disable_dms())
 
 
 def _as_answer(label: str) -> str:
@@ -289,6 +317,11 @@ def _thread_ts(body: dict, message: dict, msg_ts: str) -> str:
     return str(message.get("thread_ts") or container.get("thread_ts") or msg_ts)
 
 
+def _is_group_dm(body: dict) -> bool:
+    """Whether the click came from a group DM, which the gateway asks its gate about as a DM."""
+    return str((body.get("channel") or {}).get("name") or "").startswith(GROUP_DM_NAME_PREFIX)
+
+
 async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) -> None:
     """Authorize a choice click, mark it answered, echo it, and run it as the clicker's turn."""
     started = await adapter._begin_interaction(ack, body, action, kind)
@@ -296,28 +329,37 @@ async def answer(adapter: Any, ack: Any, body: dict, action: dict, kind: str) ->
         return
     team_id, action_id, value, message, msg_ts, channel_id, _user_name, user_id = started
     label = _shown_text(action)
-    if not (label and msg_ts and channel_id and user_id):
+    missing = [
+        name
+        for name, field in (("button text", label), ("message ts", msg_ts), ("channel", channel_id), ("user", user_id))
+        if not field
+    ]
+    if missing:
+        logger.warning(
+            "slack_ux_clicks: dropping a %s click on %s with no %s",
+            kind, msg_ts or "an unknown message", ", ".join(missing),
+        )
         return
-    if _gated_out(adapter, channel_id):
+    if _gated_out(adapter, channel_id, body):
         logger.info("slack_ux_clicks: ignoring a %s click in %s, which the adapter ignores", kind, channel_id)
         return
     key = (channel_id, msg_ts, kind)
     if key in _answered:
         logger.info("slack_ux_clicks: dropping a second %s click on %s, already answered", kind, msg_ts)
         return
+    thread_ts = _thread_ts(body, message, msg_ts)
+    client = adapter._get_client(channel_id, team_id=team_id)
     _answered[key] = None
     while len(_answered) > ANSWERED_MAX:
         _answered.popitem(last=False)
 
-    thread_ts = _thread_ts(body, message, msg_ts)
     shown = _escape(label)
-    client = adapter._get_client(channel_id, team_id=team_id)
     note = ANSWERED.format(user=user_id, label=shown)
     # Before the awaits: a card that moves on in between settles its question and forgets it.
     card = _question_card(channel_id, msg_ts)
     try:
         await client.chat_update(
-            channel=channel_id, ts=msg_ts, text=note,
+            channel=channel_id, ts=msg_ts, text=_answered_text(note, message),
             blocks=answered_blocks(message.get("blocks"), _answered_by, note),
         )
         if key in _answered:

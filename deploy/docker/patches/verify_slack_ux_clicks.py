@@ -11,8 +11,10 @@ Two things are checked:
 1. The adapter. ``SlackAdapter`` still has the members the runtime calls:
    ``_begin_interaction(ack, body, action, kind)`` returning the eight fields
    :func:`slack_ux_clicks.answer` unpacks, in that order, plus
-   ``_is_ignored_channel``, ``_slack_allowed_channels``, ``_slack_disable_dms``, ``_get_client`` and
-   ``_handle_slack_message``. ``_register_bolt_handlers`` still wires the plugin
+   ``_is_ignored_channel``, ``_slack_allowed_channels``, ``_slack_disable_dms``,
+   ``_get_client`` and ``_handle_slack_message``; the adapter file still reads the
+   ``_hermes_force_process`` marker the click's message carries.
+   ``_register_bolt_handlers`` still wires the plugin
    action handlers, and the flag guard calling
    ``_kage_slack_clicks.register(self)`` follows that call directly. The import
    the guard names is bound at module level.
@@ -47,26 +49,27 @@ IMPORT_MODULE = "gateway"
 IMPORT_NAME = "slack_ux_clicks"
 
 ADAPTER_CLASS = "SlackAdapter"
-#: The adapter members ``slack_ux_clicks`` calls; the stub below supplies them,
-#: so only this check ties them to upstream.
+#: The adapter members ``slack_ux_clicks`` calls; the stubs supply them, so only
+#: this check ties them to upstream.
 RUNTIME_MEMBERS = (
     "_begin_interaction", "_is_ignored_channel", "_slack_allowed_channels", "_slack_disable_dms",
     "_get_client", "_handle_slack_message",
 )
 #: The members the runtime awaits; every other one it calls plainly.
 ASYNC_MEMBERS = ("_begin_interaction", "_handle_slack_message")
+#: The event key whose ``.get()`` makes the message handler skip the mention
+#: requirement for a click's turn. Matched in the AST, so quoting does not matter.
+FORCE_MARKER = "_hermes_force_process"
 BEGIN_INTERACTION = "_begin_interaction"
 BEGIN_POSITIONAL = ("self", "ack", "body", "action", "kind")
 #: What ``_begin_interaction`` returns, unpacked positionally by ``answer()``.
 BEGIN_RETURNS = ("team_id", "action_id", "value", "message", "msg_ts", "channel_id", "user_name", "user_id")
 #: How the runtime calls the other members: positional arguments after ``self``, and keywords.
-#: ``_get_client`` has two callers: ``slack_ux_clicks`` passes ``team_id``, ``slack_ux_incident``'s
-#: alert edit does not.
 CALL_SHAPES = {
     "_is_ignored_channel": ((1, ()),),
     "_slack_allowed_channels": ((0, ()),),
     "_slack_disable_dms": ((0, ()),),
-    "_get_client": ((1, ("team_id",)), (1, ())),
+    "_get_client": ((1, ("team_id",)),),
     "_handle_slack_message": ((1, ()),),
 }
 
@@ -190,7 +193,7 @@ def check_members(tree: ast.Module) -> None:
     members = _members(classes[0])
     missing = [name for name in RUNTIME_MEMBERS if name not in members]
     if missing:
-        raise _fail(f"{ADAPTER_CLASS} no longer has {', '.join(missing)}, which slack_ux_clicks calls")
+        raise _fail(f"{ADAPTER_CLASS} no longer has {', '.join(missing)}, which the runtime calls")
     for name, calls in CALL_SHAPES.items():
         args = _method_args(tree, members[name])
         if args is None:
@@ -208,7 +211,7 @@ def check_members(tree: ast.Module) -> None:
         awaited = name in ASYNC_MEMBERS
         if isinstance(member, ast.AsyncFunctionDef) != awaited:
             state, use = ("no longer", "awaits") if awaited else ("now", "calls")
-            raise _fail(f"{ADAPTER_CLASS}.{name} is {state} async; slack_ux_clicks {use} it")
+            raise _fail(f"{ADAPTER_CLASS}.{name} is {state} async; the runtime {use} it")
     begin = members[BEGIN_INTERACTION]
     if not isinstance(begin, (ast.FunctionDef, ast.AsyncFunctionDef)) or begin.decorator_list:
         raise _fail(f"{ADAPTER_CLASS}.{BEGIN_INTERACTION} is no longer a method")
@@ -226,12 +229,26 @@ def check_members(tree: ast.Module) -> None:
         raise _fail(f"{BEGIN_INTERACTION} returns {returned!r}, slack_ux_clicks unpacks {BEGIN_RETURNS!r}")
 
 
+def _reads_force_marker(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == FORCE_MARKER
+        for node in ast.walk(tree)
+    )
+
+
 def check_adapter(root: Path) -> None:
     path = root / ADAPTER
     if not path.is_file():
         raise _fail(f"{path} does not exist")
     tree = ast.parse(path.read_text())
     check_members(tree)
+    if not _reads_force_marker(tree):
+        raise _fail(f"{ADAPTER} no longer reads .get({FORCE_MARKER!r}), which a click's message relies on")
     methods = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == METHOD]
     if len(methods) != 1:
         raise _fail(f"{ADAPTER} has {len(methods)} def {METHOD}(), expected 1")
