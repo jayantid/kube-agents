@@ -3344,6 +3344,21 @@ def test_the_failure_voice_objectives_pass_a_reply_that_leads_with_the_fact(fina
             f"The restart of invoice-renderer on bench-sandbox is blocked. {_FAILURE_WHY}",
             ["the-reply-leads-with-the-fact"],
         ),
+        # A failure verb inside another word is not one.
+        (
+            "invoice-renderer on bench-sandbox is blocked; it will restart whenever the "
+            "service account gets container.deployments.update.",
+            ["the-reply-leads-with-the-fact"],
+        ),
+        (
+            "invoice-renderer on bench-sandbox is blocked and does nothing until the service "
+            "account gets container.deployments.update.",
+            ["the-reply-leads-with-the-fact"],
+        ),
+        (
+            f"Don't worry: invoice-renderer on bench-sandbox is blocked. {_FAILURE_WHY}",
+            ["the-reply-opens-on-the-fact"],
+        ),
         # An echo of the wake's title names the workload but not the failure.
         (
             "Blocked: Restart invoice-renderer on bench-sandbox. Likely a permission issue.",
