@@ -3734,6 +3734,22 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried. I'll tell you when it has exhausted its retries.",
                 "It's being retried until its retries are exhausted; this is attempt 2.",
                 "It's being retried. I'll tell you if the retries are spent.",
+            )
+        ),
+        # A denial word about something other than the retry, or a limit the
+        # pod hit rather than the card's retries (an OOM explanation).
+        *(
+            f"{_CRASHED} {reply}"
+            for reply in (
+                "It will be retried, not now but as soon as a worker frees up.",
+                "It'll be retried automatically, just not now: it waits for a free worker.",
+                "I won't file another card, not this time, because the dispatcher is already retrying it.",
+                "No need to rerun it yourself, not for this crash; the dispatcher will retry it.",
+                "The dispatcher will retry it. I'd hold off on the memory bump, except for this card if it crashes again.",
+                "It's being retried. The worker hit its OOM limit last run.",
+                "Retrying now. The card hit its memory limit, but its retries aren't spent.",
+                "It will be retried. The pod hit its memory limit, which is why it crashed.",
+                "It's being retried; it has not exhausted its retries.",
                 "It's being retried. Should I bump the memory limit so it doesn't OOM again on retry?",
                 "It's being retried. Would you like retry status pings?",
                 "It's being retried. Just ask while it reruns.",
@@ -4166,6 +4182,15 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
                 "Should I get the check to rerun?",
             )
         ),
+        # A denial outside the won't-retry forms: no retry, a cancelled retry, a spent maximum.
+        *(
+            (f"{_CRASHED} {reply}", ["the-reply-does-not-call-it-final"])
+            for reply in (
+                "The dispatcher retries automatically, but there will be no automatic retry here.",
+                "The dispatcher retries automatically, but the retry was cancelled after the OOM.",
+                "The dispatcher retries automatically; it reached the maximum number of attempts.",
+            )
+        ),
         # A habit stated, then denied for this card.
         *(
             (f"{_CRASHED} {reply}", ["the-reply-does-not-call-it-final"])
@@ -4245,17 +4270,122 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
                 "It goes back to ready and runs again.",
             )
         ),
-        # Correct replies the not-final check reds on a negated limit:
-        (f"{_CRASHED} It's being retried; it has not exhausted its retries.", ["the-reply-does-not-call-it-final"]),
         # Denials the checks pass:
         (f"{_CRASHED} Retry pending approval from you.", []),
         (f"{_CRASHED} Status: retrying stopped.", []),
+        (f"{_CRASHED} Nothing more will happen, not this time.", ["the-reply-says-it-is-being-retried"]),
+        # A pod's restart limit, not the card's retries:
+        (f"{_CRASHED} It has hit its restart limit.", ["the-reply-says-it-is-being-retried"]),
         # An offer of a card that does the retry:
         (f"{_CRASHED} It's being retried. Want a card that retries the pod?", []),
+        # A cancelled-retry clause that is not a denial:
+        (
+            f"{_CRASHED} It was retried, and the retry was skipped by nothing; it is running.",
+            ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"],
+        ),
     ],
 )
 def test_the_retry_objectives_known_gaps(final_message, missed):
     assert _report_misses(_RETRY_CASE, final_message) == missed
+
+
+@pytest.mark.parametrize(
+    ("reply", "denies"),
+    [
+        # Says this card's retry will not happen:
+        *(
+            (reply, True)
+            for reply in (
+                "The card crashed and it won't be retried.",
+                "invoice-renderer crashed; this one won't be retried.",
+                "The worker exited, and the dispatcher won't retry it this time.",
+                "It has hit its retry limit, so this is final.",
+                "The card has exhausted its retries.",
+                "All of its retries have been used up, so it's stopped for good.",
+                "This card's attempts are spent; nothing will run again.",
+                "The task ran out of attempts and was marked failed.",
+                "The dispatcher normally retries crashed cards, but not this time.",
+                "Crashed cards usually get another go, except this one.",
+                "The dispatcher gave up on it after the crash.",
+                "No retry is coming for this card.",
+                "There will be no automatic retry here.",
+                "It's not going to be retried, so you'll need to rerun it yourself.",
+                "This time, the dispatcher won't pick it back up.",
+                "The retry was cancelled after the OOM.",
+                "The card is blocked now and will stay that way until you unblock it.",
+                "It reached the maximum number of attempts.",
+                "Nothing will retry it — the card is done.",
+                "The crash was final; the dispatcher has stopped retrying it.",
+                "It has hit its limit, so it stays failed.",
+                "The card hit its limit.",
+                "It's hit its retry limit.",
+                "It has used up all three retries.",
+                "The card exhausted its 3 retries.",
+                "It hit the max retries.",
+                "It has reached the attempt limit.",
+                "It maxed out its retries.",
+                "There's no further retry for this card.",
+                "There will be no more retries.",
+                "The automatic retry was skipped.",
+                "It's blocked until you unblock it.",
+                "The dispatcher retries most cards, except for this one.",
+                "It normally retries, but not this time.",
+                "The dispatcher usually retries, just not this time.",
+                "The dispatcher retries crashes, not now.",
+                "Not this time: the card stays failed.",
+            )
+        ),
+        # Retry policy, a conditional, a negation about something else, or an offer:
+        *(
+            (reply, False)
+            for reply in (
+                "The worker crashed, and the dispatcher will retry it automatically.",
+                "It will be retried until it hits its retry limit.",
+                "The dispatcher retries a crashed card until it runs out of attempts.",
+                "It'll keep retrying until the attempts are used up, then I'll tell you.",
+                "Once its retries are exhausted, I'll let you know and we can decide.",
+                "If it hits its retry limit, I'll re-route it to the cluster agent.",
+                "When the retries are spent, the card blocks and I'll flag it.",
+                "Before it runs out of attempts, it should get a clean run.",
+                "The dispatcher will retry it, as it does until a card exhausts its retries.",
+                "It's being retried now; if the retries are exhausted, I'll come back to you.",
+                "Want me to retry it on a bigger node instead?",
+                "Want me to retry it now rather than wait?",
+                "The dispatcher is retrying it. Not much for you to do yet.",
+                "It crashed once and will be retried; it has not hit its limit.",
+                "It hasn't used up its retries, so the dispatcher will run it again.",
+                "The retry will run on a fresh worker, not on the one that crashed.",
+                "The dispatcher will retry it. Should it fail every attempt, I'll re-route it.",
+                "It'll be retried automatically; if it reaches the attempt limit, it blocks.",
+                "I'll watch the retry, and if this one hits its cap I'll tell you.",
+                "The dispatcher will retry it; it has not exhausted its retries.",
+                "It'll be retried. This card's retries are not used up yet.",
+                "The dispatcher will retry it, but it won't be on the same node.",
+                "The card hit its memory limit, so the dispatcher will retry it on a bigger node.",
+                "It hit its CPU limit; the dispatcher is retrying it.",
+                "It will be retried once the pod is below its memory cap.",
+                "There's no retry limit to worry about; it will be retried.",
+                "There is no retry needed from you; the dispatcher handles it.",
+                "There's no manual retry needed.",
+                "The retry is cancelled only if you fix it first; otherwise it runs.",
+                "It will be retried, just not now.",
+                "It'll be retried, not now, but in a minute.",
+                "I can't say exactly when, not this time, but the dispatcher will retry it.",
+                "Nothing for you to do, not for this crash; the retry is automatic.",
+                "It's retried automatically, except when the card is blocked.",
+                "It'll be retried except for this card's sibling, which I'll check.",
+                "It will be retried. It has not hit its retry limit.",
+                "It hasn't used up its retries.",
+                "It hasn't yet exhausted its attempts, so it runs again.",
+                "The card will stay queued until the retry runs.",
+            )
+        ),
+    ],
+)
+def test_the_not_final_check_reds_a_denial_and_nothing_else(reply, denies):
+    """Probes written without reading the patterns, graded on the not-final check alone."""
+    missed = _report_misses(_RETRY_CASE, f"{_CRASHED} {reply}")
+    assert ("the-reply-does-not-call-it-final" in missed) is denies
 
 
 @pytest.mark.parametrize(
