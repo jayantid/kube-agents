@@ -4,7 +4,7 @@
 Run: python3 -m unittest discover -s deploy/docker/patches -p 'test_*.py'
 
 The fixtures keep the shape of upstream's two files where the patch touches
-them: the builder's agent-view description and closing sort, and the adapter's
+them: the builder's agent-view description, and the adapter's
 ``suggested_prompts`` read. The patched modules are
 imported and driven with the flag off and on, so the tests assert on the
 manifest and prompts they return rather than on inserted text.
@@ -24,17 +24,45 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parent))
+HERE = Path(__file__).resolve().parent
+SCRIPTS = HERE.parents[2] / "agents" / "platform" / "scripts"
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(SCRIPTS))
 
 from apply_slack_agent_view import (
     ADAPTER,
     BUILD_MARKER,
     FLAG_ENV,
+    FLAG_ON_VALUES,
     MANIFEST,
-    STOP_EVENT,
     SUGGESTED_PROMPTS,
     apply,
 )
+
+#: Where the image ships slack_presenter.py from: the Dockerfile copies both
+#: directories into /opt/defaults/scripts. The presenter ships with the Slack
+#: reactions change, so neither has it until that lands.
+PRESENTER_DIRS = (SCRIPTS, HERE.parents[2] / "agents" / "chat" / "scripts")
+PRESENTER = "slack_presenter.py"
+
+
+def presenter_flag_values(dirs=PRESENTER_DIRS):
+    """The presenter's ``FLAG_ON_VALUES``, or None when no directory has the file.
+
+    Loaded by path, so only absence reads as None: a presenter that is there
+    but fails its own imports raises here rather than skipping the parity test.
+    """
+    for directory in dirs:
+        path = Path(directory) / PRESENTER
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("slack_presenter_parity", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return frozenset(module.FLAG_ON_VALUES)
+    return None
+
+
+STOP_EVENT = "agent_session_stopped"
 
 MANIFEST_SOURCE = '''\
 """Fixture standing in for hermes_cli/slack_cli.py."""
@@ -158,7 +186,7 @@ class FlagOffTest(unittest.TestCase):
         before = load(original, MANIFEST)
         after = load(patched, MANIFEST)
         for value in (None, "", "0", "false", "off"):
-            for flags in ({}, {"agent_view": True}, {"no_assistant": True}, {"agent_view": True, "name": "Kage"}):
+            for flags in ({}, {"agent_view": True}, {"no_assistant": True}, {"agent_view": True, "name": "kube-agents"}):
                 with self.subTest(flag=value, args=flags), flag(value):
                     self.assertEqual(manifest(after, **flags), manifest(before, **flags))
 
@@ -181,31 +209,25 @@ class FlagOnTest(unittest.TestCase):
         self.root = build()
         apply(self.root)
 
-    def test_default_manifest_stays_assistant_view_with_stop(self):
-        # Agent view is one-way in Slack, so the flag never picks it.
+    def test_only_agent_view_differs_from_upstream(self):
+        # Agent view is one-way in Slack, so the flag never picks it, and a
+        # manifest without --agent-view is upstream's.
+        upstream = load(build(), MANIFEST)
         for value in ("1", "true", "TRUE", " yes ", "on"):
-            with self.subTest(flag=value), flag(value):
-                got = manifest(load(self.root, MANIFEST))
-                self.assertIn("assistant_view", got["features"])
-                self.assertNotIn("agent_view", got["features"])
-                events = got["settings"]["event_subscriptions"]["bot_events"]
-                self.assertIn(STOP_EVENT, events)
-                self.assertEqual(events, sorted(events))
+            for flags in ({}, {"no_assistant": True}, {"name": "kube-agents"}):
+                with self.subTest(flag=value, args=flags), flag(value):
+                    got = manifest(load(self.root, MANIFEST), **flags)
+                    self.assertEqual(got, manifest(upstream, **flags))
+                    self.assertNotIn("agent_view", got["features"])
 
-    def test_agent_view_is_named_and_has_stop(self):
+    def test_agent_view_is_named_and_offers_no_stop(self):
         with flag("true"):
-            got = manifest(load(self.root, MANIFEST), agent_view=True, name="Kage")
-        self.assertEqual(got["features"]["agent_view"]["agent_description"], "Chat with Kage in Slack Messages.")
+            got = manifest(load(self.root, MANIFEST), agent_view=True, name="kube-agents")
+        self.assertEqual(got["features"]["agent_view"]["agent_description"], "Chat with kube-agents in Slack Messages.")
         events = got["settings"]["event_subscriptions"]["bot_events"]
-        self.assertIn(STOP_EVENT, events)
+        # Nothing handles a Stop press yet, so Slack must not offer one.
+        self.assertNotIn(STOP_EVENT, events)
         self.assertIn("app_home_opened", events)
-        self.assertEqual(events, sorted(events))
-
-    def test_no_assistant_gets_no_stop(self):
-        with flag("true"):
-            bare = manifest(load(self.root, MANIFEST), no_assistant=True)
-        self.assertEqual(bare["features"], {})
-        self.assertNotIn(STOP_EVENT, bare["settings"]["event_subscriptions"]["bot_events"])
 
     def test_unset_prompts_fall_back_to_the_three_asks(self):
         with flag("true"):
@@ -215,6 +237,19 @@ class FlagOnTest(unittest.TestCase):
         for row in got:
             self.assertLessEqual(len(row["title"]), 75)
 
+    def test_the_three_asks_are_the_documented_ones(self):
+        # Literals, not SUGGESTED_PROMPTS: these are the strings chatops.md documents.
+        with flag("true"):
+            got = prompts(load(self.root, ADAPTER), {})
+        self.assertEqual(
+            [row["message"] for row in got],
+            [
+                "is anything unhealthy in my clusters right now?",
+                "what's on the board?",
+                "which clusters are behind their release channel?",
+            ],
+        )
+
     def test_configured_prompts_win(self):
         configured = [{"title": "t", "message": "m"}]
         with flag("true"):
@@ -222,6 +257,44 @@ class FlagOnTest(unittest.TestCase):
             self.assertEqual(prompts(module, {"suggested_prompts": configured}), configured)
             # An explicit empty list is a statement too: no prompts.
             self.assertEqual(prompts(module, {"suggested_prompts": []}), [])
+
+
+class FlagValuesTest(unittest.TestCase):
+    def test_manifest_check_accepts_what_the_presenter_accepts(self):
+        presenter = presenter_flag_values()
+        if presenter is None:
+            self.skipTest(f"{PRESENTER} is in none of {[str(d) for d in PRESENTER_DIRS]}")
+        self.assertEqual(set(FLAG_ON_VALUES), presenter)
+
+
+class PresenterLookupTest(unittest.TestCase):
+    """The lookup the parity test stands on, run whether or not the presenter is in the tree."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dirs = (Path(tmp.name) / "platform", Path(tmp.name) / "chat")
+        for directory in self.dirs:
+            directory.mkdir()
+
+    def write(self, directory, source):
+        (directory / PRESENTER).write_text(source)
+
+    def test_absence_is_the_only_skip(self):
+        self.assertIsNone(presenter_flag_values(self.dirs))
+
+    def test_either_shipped_directory_is_read(self):
+        self.write(self.dirs[1], "FLAG_ON_VALUES = frozenset({'1', 'true', 'yes', 'on'})\n")
+        self.assertEqual(presenter_flag_values(self.dirs), set(FLAG_ON_VALUES))
+
+    def test_diverged_values_are_read_as_written(self):
+        self.write(self.dirs[0], "FLAG_ON_VALUES = frozenset({'1', 'true'})\n")
+        self.assertNotEqual(presenter_flag_values(self.dirs), set(FLAG_ON_VALUES))
+
+    def test_a_presenter_that_fails_its_imports_fails(self):
+        self.write(self.dirs[0], "import kage_no_such_module\nFLAG_ON_VALUES = ()\n")
+        with self.assertRaises(ImportError):
+            presenter_flag_values(self.dirs)
 
 
 class RefusalTest(unittest.TestCase):
@@ -241,16 +314,18 @@ class RefusalTest(unittest.TestCase):
             apply(root)
         self.assertIn(BUILD_MARKER, str(caught.exception))
 
+    def test_second_run_on_the_adapter_alone_is_refused(self):
+        root = build()
+        apply(root)
+        (root / MANIFEST).write_text(MANIFEST_SOURCE)
+        with self.assertRaises(SystemExit) as caught:
+            apply(root)
+        self.assertIn(BUILD_MARKER, str(caught.exception))
+
     def test_agent_description_moved(self):
         self._refuses(
             "agent view description",
             manifest=MANIFEST_SOURCE.replace("Chat with Hermes in Slack Messages.", "Chat in Slack."),
-        )
-
-    def test_sort_moved(self):
-        self._refuses(
-            "bot scope and event sort",
-            manifest=MANIFEST_SOURCE.replace("    bot_events.sort()\n", ""),
         )
 
     def test_prompt_read_moved(self):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Suggested prompts, Stop, and a named agent view for Slack when ``KAGE_SLACK_UX`` is on.
+"""Suggested prompts and a named agent view for Slack when ``KAGE_SLACK_UX`` is on.
 
 Run by ``deploy/docker/Dockerfile`` against the Hermes tree, after
 ``apply_slack_reactions_scope.py``, which edits the same manifest builder.
@@ -18,20 +18,20 @@ repository sets that key, so no install shows a prompt.
 
 What this changes, with the flag on
 -----------------------------------
-* The ``assistant`` and ``agent`` branches subscribe ``agent_session_stopped``.
-  Without it Slack shows no Stop on a working agent session and warns
-  ``missing_agent_session_stopped_event_subscription`` on every
-  ``agents.sessions.setStatus`` (the Slack probe, 2026-09-29). The event needs
-  only ``chat:write``. ``--no-assistant`` is left alone: nothing shows Slack
-  accepts the event on an app with no messaging view. Handling the stop request
-  is the status work's; until a listener exists the adapter's catch-all acks it.
 * The ``agent`` branch describes the app by its ``--name`` instead of upstream's
   fixed "Chat with Hermes in Slack Messages.".
 * The adapter falls back to :data:`SUGGESTED_PROMPTS` when
   ``suggested_prompts`` is unset. A configured value still wins.
 
+Each file gains the same five-line flag check, ``_kage_slack_ux_on()``.
+
+``agent_session_stopped`` is not subscribed. That subscription is what makes
+Slack offer Stop, and no handler here acts on the event yet, so it would offer a
+Stop that stops nothing.
+
 With the flag off each edit is a branch that is not taken: the manifest and the
-prompts are exactly upstream's.
+prompts are exactly upstream's. With it on, a manifest without ``--agent-view``
+is upstream's too.
 
 The messaging experience is never chosen here. Upstream calls ``--agent-view``
 irreversible once a manifest carrying it is applied, so the default stays
@@ -59,9 +59,11 @@ ADAPTER = "plugins/platforms/slack/adapter.py"
 PREFIX = "slack_agent_view"
 
 FLAG_ENV = "KAGE_SLACK_UX"
+#: Neither file imports anything of ours, so the check carries its own copy of
+#: ``slack_presenter.FLAG_ON_VALUES``; a host test holds the two equal once
+#: slack_presenter.py is in agents/platform/scripts or agents/chat/scripts, and
+#: fails rather than skips if it is there but will not import.
 FLAG_ON_VALUES = ("1", "true", "yes", "on")
-
-STOP_EVENT = "agent_session_stopped"
 
 #: Mock 01's three asks, without the dev fleet's cluster name: a static prompt
 #: cannot know which clusters an install has. Slack sends the ``message`` as
@@ -72,9 +74,16 @@ SUGGESTED_PROMPTS = (
     "which clusters are behind their release channel?",
 )
 
+#: Upstream's cap on ``bot_name`` wherever the manifest prints it.
+NAME_MAX = 35
+
 #: The helper both files gain. Its name is the guard against a second run.
 FLAG_HELPER = "_kage_slack_ux_on"
 BUILD_MARKER = f"def {FLAG_HELPER}("
+
+#: The adapter's constant; the build greps for it.
+PROMPTS_NAME = "_KAGE_SUGGESTED_PROMPTS"
+ADAPTER_MARKER = f"{PROMPTS_NAME} = "
 
 HELPER = f'''
 
@@ -91,17 +100,8 @@ AGENT_DESCRIPTION_ANCHOR = '''\
 AGENT_DESCRIPTION = f'''\
 {AGENT_DESCRIPTION_ANCHOR}\
         if {FLAG_HELPER}():
-            features["agent_view"]["agent_description"] = f"Chat with {{bot_name[:35]}} in Slack Messages."
+            features["agent_view"]["agent_description"] = f"Chat with {{bot_name[:{NAME_MAX}]}} in Slack Messages."
 '''
-
-SORT_ANCHOR = '''\
-    bot_scopes.sort()
-    bot_events.sort()
-'''
-SORT = f'''\
-    if {FLAG_HELPER}() and messaging_experience != "none":
-        bot_events.append({STOP_EVENT!r})
-{SORT_ANCHOR}'''
 
 PROMPTS_ANCHOR = '''\
         raw = self.config.extra.get("suggested_prompts")
@@ -109,10 +109,11 @@ PROMPTS_ANCHOR = '''\
 PROMPTS = f'''\
 {PROMPTS_ANCHOR}\
         if raw is None and {FLAG_HELPER}():
-            raw = _KAGE_SUGGESTED_PROMPTS
+            raw = {PROMPTS_NAME}
 '''
 PROMPTS_CONSTANT = (
-    "_KAGE_SUGGESTED_PROMPTS = "
+    "\n"
+    + ADAPTER_MARKER
     + repr([{"title": prompt, "message": prompt} for prompt in SUGGESTED_PROMPTS])
     + "\n"
 )
@@ -127,7 +128,6 @@ def apply(root: Path) -> None:
     manifest.substitute(
         AGENT_DESCRIPTION_ANCHOR, AGENT_DESCRIPTION, label="agent view description"
     )
-    manifest.substitute(SORT_ANCHOR, SORT, label="bot scope and event sort")
     manifest.append(HELPER)
 
     adapter = patchlib.Patch(root, ADAPTER, prefix=PREFIX)
@@ -135,7 +135,7 @@ def apply(root: Path) -> None:
     adapter.substitute(PROMPTS_ANCHOR, PROMPTS, label="suggested prompts config read")
     adapter.append(HELPER + PROMPTS_CONSTANT)
 
-    manifest.commit(f"{STOP_EVENT} and a named agent view when {FLAG_ENV} is on")
+    manifest.commit(f"a named agent view when {FLAG_ENV} is on")
     adapter.commit(f"default suggested prompts when {FLAG_ENV} is on")
 
 
