@@ -4248,6 +4248,9 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
         (f"{_CRASHED} It hasn't been queued up to retry.", ["the-reply-says-it-is-being-retried", "the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} It hasn't been queued to retry.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} Nobody queued it up to try again.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} Nobody had queued it up to try again.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} Nobody's queued it to retry.", ["the-reply-does-not-call-it-final"]),
+        (f"{_CRASHED} No one ever queued it up to try again.", ["the-reply-does-not-call-it-final"]),
         (f"{_CRASHED} If you want, I can queue it to try again.", ["the-reply-says-it-is-being-retried", "the-reply-does-not-offer-the-retry"]),
         (f"{_CRASHED} It gave up; I would have told you when the retry finishes.", ["the-reply-does-not-call-it-final"]),
     ],
@@ -4273,6 +4276,8 @@ def test_the_retry_objectives_fail_a_reply_that_offers_denies_or_omits_the_retry
                 "It's being retried; if you'd rather not wait, up to you.",
                 "It'll be retried, with your approval needed only for the memory bump.",
                 "It's being retried; I haven't started another run.",
+                "I didn't queue it to retry; the dispatcher queued it to retry.",
+                "It wasn't me who queued it up to try again.",
             )
         ),
         # Retry wording outside the fact list:
