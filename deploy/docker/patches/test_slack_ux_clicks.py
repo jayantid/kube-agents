@@ -510,11 +510,11 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(echo["text"], f"↳ <@U1>: {shown}")
         self.assertEqual(update["blocks"][-1]["elements"][0]["text"], f"✓ <@U1>: {shown}")
 
-    def _card_click(self, value, label="Fix the first one", row="seeded-b and seeded-c admit privileged pods"):
+    def _card_click(self, value, label="Fix the first one", row="seeded-b and seeded-c admit privileged pods", elements=None):
+        if elements is None:
+            elements = [{"type": "text", "text": "critical", "style": {"code": True}}, {"type": "text", "text": " " + row}]
         blocks = [
-            {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
-                {"type": "text", "text": "critical", "style": {"code": True}}, {"type": "text", "text": " " + row},
-            ]}]},
+            {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]},
             {"type": "actions", "elements": [
                 {"type": "button", "action_id": "kage_inventory.choice.0", "value": value,
                  "text": {"type": "plain_text", "text": label, "emoji": True}},
@@ -545,6 +545,45 @@ class RuntimeTest(unittest.TestCase):
                 runtime._answered.clear()
                 _update, _echo, turn = self._card_click(value)
                 self.assertEqual(turn["text"], "Fix the first one")
+
+    def test_a_value_naming_part_of_a_shown_line_sends_the_label(self):
+        # A fragment of a shown line can say the opposite of the line: the turn would ask for the drain the card warns against.
+        row = "Do not drain node-pool-a; it serves prod"
+        for value in (
+            "Fix the first one: drain node-pool-a",
+            "Fix the first one: Do not drain node-pool-a",
+            "Fix the first one: it serves prod",
+        ):
+            with self.subTest(value=value):
+                runtime._answered.clear()
+                _update, _echo, turn = self._card_click(value, row=row)
+                self.assertEqual(turn["text"], "Fix the first one")
+
+    def test_a_leading_code_span_that_is_not_a_severity_stays_part_of_the_line(self):
+        elements = [{"type": "text", "text": "do not", "style": {"code": True}}, {"type": "text", "text": " drain node-pool-a"}]
+        _update, _echo, turn = self._card_click("Fix the first one: drain node-pool-a", elements=elements)
+        self.assertEqual(turn["text"], "Fix the first one")
+
+    def test_a_value_naming_an_emphasised_shown_line_names_it(self):
+        # The card's rich_text styles a span; the value is the row's plain text, or carries the mrkdwn markers itself.
+        styled = [
+            {"type": "text", "text": "critical", "style": {"code": True}},
+            {"type": "text", "text": " Pods admit "},
+            {"type": "text", "text": "privileged", "style": {"italic": True}},
+            {"type": "text", "text": " containers  in seeded-b"},
+            {"type": "text", "text": "\n"},
+            {"type": "text", "text": "Detail one."},
+        ]
+        marked = [{"type": "text", "text": "Pods admit *privileged* containers in ~seeded-b~"}, {"type": "text", "text": "\nDetail one."}]
+        for elements, value in (
+            (styled, "Fix the first one: Pods admit privileged containers in seeded-b"),
+            (styled, "Fix the first one: Pods admit _privileged_ containers in `seeded-b`"),
+            (marked, "Fix the first one: Pods admit privileged containers in seeded-b"),
+        ):
+            with self.subTest(value=value, elements=elements):
+                runtime._answered.clear()
+                _update, _echo, turn = self._card_click(value, elements=elements)
+                self.assertEqual(turn["text"], value)
 
     def test_a_cards_question_with_a_value_names_both_the_finding_and_the_card(self):
         moments = SimpleNamespace(question_card=lambda channel, ts: "t_e0c1" if (channel, ts) == (CHANNEL, MESSAGE_TS) else None)

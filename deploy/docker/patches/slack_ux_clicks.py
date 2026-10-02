@@ -19,9 +19,10 @@ With the flag on, :func:`register` adds two listeners:
   presenter clips the text to Slack's 75 characters but keeps up to 2000 in
   the value, and a click must not send words the clicker did not see.
   The one exception keeps that rule: a value that is the label, ": ", and a
-  line the message itself shows ("Fix the first one: <the first row>") is
-  the turn, so a session that never read the message is told what the click
-  is about. The echo and the answered line still show the label. A
+  whole line the message itself shows ("Fix the first one: <the first row>",
+  markup and a row's severity aside) is the turn, so a session that never
+  read the message is told what the click is about. Part of a line is not
+  enough: it can say the opposite of the line it came from. The echo and the answered line still show the label. A
   label that starts like a command (``/`` or ``!``) is sent as text, since a
   choice is an answer. The click goes through the adapter's own interactive
   authorization; an unlisted user's click is logged and changes nothing, and
@@ -59,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -98,6 +100,19 @@ COMMAND_GUARD = "\u200b"
 #: Added to the turn when the clicked message is a card's question.
 CARD_NOTE = "(Clicked on the question from card {card}.)"
 
+#: Paired markup a shown line or a clicked value may carry, stripped from both
+#: before they are compared: ``code``, **bold**, *bold*, _italic_ and ~strike~.
+#: Paired only, so a glob (``app=web-*``) or a dunder name keeps its characters.
+PAIRED_MARKUP = re.compile(
+    r"`([^`]+)`|\*\*([^*]+)\*\*"
+    r"|(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])"
+    r"|(?<![\w_])_(?=\S)([^_]+?)(?<=\S)_(?![\w_])"
+    r"|(?<![\w~])~(?=\S)([^~]+?)(?<=\S)~(?![\w~])"
+)
+
+#: The severities a row leads with as inline code (``findings_queue.SEVERITIES``).
+ROW_SEVERITIES = frozenset({"critical", "major", "minor"})
+
 #: A DM channel id's first letter, as the adapter's message handler reads it.
 DM_CHANNEL_PREFIX = "D"
 
@@ -132,7 +147,7 @@ def register(adapter: Any) -> None:
     """Add the choice and link listeners to ``adapter._app``.
 
     A choice click's turn is the label Slack showed, or the value when it is
-    that label naming a line the message shows; either way, a click on a
+    that label naming a whole line the message shows; either way, a click on a
     card's question then names the card.
     """
 
@@ -190,24 +205,44 @@ def _shown_text(action: dict) -> str:
 
 
 def _shown_lines(blocks: Any) -> list[str]:
-    """Each rich_text line ``blocks`` show, its elements' text joined."""
+    """Each line the rich_text in ``blocks`` shows, its elements' text joined.
+
+    A section led by a severity as inline code (a row's) also gives its first
+    line without it, since a row's button value leaves the severity out. Only
+    a severity: any other leading code span stays part of the line.
+    """
     lines: list[str] = []
     for block in blocks or ():
         if not (isinstance(block, dict) and block.get("type") == "rich_text"):
             continue
         for section in block.get("elements") or ():
-            elements = (section or {}).get("elements") or () if isinstance(section, dict) else ()
-            lines.append("".join(str((e or {}).get("text") or "") for e in elements if isinstance(e, dict)))
+            raw = (section or {}).get("elements") or () if isinstance(section, dict) else ()
+            elements = [e for e in raw if isinstance(e, dict)]
+            lines.extend("".join(str(e.get("text") or "") for e in elements).split("\n"))
+            style = elements[0].get("style") if elements else None
+            rest = "".join(str(e.get("text") or "") for e in elements[1:])
+            if isinstance(style, dict) and style.get("code") and str(elements[0].get("text") or "").strip().lower() in ROW_SEVERITIES:
+                lines.append(rest.split("\n")[0])
     return lines
 
 
+def _comparable(text: str) -> str:
+    """``text`` without paired markup, its whitespace collapsed."""
+    return " ".join(PAIRED_MARKUP.sub(lambda m: next(g for g in m.groups() if g is not None), text).split())
+
+
 def _turn(label: str, value: Any, message: dict) -> str:
-    """The clicker's turn: ``value`` when it is ``label`` naming a line the message shows, else ``label``."""
+    """The clicker's turn: ``value`` when it is ``label`` naming a whole line the message shows, else ``label``.
+
+    The named line must equal a shown line, not sit inside one: a card showing
+    "Do not drain node-pool-a" must not pass a value naming "drain node-pool-a".
+    """
     prefix = label + TURN_JOIN
     if not (isinstance(value, str) and value.startswith(prefix)):
         return label
     named = value[len(prefix):].strip()
-    if named and "\n" not in named and any(named in line for line in _shown_lines(message.get("blocks"))):
+    want = _comparable(named)
+    if want and "\n" not in named and any(_comparable(line) == want for line in _shown_lines(message.get("blocks"))):
         return label + TURN_JOIN + named
     return label
 
