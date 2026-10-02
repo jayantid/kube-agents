@@ -3712,6 +3712,12 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
                 "It's being retried automatically, your call on whether to wait for it or not.",
                 "It's being retried, so it's your call whether to wait or move on.",
                 "It's being retried. Want me to dig into exit 137 while the card retries?",
+                "It's being retried. Should I pull the logs while the task reruns?",
+                "It's being retried. Should I pull the logs while the job retries?",
+                "It's being retried. Want me to check the pod events while the pod retries?",
+                "It's being retried. Should I check the node once the job retries?",
+                "It's being retried. Want me to look at the OOM when the check reruns?",
+                "It's being retried. Should I pull the logs until the run retries?",
                 "It's being retried. Should I bump the memory limit so it doesn't OOM again on retry?",
                 "It's being retried. Would you like retry status pings?",
                 "It's being retried. Just ask while it reruns.",
@@ -4135,6 +4141,15 @@ def test_the_retry_objectives_pass_a_reply_that_says_it_is_retried(final_message
             f"{_CRASHED} The check failed. On the next attempt you may want more memory.",
             ["the-reply-says-it-is-being-retried"],
         ),
+        *(
+            (f"{_CRASHED} It's being retried. {offer}", ["the-reply-does-not-offer-the-retry"])
+            for offer in (
+                "Should I make the job retry?",
+                "Should I have the pod retry?",
+                "Should the run retry?",
+                "Should I get the check to rerun?",
+            )
+        ),
         (
             f"{_CRASHED} Maybe it will be retried.",
             ["the-reply-does-not-call-it-final"],
@@ -4211,8 +4226,8 @@ def test_the_retry_objectives_known_gaps(final_message, missed):
         ("want retry: " * 2000)[:20000],
         ("reason: OOMKilled, exitCode: 137, " * 700)[:20000],
         ("won't retry " * 1700)[:20000] + " yet",
-        ("file a " * 6000)[:40000],
-        ("want retry " * 4000)[:40000],
+        ("file a " * 12000)[:80000],
+        ("want retry " * 8000)[:80000],
         (", so want me to retry it " * 700)[:15000] + "?",
         (
             "Last State: Terminated\n  Reason: OOMKilled\n  Exit Code: 137\n"
@@ -4232,7 +4247,7 @@ def test_the_retry_objectives_known_gaps(final_message, missed):
     ],
 )
 def test_the_retry_objectives_are_linear_on_a_long_line(final_message):
-    # 15-40k characters with a segment boundary, a clause or a retry word
+    # 15-80k characters with a segment boundary, a clause or a retry word
     # every few words: a scan that restarts at each one and runs to the end
     # of the line took seconds, ten and more at a colon. The offer patterns'
     # 200-character tail is a second bound, not what keeps these linear.
