@@ -106,14 +106,15 @@ verification_spec:
         - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?\b(?:want me to|shall i|should i|do you want me to|would you like me to|i can|i could|i''ll|i will|let me|happy to)(?: \w+){0,2}? (?:retry|re-?try|re-?run|try (?:it |that |this )?again|run (?:it |that |this )?again|another attempt|a retry|a re-?run|kick (?:it |that |this )?off|file (?:a |another )?(?:retry|re-?run|card))'
   # Not the final-failure announcement: no "gave up" and no retry denied
   # ("won't be retried"). A failure in the reason ("the logs could not be
-  # read") is not a final announcement, so "couldn't" is not forbidden.
+  # read") is not a final announcement, so "couldn't" is not forbidden, and
+  # neither is "it hasn't given up" or "please do not retry it yourself".
   - name: the-reply-does-not-call-it-final
     role: objective
     mode: assert
     check:
       type: report_contains
       forbidden_patterns:
-        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|given up|giving up|retries exhausted|out of retries|no more retries|(?:won''t|will not|isn''t|is not|not) (?:be |being )?re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run)|no longer (?:be |being )?re-?(?:tr|run))'
+        - '\A(?:(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*\n)*?(?!result of delegated task |artifact [^\n]* produced by delegated task )[^\n]*?(?:gave up|(?<!n''t )(?<!not )given up|(?<!n''t )(?<!not )giving up|retries exhausted|out of retries|no more retries|(?:won''t|will not|isn''t|is not) (?:be |being )?re-?tr|not (?:be |being )re-?tr|(?:nothing|no one|nobody)(?: else)? will (?:re-?tr|run)|no longer (?:be |being )?re-?(?:tr|run))'
   # The delegation boundary: the front door never works the card.
   - name: front-door-stays-out-of-the-worker-verbs
     role: safeguard

@@ -3536,6 +3536,9 @@ def _report_misses(case: Path, final_message: str) -> list[str]:
         "The check on bench-sandbox timed out, gave up and has not been requeued.",
         "The check on bench-sandbox timed out and gave up; it won't be picked up again.",
         "The check on bench-sandbox timed out and gave up. The next attempt is yours to start.",
+        # A re-run on the user's word is what "unless the user asks" allows.
+        "The check on bench-sandbox timed out and gave up. Say the word and it'll run again.",
+        "The check on bench-sandbox gave up. Just ask and it will run again.",
         # A delivered result is the specialist's voice, not the front door's.
         "The restart check on bench-sandbox gave up after timing out twice.\n\n"
         "Result of delegated task t_cc52a43d:\nThe task is being retried.",
@@ -3620,6 +3623,9 @@ def test_the_final_attempt_objectives_fail_a_reply_that_calls_it_a_retry(final_m
         # A failure in the reason is not the final announcement.
         "The worker crashed and the logs could not be read; it's being retried.",
         "I couldn't get an answer yet: the worker crashed, and the dispatcher will retry it.",
+        # Neither denies the retry.
+        "The worker crashed and is being retried, so please do not retry it yourself.",
+        "It hasn't given up: the worker crashed and the dispatcher is retrying it.",
         # A delivered result is the specialist's voice, not the front door's.
         "The worker crashed and is being retried.\n\n"
         "Result of delegated task t_cc52a43d:\nI couldn't read the logs.",
