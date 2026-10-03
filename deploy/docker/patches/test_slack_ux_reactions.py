@@ -773,6 +773,13 @@ class RuntimeTest(unittest.TestCase):
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("double_vertical_bar", False)])
 
+    def test_a_paused_ask_whose_follow_up_waits_on_the_user_adds_no_second_pause(self):
+        adapter = self._turn("fix it", {}, _cards("t_a", "t_c"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_c"), "blocked"))
+        self.boards[:] = [_cards("t_b", status="blocked", creator="t_a")]
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("double_vertical_bar", False)])
+
     def test_a_card_that_blocks_and_resumes_within_the_turn_does_not_pause_the_ask(self):
         adapter = _Stub()
         self._turn_racing("fix it", {}, _cards("t_a"), [("t_a", "blocked")], adapter)
