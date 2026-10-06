@@ -91,6 +91,7 @@ lost message would become a stuttering one.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -144,6 +145,26 @@ UNBLOCKED_KIND = "unblocked"
 PR_REPORT_KIND = "completed"
 #: The completed event's payload key holding the worker's one-line status.
 SUMMARY_KEY = "summary"
+
+#: With ``KAGE_SLACK_UX`` on, a card a worker fanned out folds its report into
+#: its row in the thread's plan rather than posting it, when the card that
+#: created it is still open and subscribed to the same thread: that card's own
+#: completion is the answer, and ``kanban_children_settled`` holds it until its
+#: children settle. Only a completion folds; a failure or a question posts.
+FOLDED_KIND = "completed"
+
+#: One row when the card was created by a worker whose card is still open and
+#: subscribed to the thread: the creator Hermes stamps on the ``created`` event
+#: (``hermes_cli/kanban_db.py``), the open statuses those
+#: ``kanban_children_settled`` waits on.
+OPEN_CREATOR_SQL = (
+    "SELECT 1 FROM task_events e "
+    "JOIN tasks t ON t.id = json_extract(e.payload, '$.creator_task_id') "
+    "JOIN kanban_notify_subs s ON s.task_id = t.id "
+    "WHERE e.task_id = ? AND e.kind = 'created' AND t.status NOT IN ('done', 'archived') "
+    "AND lower(s.platform) = ? AND s.chat_id = ? AND COALESCE(s.thread_id, '') = ? "
+    "LIMIT 1"
+)
 
 #: Leading marker on the rolling message. ``IN_PROGRESS`` while the card runs;
 #: on a terminal event the message is re-rendered with one of the other two so
@@ -490,11 +511,38 @@ async def _plan_row(
         return False
 
 
-async def _settle_plan_row(plan: Any, adapter: Any, sub: dict, kind: str, result: str = "") -> None:
+async def _settle_plan_row(
+    plan: Any, adapter: Any, sub: dict, kind: str, result: str = "", title: str = "",
+) -> bool:
+    """Settle the card's plan row; True when the plan now shows it complete."""
     try:
-        await plan.settle_row(adapter, sub, kind, result)
+        return bool(await plan.settle_row(adapter, sub, kind, result, title))
     except Exception as exc:  # noqa: BLE001 — cosmetic, like the rolling settle
         logger.debug("kanban progress: settling the plan row for %s failed: %s", sub.get("task_id"), exc)
+        return False
+
+
+def _creator_open(sub: dict, board: Optional[str]) -> bool:
+    from hermes_cli import kanban_db_connect
+
+    conn = kanban_db_connect.connect(board=board)
+    try:
+        params = (sub["task_id"], str(sub.get("platform") or "").lower(), sub["chat_id"], sub.get("thread_id") or "")
+        return conn.execute(OPEN_CREATOR_SQL, params).fetchone() is not None
+    finally:
+        conn.close()
+
+
+async def _folds(sub: dict, board: Optional[str]) -> bool:
+    """Whether a fanned-out card's report folds into its plan row: see :data:`FOLDED_KIND`.
+
+    A read that fails posts the report, as it did before the plan.
+    """
+    try:
+        return await asyncio.to_thread(_creator_open, sub, board)
+    except Exception as exc:  # noqa: BLE001 — fail towards posting the report
+        logger.debug("kanban progress: reading the creator of %s failed: %s", sub.get("task_id"), exc)
+        return False
 
 
 def _slack_moments(quiet: Any) -> Any:
@@ -594,7 +642,8 @@ async def silent_event(notification: Any, ev: Any) -> None:
     ``None``, before it skips the event. :func:`deliver` never sees these, so
     without this a card archived by hand would hold its row running, and the
     thread's Working…, and an unblocked card would stay waiting on you, with
-    its question's buttons still live, until its next note. Only
+    its question's buttons still live, until its next note, and its ask would
+    keep its ⏸️ (``gateway/slack_ux_reactions.py``). Only
     :data:`SILENT_PLAN_KINDS`, never one replayed or overtaken
     (:func:`_overtaken`), only with ``KAGE_SLACK_UX`` on for a Slack card,
     and never raises: it runs inside the send loop. An ``unblocked`` overtaken
@@ -622,6 +671,8 @@ async def silent_event(notification: Any, ev: Any) -> None:
     if plan is not None and not overtaken:
         await _settle_plan_row(plan, adapter, sub, kind)
     await _settle_question(moments, adapter, sub, kind, int(getattr(ev, "id", 0) or 0))
+    # An unblocked card no longer waits on the user, so its ask loses its pause.
+    await _settle_reaction(adapter, sub, kind, getattr(notification, "board_slug", None))
 
 
 def _explained_by_wake(quiet: Any, sub: dict, kind: str) -> bool:
@@ -719,7 +770,10 @@ async def deliver(
     rolling message of its own, with the rolling message as the fallback when
     the plan cannot be posted; ``title`` is the card's, which the row leads with
     in a plan of several or falls back to. See
-    ``gateway/slack_ux_status.py``. Every line it posts, holds or edits keeps
+    ``gateway/slack_ux_status.py``. A card fanned out by a card still open on
+    the same thread completes into its row and posts nothing, returning
+    ``None``, once the plan shows that row complete (:data:`FOLDED_KIND`).
+    Every line it posts, holds or edits keeps
     the ``@assignee`` and drops the board tag and ``Kanban <id>``
     (:func:`slack_line`). A card blocked on ``needs_input``
     posts its question instead of the blocked line, once however often the
@@ -739,8 +793,10 @@ async def deliver(
 
     if kind not in ROLLING_KINDS:
         plan = _slack_plan(quiet)
+        shown = False
         if plan is not None:
-            await _settle_plan_row(plan, adapter, sub, kind, result_line(kind, getattr(ev, "payload", None)))
+            result = result_line(kind, getattr(ev, "payload", None))
+            shown = await _settle_plan_row(plan, adapter, sub, kind, result, title)
         if entry and entry["message_id"] and entry["lines"]:
             settled = entry["lines"][-1:] if quiet else entry["lines"]
             try:
@@ -763,6 +819,11 @@ async def deliver(
         await _settle_question(moments, adapter, sub, kind, event_id)
         if kind == NEEDS_YOU_KIND and moments is not None and await _needs_you(moments, adapter, sub, ev):
             await _settle_reaction(adapter, sub, kind, board)
+            return None
+        if kind == FOLDED_KIND and shown and await _folds(sub, board):
+            # The row says it; the creator's completion carries the answer.
+            await _settle_reaction(adapter, sub, kind, board)
+            await _pr_opened(moments, adapter, sub, message, None)
             return None
         if _explained_by_wake(quiet, sub, kind) and _hold(
             quiet, watcher, sub, kind, event_id, message, metadata,
