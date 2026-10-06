@@ -101,6 +101,8 @@ CALL_SHAPES = {
 CHANNEL = "C0KAGE"
 TEAM = "T0KAGE"
 USER = "U0KAGE"
+#: The name the stub's ``users.info`` gives ``USER``, which the answered line shows.
+USER_NAME = "Kage Tester"
 MESSAGE_TS = "1700000000.000200"
 THREAD = "1700000000.000100"
 ACTION_TS = "1700000001.000300"
