@@ -175,13 +175,17 @@ deployment's ready replicas land in a range). A fourth, `fleet_resource_property
 this repository's `resource_property` against the seeded-fleet cluster that carries a
 fixture role, named by `fixture_role:` rather than by cluster.
 
-Nine read what the run produced, from this repository
+Ten read what the run produced, from this repository
 (`bench/kube_agents_bench/verifiers.py`, registered through the
 `devops_bench.verifiers` entry-point group in `bench/pyproject.toml`):
 `report_contains` (phrases in the agent's answer; its `forbidden_patterns` are
 regular expressions, for a banned word whose negated uses are legitimate and
 which no substring can express, and its `any_of_patterns` are regular-expression
-alternatives to `any_of_phrases`, for a phrase that must start at a word boundary), `tool_called` (calls in the
+alternatives to `any_of_phrases`, for a phrase that must start at a word boundary), `answer_first` (each delivered card result, raw:
+it opens on one bold sentence, has no heading, stays
+under its character and sentence caps, and no later sentence matches a
+`recap_patterns` regex; each of the case's `lead_terms` appears in at least one result's
+lead), `tool_called` (calls in the
 trajectory), `ledger_issue_contains` (the GitHub ledger issue a fleet audit
 published), `pull_request_opened` (the remediation pull request the run opened,
 resolved through GitHub and required to be this run's rather than an earlier

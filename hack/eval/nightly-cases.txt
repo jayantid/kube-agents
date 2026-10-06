@@ -126,7 +126,7 @@
 # sixty-six (198), +3 more: one front-door turn on a planted card, no worker.
 # chat-voice-final-attempt-is-not-retried (after it) makes it fifty-three
 # (159) of sixty-seven (201), +3 more: the same shape on the card's last
-# attempt. chat-voice-failure-leads-with-fact (the last entry below) makes
+# attempt. chat-voice-failure-leads-with-fact (after that) makes
 # it fifty-four (162) of sixty-eight (204), +3 more: the same shape on a
 # blocked card.
 # Whether the worst night fits is a question about the whole matrix, and the
@@ -188,6 +188,11 @@
 # unit_cost_hint figures and three repetitions (~378 without it), against the
 # 480m deadline. Whether that fits is the eval crew's call, on the first nights'
 # record.
+#
+# 2026-10-05 adds chat-voice-answer-first: one case, three units, deployer:
+# noop at the 200s default, about 10 serial minutes. Counted from the lists
+# with it, the last entry below: fifty-five cases (165 units) here, of a
+# sixty-nine-case, 207-unit matrix with the presubmit file's fourteen.
 
 # ── The four full audits recast out of the presubmit on 2026-08-26 ──────────
 # Spec-ready, each domain covered in the presubmit by its probe:
@@ -647,3 +652,8 @@
 # (bench/kube_agents_bench/card_wake.py), so one front-door turn and no
 # worker: filing or unblocking a card fails the case's catastrophic fence.
 ./tasks/chat-voice-failure-leads-with-fact/task.yaml
+
+# A delegated answer opens on one bold sentence and does not restate it
+# (the report stanza in deploy/docker/patches/kanban_report_format.py).
+# deployer: noop, transcript-only, one front-door turn plus the card round trip.
+./tasks/chat-voice-answer-first/task.yaml

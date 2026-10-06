@@ -804,6 +804,11 @@ RUN cp /tmp/channel-directory/channel_directory_threads.py /opt/hermes/gateway/c
 # follow-up), its final send carries the claim, _maybe_blocks draws it, and a
 # user's turn starting after the mark clears it (apply_slack_ux_failure.py; runs
 # after apply_slack_ux_moments.py, whose wake line it follows). Also rides this COPY and RUN. See deploy/docker/patches/slack_ux_failure.py.
+# Same flag: a finished card's answer posts as its first sentence in bold and
+# the rest in a collapsed "why" fold. gateway/slack_ux_answer.py's adapter sits
+# inside the incident one, so it anchors on that patch's line and applies
+# after it. Also rides this COPY and RUN. See
+# deploy/docker/patches/slack_ux_answer.py.
 # Same flag, same block: gateway/slack_boilerplate.py keeps Hermes' own
 # boilerplate off Slack -- the cron wrapper (other targets, and the Chat relay
 # that routes on it, keep it), the opt-in heartbeat's tool trace (generic
@@ -837,6 +842,9 @@ COPY deploy/docker/patches/apply_slack_code_emphasis.py \
      deploy/docker/patches/apply_slack_ux_failure.py \
      deploy/docker/patches/verify_slack_ux_failure.py \
      deploy/docker/patches/slack_ux_failure.py \
+     deploy/docker/patches/apply_slack_ux_answer.py \
+     deploy/docker/patches/verify_slack_ux_answer.py \
+     deploy/docker/patches/slack_ux_answer.py \
      deploy/docker/patches/verify_kanban_progress_lines.py \
      deploy/docker/patches/apply_slack_boilerplate.py \
      deploy/docker/patches/verify_slack_boilerplate.py \
@@ -875,6 +883,9 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     install -m 0644 /tmp/message-surface/slack_ux_failure.py /opt/hermes/gateway/slack_ux_failure.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_failure.py /opt/hermes && \
     grep -qF "_kage_slack_failure.maybe_blocks(" /opt/hermes/plugins/platforms/slack/adapter.py && \
+    install -m 0644 /tmp/message-surface/slack_ux_answer.py /opt/hermes/gateway/slack_ux_answer.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_ux_answer.py /opt/hermes && \
+    grep -qF "_kage_slack_answer.adapter_for(" /opt/hermes/gateway/kanban_watchers_notifier.py && \
     install -m 0644 /tmp/message-surface/slack_boilerplate.py /opt/hermes/gateway/slack_boilerplate.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_boilerplate.py /opt/hermes && \
     grep -qF "_kage_slack_boilerplate.cron_delivery_text" /opt/hermes/cron/scheduler_delivery.py && \
@@ -892,6 +903,7 @@ RUN /opt/hermes/.venv/bin/python3 /tmp/message-surface/apply_slack_code_emphasis
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_moments.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_incident.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_failure.py && \
+    /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_ux_answer.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_kanban_progress_lines.py && \
     /opt/hermes/.venv/bin/python3 /tmp/message-surface/verify_slack_boilerplate.py && \
     rm -rf /tmp/message-surface

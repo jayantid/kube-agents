@@ -159,6 +159,7 @@ ADDED_AFTER_THE_MOVE = [
     "chat-voice-retry-says-it-is-retried",  # the front door's reply to a crashed card
     "chat-voice-final-attempt-is-not-retried",  # the front door's reply to a card's last attempt
     "chat-voice-failure-leads-with-fact",  # the front door's reply to a blocked card
+    "chat-voice-answer-first",  # a delegated answer opens on its verdict
 ]
 
 # Admitted after the split, each by a pull request that cited the record
@@ -349,11 +350,16 @@ INJECT_LANE_EXCLUDED = [
     "chat-question-wake-stays-silent",  # #2039: grades the front door's silence on a posted question's wake; same door
     "chat-question-typed-answer-fresh-session",  # the same for a typed answer in a session the wake never reached
     "chat-question-click-answer-stays-silent",  # the same for an answer given by clicking the question's button
+    "chat-voice-answer-first",  # #2039: grades the card result the front door delivers; the inject door files no card
 ]
 # The directives a case's prompt opens with to replay a wake into the chat
 # front door (bench/kube_agents_bench/card_wake.py); the harness errors such
 # a run on any transport but api.
 FRONT_DOOR_WAKE_DIRECTIVES = ("[bench:card-failure-wake]", "[bench:slack-question-wake]")
+# Check types that read what only the chat front door's card round trip
+# delivers; on the inject lane there is no card, so the check fails rather
+# than being set aside (bench/README.md, the transport table).
+FRONT_DOOR_DELIVERY_CHECK_TYPES = frozenset({"answer_first"})
 # Each exclusion's api-lane tier, pinned beside it: an entry is not a
 # demotion, so a case that leaves its tier's file while still excluded reds.
 INJECT_LANE_EXCLUDED_TIER = {
@@ -364,6 +370,7 @@ INJECT_LANE_EXCLUDED_TIER = {
     "chat-question-wake-stays-silent": "nightly",
     "chat-question-typed-answer-fresh-session": "nightly",
     "chat-question-click-answer-stays-silent": "nightly",
+    "chat-voice-answer-first": "nightly",
 }
 
 
@@ -427,6 +434,28 @@ class InjectLaneExclusionsTest(unittest.TestCase):
             if lines and lines[0].strip() in FRONT_DOOR_WAKE_DIRECTIVES:
                 with self.subTest(case=case):
                     self.assertIn(case, excluded, f"{case} replays a wake but is not in {eval_rosters.INJECT_LANE_EXCLUSIONS_FILE.name}")
+
+    def test_every_registered_front_door_delivery_case_is_excluded(self):
+        # answer_first fails on the inject lane rather than being set aside,
+        # so an unlisted case carrying one reds there every repetition.
+        import yaml
+
+        def check_types(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("type"), str):
+                    yield node["type"]
+                for value in node.values():
+                    yield from check_types(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from check_types(value)
+
+        excluded = eval_rosters.inject_lane_exclusions()
+        for case in set(eval_rosters.presubmit_cases()) | set(eval_rosters.nightly_cases()):
+            doc = yaml.safe_load((REPO_ROOT / "bench" / "tasks" / case / "task.yaml").read_text(encoding="utf-8"))
+            if FRONT_DOOR_DELIVERY_CHECK_TYPES & set(check_types(doc.get("verification_spec"))):
+                with self.subTest(case=case):
+                    self.assertIn(case, excluded, f"{case} reads a delivered card result but is not in {eval_rosters.INJECT_LANE_EXCLUSIONS_FILE.name}")
 
     def test_an_exclusion_is_not_a_demotion(self):
         # The api lane's roster is untouched by an entry here: an excluded
