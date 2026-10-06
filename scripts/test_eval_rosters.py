@@ -352,6 +352,7 @@ INJECT_LANE_EXCLUDED = [
     "chat-question-typed-answer-fresh-session",  # the same for a typed answer in a session the wake never reached
     "chat-question-click-answer-stays-silent",  # the same for an answer given by clicking the question's button
     "chat-voice-answer-first",  # #2039: grades the card result the front door delivers; the inject door files no card
+    "chat-fanout-fleet-restarts-rows",  # #2039: grades the front door's ack and the fan-out under its one card; same door
 ]
 # The directives a case's prompt opens with to replay a wake into the chat
 # front door (bench/kube_agents_bench/card_wake.py); the harness errors such
@@ -372,6 +373,7 @@ INJECT_LANE_EXCLUDED_TIER = {
     "chat-question-typed-answer-fresh-session": "nightly",
     "chat-question-click-answer-stays-silent": "nightly",
     "chat-voice-answer-first": "nightly",
+    "chat-fanout-fleet-restarts-rows": "nightly",
 }
 
 
