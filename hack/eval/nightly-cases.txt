@@ -11,7 +11,9 @@
 # night). The registration lint (scripts/validate_bench_cases.py) reads this
 # file as well as the presubmit one; the domain-coverage lint reads only
 # blocking-roster.txt, so neither an entry here nor a held-out presubmit
-# seat counts as coverage.
+# seat counts as coverage. EVAL_NIGHTLY_PART in the script can split the
+# nightly matrix between two periodics (its comment says how); unset, one
+# job runs all of it, and the budget below prices that.
 #
 # WHO APPROVES. The normal approvers (root OWNERS). Only the presubmit files
 # beside this one carry the eval-crew rule (#1546, decided 2026-09-15).
@@ -128,10 +130,10 @@
 # (159) of sixty-seven (201), +3 more: the same shape on the card's last
 # attempt. chat-voice-failure-leads-with-fact (after that) makes
 # it fifty-four (162) of sixty-eight (204), +3 more: the same shape on a
-# blocked card. Counted from the lists again (fifty-seven here, fourteen in
-# the presubmit file, seventy-one cases and 213 units),
-# chat-fanout-fleet-restarts-rows makes it fifty-eight (174) of seventy-two
-# (216), +3 more: one front-door turn and a four-card fan-out.
+# blocked card. Counted from the lists again (sixty here, fourteen in
+# the presubmit file, seventy-four cases and 222 units),
+# chat-fanout-fleet-restarts-rows makes it sixty-one (183) of seventy-five
+# (225), +3 more: one front-door turn and a four-card fan-out.
 # Whether the worst night fits is a question about the whole matrix, and the
 # six measured nights (2026-09-16 to 09-21, oss-test-infra#2707's table)
 # answer it plainly: 1734-2693 serial minutes of work at a realised
@@ -191,6 +193,12 @@
 # unit_cost_hint figures and three repetitions (~378 without it), against the
 # 480m deadline. Whether that fits is the eval crew's call, on the first nights'
 # record.
+# 2026-10-05 extends bootstrap-discovery-fanout to wait for the gate's
+# hand-off to ranking and grade it, rather than adding a second tofu case that
+# would re-arm a second sweep. Its hint goes from 600s to 1000s (dev-install
+# runs measured about 960s), ~20 more serial minutes on the infra lock: the
+# eleven tofu cases come to ~453 serial minutes against the 480m deadline. The
+# case count is unchanged.
 #
 # 2026-10-05 adds chat-voice-answer-first: one case, three units, deployer:
 # noop at the 200s default, about 10 serial minutes. Counted from the lists
@@ -403,6 +411,15 @@
 # read-only over the seeded fleet.
 ./tasks/patch-declared-intent-no-finding/task.yaml
 
+# The waste stream's declared-intent case (#1408): seeded-headroom's
+# burst-ingest reserves far more than it uses, the 3.1 overrequest posture
+# the same knowledge/ note declares. It runs the waste audit and grades the
+# cost ledger: no finding id for the workload, and a Declared intent row
+# naming the note. Red on the install's build before the change (the finding
+# published with a resize), three greens on the branch's, on a dev install.
+# One case, three units. deployer: noop, read-only over the seeded fleet.
+./tasks/cost-declared-intent-no-finding/task.yaml
+
 # ── Moved here 2026-09-15 from the commented-out state (#1546, #1564) ───────
 # Nine cases; each carries the blocker that kept it parked. None was
 # activatable as a presubmit seat then and none is now; what changed is
@@ -552,6 +569,11 @@
 # A simple case that can run on kind.
 ./tasks/chat-routing-own-cluster-namespaces/task.yaml
 
+# The front door's answer to "reset our chat history": it names /new (alias
+# /reset) and claims no reset of its own (#2189). `validated: false` until its
+# first observed nightly runs.
+./tasks/chat-reset-history-names-the-command/task.yaml
+
 # The two obtainability-journey probes: CUJ1's Day-0 design discipline and
 # CUJ3's Day-2 window planning, graded on the report and the worker
 # commands through the eval harness (their live siblings under bench/cuj/
@@ -561,11 +583,13 @@
 ./tasks/obtainability-design-quota-vs-capacity/task.yaml
 ./tasks/obtainability-window-planning-probe/task.yaml
 
-# The onboarding discovery sweep's fan-out (#1872): re-arms the
-# bootstrap-inventory-scan gate on the install under test and grades the
-# cards the sweep's worker files against the Cluster Agent roster. Nightly
-# rather than presubmit because the fan-out's cards take dispatcher slots
-# from whatever else is running.
+# The onboarding discovery sweep's fan-out (#1872) and the gate's hand-off to
+# ranking: re-arms the bootstrap-inventory-scan gate on the install under test,
+# grades the cluster cards filed for the sweep against the Cluster Agent roster,
+# then the raw report's findings block (parsed by the sandbox's own
+# inventory_findings.py) and the keyed bootstrap-inventory-prioritize card.
+# Nightly rather than presubmit because the sweep's cards take dispatcher slots
+# from whatever else is running, for up to the stack's 1800s handoff_wait.
 ./tasks/bootstrap-discovery-fanout/task.yaml
 
 # The first-install hello, both variants: the greeting's shape (one message,

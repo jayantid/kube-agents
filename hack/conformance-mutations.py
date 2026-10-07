@@ -502,6 +502,15 @@ Mutation(
         "allowlist beside it",
     ),
     Mutation(
+        "B1-slack-method-shape-dropped",
+        "agents/platform/scripts/credential_proxy.py",
+        ("        if not SLACK_METHOD_SHAPE.fullmatch(method):\n",
+         "        if not method:\n"),
+        "test_B1_the_slack_relay_removes_nothing_but_its_own_reaction",
+        "drop the shape check as redundant beside the verb rule, which reads "
+        "only the text after the last dot and so forwards `chat.delete#x`",
+    ),
+    Mutation(
         "B2-second-pull-requests-write",
         ".github/workflows/conformance.yml",
         ("permissions:\n  contents: read\n\njobs:\n  conformance:\n",
@@ -927,6 +936,22 @@ Mutation(
          'safe_hint = log_hint if log_hint else "unknown"'),
         "test_D1_a_log_hint_cannot_forge_a_record",
         "log the hint raw, which is the state the sanitiser was added to fix",
+    ),
+    Mutation(
+        "D1-gateway-role-reaches-secrets",
+        "k8s-operator/internal/controller/platformagent_a2a_manifests.go",
+        ('Resources: []string{"pods"},', 'Resources: []string{"pods", "secrets"},'),
+        "test_D1_no_product_role_can_write_the_identity_table",
+        "let the gateway's spawner Role read and write Secrets beside pods, "
+        "which is the shortcut that puts its own identity table in its hands",
+    ),
+    Mutation(
+        "D1-platform-role-reaches-secrets",
+        "k8s-operator/internal/testing/testdata/platform/expected/platformagent.yaml",
+        ("      - configmaps\n      - serviceaccounts", "      - configmaps\n      - secrets\n      - serviceaccounts"),
+        "test_D1_no_product_role_can_write_the_identity_table",
+        "add secrets to the platform agent's minimal ClusterRole in the default golden, "
+        "beside the configmaps it already reads",
     ),
     Mutation(
         "D2-workflow-mode",

@@ -398,9 +398,8 @@ try:
                 raise RuntimeError("an answer by click needs gateway/slack_ux_moments.py in the image")
             from gateway import slack_ux_clicks as clicks
             post = adapter.posts[0]
-            # An image with side bars posts the buttons in the question's attachment.
-            barred = [b for a in post.get("attachments") or () if isinstance(a, dict) for b in a.get("blocks") or ()]
-            blocks = list(post.get("blocks") or []) + barred
+            # A question beside a side bar keeps its buttons in the attachment.
+            blocks = clicks._presenter.message_blocks(post)
             shown = [e for b in blocks if b.get("type") == "actions" for e in b.get("elements") or []]
             if not shown:
                 # Usually the case's fault: slack_moments shows 2 to 5 short options after a

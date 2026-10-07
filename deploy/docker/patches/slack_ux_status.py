@@ -45,8 +45,7 @@ shows in the plan; a card this process already put on a plan opens no second
 row, so a replayed event or one arriving after its plan was dropped adds
 nothing far down the thread. :func:`settle_row` says whether the plan now
 shows the card complete, which lets ``kanban_progress_lines`` fold the report
-of one of several cards fanned out by another card still open on the thread
-into its row.
+of a card beneath a fan-out still open on the thread into its row.
 Two kinds upstream never posts
 reach the plan through ``kanban_progress_lines.silent_event``:
 ``unblocked`` sets a waiting row, or one that gave up, running again, and
@@ -841,9 +840,10 @@ async def deliver_row(
     card = str(sub.get("task_id") or "")
     if not (key[0] and key[1] and card and hasattr(adapter, "_get_client")):
         return False
-    _remember(_seen, (*key, card), True, SEEN_MAX)
     if moved is not None:
+        # Not seen: a move opens no row, so the card's terminal event still must.
         return await _deliver_move(adapter, sub, key, card, event_id, line, moved)
+    _remember(_seen, (*key, card), True, SEEN_MAX)
     plan = _plans.get(key)
     if plan is None:
         plan = _Plan(str(sub.get("team_id") or ""))
@@ -946,7 +946,16 @@ async def _open_settled(
         plan = _Plan(str(sub.get("team_id") or ""))
         await _keep(adapter, key, plan)
     elif plan.fallback:
-        return None  # the thread is on rolling lines until its cards settle
+        # The thread is on rolling lines until its cards settle. A card waiting
+        # on the user rolls there, as on a refused render, so the plan keeps its wait.
+        if status != _status.TASK_PENDING:
+            return None
+        plan.rolling.add(card)
+        plan.waiting.add(card)
+        plan.touched = time.monotonic()
+        _arm(adapter, key, plan)
+        await _session(adapter, key, plan)
+        return plan
     else:
         _plans.move_to_end(key)
     row = plan.rows[card] = _Row(card, title)

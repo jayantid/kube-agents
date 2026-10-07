@@ -483,10 +483,14 @@ async def _settled(adapter: Any, sub: dict, entry: tuple, kind: str = UNBLOCKED_
             # One whose rewrite failed posted its line in the thread, and is the answer.
             note = ""
         settled_text = _without_choices(text)
-        settled = f"{note}\n\n{settled_text}" if note else settled_text
+        question_text = f"{note}\n\n{settled_text}" if note else settled_text
         await client.chat_update(
-            channel=channel, ts=ts, text=settled,
-            **_presenter.with_side_bar(_moments.needs_you_settled(blocks, note), _moments.NEEDS_YOU_SIDE_BAR, settled),
+            channel=channel,
+            ts=ts,
+            text=question_text,
+            **_presenter.with_side_bar(
+                _moments.needs_you_settled(blocks, note), _moments.NEEDS_YOU_SIDE_BAR, question_text
+            ),
         )
         shown = bool(note)
     except Exception as exc:  # noqa: BLE001 — cosmetic; the next event retries

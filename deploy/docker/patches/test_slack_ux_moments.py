@@ -449,7 +449,7 @@ class SettleQuestionTest(unittest.TestCase):
         ]
         _run(runtime.settle_question(adapter, SUB))
         update = adapter.updates[0]
-        self.assertEqual(runtime._presenter.message_blocks(update)[-1], {
+        self.assertEqual(_shown(update)[-1], {
             "type": "context", "elements": [{"type": "mrkdwn", "text": "✓ Priya: seeded-b please"}]})
         head, _sep, rest = update["text"].partition("\n\n")
         self.assertEqual(head, "✓ Priya: seeded-b please")
@@ -472,7 +472,7 @@ class SettleQuestionTest(unittest.TestCase):
                                  clicked=lambda channel, ts: False, _gateway_hears=hears)
         with mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_clicks=clicks), "gateway.slack_ux_clicks": clicks}):
             _run(runtime.settle_question(adapter, SUB))
-        note = runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"]
+        note = _shown(adapter.updates[0])[-1]["elements"][0]["text"]
         who, _sep, words = note.partition(": ")
         self.assertEqual(who, "✓ name-of-U7-in-C0KAGE-T1")
         self.assertLessEqual(len(words), runtime.TYPED_ANSWER_MAX)
@@ -502,7 +502,7 @@ class SettleQuestionTest(unittest.TestCase):
                 if name is None:
                     self.assertNotIn("✓", update["text"])
                 else:
-                    self.assertEqual(runtime._presenter.message_blocks(update)[-1]["elements"][0]["text"], f"✓ {name}: seeded-b")
+                    self.assertEqual(_shown(update)[-1]["elements"][0]["text"], f"✓ {name}: seeded-b")
                 self.assertNotIn("<@", update["text"])
 
     def test_only_a_card_that_resumed_credits_a_typed_reply(self):
@@ -517,7 +517,7 @@ class SettleQuestionTest(unittest.TestCase):
                 adapter.replies = [{"ts": "1700000000.000400", "user": "U7", "text": "hold on, checking"}]
                 _run(runtime.settle_question(adapter, SUB, kind))
                 update = adapter.updates[0]
-                self.assertEqual(_buttons(runtime._presenter.message_blocks(update)), [])
+                self.assertEqual(_buttons(_shown(update)), [])
                 self.assertEqual("✓" in update["text"], kind in runtime.ANSWERED_KINDS)
                 self.assertEqual(bool(adapter.reads), kind in runtime.ANSWERED_KINDS)
                 self.assertEqual(runtime._questions, {})
@@ -529,7 +529,7 @@ class SettleQuestionTest(unittest.TestCase):
             _run(runtime.settle_question(adapter, SUB, "unblocked", event_id))
         self.assertEqual(adapter.updates, [])
         _run(runtime.settle_question(adapter, SUB, "unblocked", 9))
-        self.assertEqual(_buttons(runtime._presenter.message_blocks(adapter.updates[0])), [])
+        self.assertEqual(_buttons(_shown(adapter.updates[0])), [])
         self.assertEqual(runtime._questions, {})
 
     def test_only_the_agents_mentions_a_reply_opens_with_are_dropped_from_its_line(self):
@@ -548,7 +548,7 @@ class SettleQuestionTest(unittest.TestCase):
                 _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
                 adapter.replies = [{"ts": "1700000000.000400", "user": "U7", "text": text}]
                 _run(runtime.settle_question(adapter, SUB))
-                self.assertEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"], f"✓ Priya: {words}")
+                self.assertEqual(_shown(adapter.updates[0])[-1]["elements"][0]["text"], f"✓ Priya: {words}")
 
     def test_a_click_during_the_read_keeps_its_own_line(self):
         adapter = _Adapter()
@@ -568,7 +568,7 @@ class SettleQuestionTest(unittest.TestCase):
                 mock.patch.object(clicks, "rewriting", lambda channel, ts: False):
             _run(runtime.settle_question(adapter, SUB))
         self.assertEqual(len(adapter.reads), 1)
-        self.assertEqual(_buttons(runtime._presenter.message_blocks(adapter.updates[0])), [])
+        self.assertEqual(_buttons(_shown(adapter.updates[0])), [])
         self.assertNotIn("✓", adapter.updates[0]["text"])
 
     def test_a_click_still_rewriting_is_left_to_its_rewrite(self):
@@ -605,7 +605,7 @@ class SettleQuestionTest(unittest.TestCase):
         adapter.fail_update = False
         self.assertEqual(adapter.updates, [])
         _run(runtime.settle_question(adapter, SUB, "completed", 5))
-        self.assertEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
+        self.assertEqual(_shown(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
         self.assertEqual(runtime._resumed, {})
 
     def test_one_reply_answers_one_question_of_a_thread(self):
@@ -657,7 +657,7 @@ class SettleQuestionTest(unittest.TestCase):
             {"ts": "1700000000.000500", "user": "U7", "text": "<@U0BOT> seeded-b"},
         ]
         _run(runtime.settle_question(adapter, SUB))
-        self.assertEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
+        self.assertEqual(_shown(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
         self.assertEqual([g["routing_text"] for g in adapter.gated], ["hmm, seeded-a?", "<@U0BOT> seeded-b"])
 
     def test_no_reply_or_a_failed_read_settles_without_the_line(self):
@@ -671,7 +671,7 @@ class SettleQuestionTest(unittest.TestCase):
                 adapter.replies = replies
                 _run(runtime.settle_question(adapter, SUB))
                 update = adapter.updates[0]
-                self.assertNotEqual(runtime._presenter.message_blocks(update)[-1]["type"], "context")
+                self.assertNotEqual(_shown(update)[-1]["type"], "context")
                 self.assertNotIn("✓", update["text"])
                 self.assertEqual(runtime._questions, {})
 
@@ -685,7 +685,7 @@ class SettleQuestionTest(unittest.TestCase):
             {"ts": "1700000000.000420", "user": "U7", "subtype": "thread_broadcast", "text": "seeded-b"},
         ]
         _run(runtime.settle_question(adapter, SUB))
-        self.assertEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
+        self.assertEqual(_shown(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
 
     def test_a_typed_answer_shows_slack_entities_as_plain_text(self):
         adapter = _Adapter()
@@ -693,7 +693,7 @@ class SettleQuestionTest(unittest.TestCase):
         adapter.replies = [{"ts": "1700000000.000400", "user": "U7",
                             "text": "<!channel> <https://example.com/x|seeded-b> &amp; <@U8> &lt;b&gt;"}]
         _run(runtime.settle_question(adapter, SUB))
-        note = runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"]
+        note = _shown(adapter.updates[0])[-1]["elements"][0]["text"]
         self.assertEqual(note, "✓ Priya: !channel seeded-b &amp; @U8 &lt;b&gt;")
 
     def test_a_mention_inside_a_typed_answer_reads_as_the_name(self):
@@ -702,7 +702,7 @@ class SettleQuestionTest(unittest.TestCase):
         _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
         adapter.replies = [{"ts": "1700000000.000400", "user": "U7", "text": "seeded-b, ask <@U9> or <@U7> or <@U8>"}]
         _run(runtime.settle_question(adapter, SUB))
-        note = runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"]
+        note = _shown(adapter.updates[0])[-1]["elements"][0]["text"]
         self.assertEqual(note, "✓ Priya: seeded-b, ask @Sam ops or @Priya or @U8")
 
     def test_names_are_looked_up_only_for_the_mentions_the_line_can_show(self):
@@ -721,7 +721,7 @@ class SettleQuestionTest(unittest.TestCase):
         _run(runtime.settle_question(adapter, SUB))
         mentioned = [user_id for user_id in looked_up if user_id != "U7"]
         self.assertEqual(mentioned, [f"U{n:03d}" for n in range(runtime.MENTIONS_NAMED_MAX)])
-        self.assertTrue(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"].startswith("✓ Priya: @U000@U001"))
+        self.assertTrue(_shown(adapter.updates[0])[-1]["elements"][0]["text"].startswith("✓ Priya: @U000@U001"))
 
     def test_a_mention_whose_name_lookup_fails_keeps_its_id(self):
         adapter = _Adapter()
@@ -737,7 +737,7 @@ class SettleQuestionTest(unittest.TestCase):
         _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
         adapter.replies = [{"ts": "1700000000.000400", "user": "U7", "text": ", <@U0BOT> seeded-b, ask <@U9>"}]
         _run(runtime.settle_question(adapter, SUB))
-        note = runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"]
+        note = _shown(adapter.updates[0])[-1]["elements"][0]["text"]
         self.assertEqual(note, "✓ Priya: seeded-b, ask @U9")
 
     def test_the_workspaces_own_bot_mention_is_the_one_dropped(self):
@@ -747,7 +747,7 @@ class SettleQuestionTest(unittest.TestCase):
         _run(runtime.needs_you(adapter, SUB, QUESTION, 3))
         adapter.replies = [{"ts": "1700000000.000400", "user": "U7", "text": "<@U0TEAM> seeded-b"}]
         _run(runtime.settle_question(adapter, SUB))
-        self.assertEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
+        self.assertEqual(_shown(adapter.updates[0])[-1]["elements"][0]["text"], "✓ Priya: seeded-b")
 
     def test_a_click_whose_rewrite_failed_settles_without_a_typed_line(self):
         adapter = _Adapter()
@@ -756,7 +756,7 @@ class SettleQuestionTest(unittest.TestCase):
         clicks = SimpleNamespace(answered=lambda channel, ts: False, clicked=lambda channel, ts: True)
         with mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_clicks=clicks), "gateway.slack_ux_clicks": clicks}):
             _run(runtime.settle_question(adapter, SUB))
-        self.assertNotEqual(runtime._presenter.message_blocks(adapter.updates[0])[-1]["type"], "context")
+        self.assertNotEqual(_shown(adapter.updates[0])[-1]["type"], "context")
         self.assertEqual(adapter.reads, [])
 
     def test_a_question_with_no_thread_reads_nothing(self):
