@@ -11,11 +11,13 @@ session status (``slack_ux_status``, which reads only :func:`enabled`), moments
 (``slack_ux_moments``, which reads :func:`enabled` and lays out through
 ``slack_moments``), incident triage (``slack_ux_incident``), a finished card's
 answer (``slack_ux_answer``, through :func:`split_lead`), button clicks
-(``slack_ux_clicks``) and the harness-message patch (``slack_boilerplate``,
-which reads only :func:`enabled`); the Chat Agent's ``bootstrap_delivery``,
-which lays out the first inventory report through ``inventory_presenter``; and
-``session_kv_server``'s cron relay, which gates the fleet-audit report on
-:func:`enabled` and lays it out through ``slack_audit_report``.
+(``slack_ux_clicks``), failure replies (``slack_ux_failure``, which bolds
+with ``_first_sentence`` and adds its offer with :func:`blocks_answer`) and
+the harness-message patch (``slack_boilerplate``, which reads only :func:`enabled`);
+the Chat Agent's ``bootstrap_delivery``, which lays out the first inventory
+report through ``inventory_presenter``; and ``session_kv_server``'s cron relay,
+which gates the fleet-audit report on :func:`enabled` and lays it out through
+``slack_audit_report``.
 Every caller reaches it through ``PYTHONPATH=/opt/defaults/scripts``, which the
 operator sets on the agent container.
 
