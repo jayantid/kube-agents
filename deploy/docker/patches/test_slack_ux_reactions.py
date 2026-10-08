@@ -498,6 +498,16 @@ class RuntimeTest(unittest.TestCase):
         lineage = mock.patch.object(runtime, "thread_lineage", thread_lineage)
         lineage.start()
         self.addCleanup(lineage.stop)
+        # slack_ux_status, faked: test_slack_ux_status.py covers the hold itself.
+        self.expected = []
+
+        async def expect_cards(adapter, chat_id, team_id, thread_ts, cards):
+            self.expected.append((chat_id, team_id, thread_ts, dict(sorted(cards.items()))))
+
+        status = SimpleNamespace(expect_cards=expect_cards)
+        modules = mock.patch.dict(sys.modules, {"gateway": SimpleNamespace(slack_ux_status=status), "gateway.slack_ux_status": status})
+        modules.start()
+        self.addCleanup(modules.stop)
 
     def _turn(self, text, before, after, outcome="success", adapter=None):
         adapter = adapter or _Stub()
@@ -583,6 +593,22 @@ class RuntimeTest(unittest.TestCase):
         _run(runtime.settle_delegated(adapter, self._sub("t_b"), "completed"))
         self.assertEqual(len(adapter.calls), 3)
 
+    def test_a_card_archived_by_hand_comes_off_its_ask_without_failing_it(self):
+        # No later event names an archived card, so it cannot hold the ask open.
+        adapter = self._turn("fix it", {}, _cards("t_a"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "blocked"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "archived"))
+        self.assertEqual(adapter.calls[-2:], [("double_vertical_bar", True), ("hammer_and_wrench", True)])
+        self.assertNotIn(("x", False), adapter.calls)
+        self.assertNotIn((CHANNEL, THREAD), runtime._deferred)
+
+    def test_a_fan_out_with_an_archived_card_settles_on_the_rest(self):
+        adapter = self._turn("fix it", {}, _cards("t_a", "t_b"))
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "archived"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
+        _run(runtime.settle_delegated(adapter, self._sub("t_b"), "completed"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("hammer_and_wrench", True)])
+
     def test_a_stale_blocked_card_in_the_thread_does_not_hold_the_settle(self):
         adapter = self._turn("fix it", _cards("t_old"), _cards("t_old", "t_a"))
         _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
@@ -603,6 +629,36 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
         _run(runtime.settle_delegated(adapter, self._sub("t_b"), "gave_up"))
         self.assertEqual(adapter.calls, [("hammer_and_wrench", False), ("x", False), ("hammer_and_wrench", True)])
+
+    def test_a_turn_that_opened_cards_holds_working_for_those_about_to_start(self):
+        board = {
+            **_cards("t_a"), **_cards("t_ready", status="ready"),
+            **_cards("t_b", status="todo"), **_cards("t_later", status="scheduled"),
+        }
+        self._turn("fix it", _cards("t_old"), {**_cards("t_old"), **board})
+        self.assertEqual(
+            self.expected,
+            [(CHANNEL, TEAM, THREAD, {"t_a": True, "t_b": False, "t_ready": True})],
+            "t_b waits on its parents",
+        )
+
+    def test_a_direct_answer_holds_nothing(self):
+        self._turn("what now?", _cards("t_old"), _cards("t_old"))
+        self.assertEqual(self.expected, [])
+
+    def test_a_follow_up_holds_working_until_it_starts(self):
+        adapter = self._turn("fix it", {}, _cards("t_a"))
+        self.boards[:] = [_cards("t_b", status="todo", creator="t_a")]
+        _run(runtime.settle_delegated(adapter, self._sub("t_a"), "completed"))
+        self.assertEqual(self.expected, [(CHANNEL, TEAM, THREAD, {"t_a": True}), (CHANNEL, TEAM, THREAD, {"t_b": False})])
+
+    def test_a_failed_hold_never_fails_the_turn(self):
+        async def boom(*args):
+            raise RuntimeError("slack down")
+
+        sys.modules["gateway.slack_ux_status"].expect_cards = boom
+        adapter = self._turn("fix it", {}, _cards("t_a"))
+        self.assertEqual(adapter.calls, [("hammer_and_wrench", False)])
 
     def test_a_follow_up_filed_under_a_completed_follow_up_holds_the_settle(self):
         # t_b, filed by t_a's worker, has completed; t_c, filed by t_b's worker,

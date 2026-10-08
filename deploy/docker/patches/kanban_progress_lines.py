@@ -59,7 +59,8 @@ fallback, an opened pull request and a ``needs_input`` question post as
 messages of their own (``gateway/slack_ux_moments.py``), and any later event
 takes the buttons off the card's open question; :func:`silent_event` carries
 ``archived`` and ``unblocked``, which upstream never posts, to the plan and
-the question. See :func:`deliver`.
+the question, and opens a card's row when its first noteless heartbeat says
+it started. See :func:`deliver`.
 
 Three properties of the surrounding code make this nearly free:
 
@@ -162,6 +163,15 @@ FOLDED_KIND = "completed"
 #: malformed chain from walking the board.
 FOLD_ANCESTOR_DEPTH = 8
 
+#: A card parked by a give-up: still ``blocked``, with a ``gave_up`` as its
+#: latest stop, as ``slack_ux_reactions.OPEN_CARDS_SQL`` reads it. ``{card}``
+#: is the alias of its ``tasks`` row.
+GAVE_UP_SQL = (
+    "({card}.status = 'blocked' AND COALESCE((SELECT g.kind FROM task_events g "
+    "WHERE g.task_id = {card}.id AND g.kind IN ('blocked', 'unblocked', 'gave_up') "
+    "ORDER BY g.id DESC LIMIT 1), '') = 'gave_up')"
+)
+
 #: One row when the card's nearest ancestor that created more than one card is
 #: still open and subscribed to the thread: the creators Hermes stamps on each
 #: ``created`` event (``hermes_cli/kanban_db.py``), walked up from the card,
@@ -170,6 +180,9 @@ FOLD_ANCESTOR_DEPTH = 8
 #: The cards between are not required open: ``kanban_children_settled`` closes
 #: each only after the card beneath it, and usually before its report is
 #: delivered, so requiring them open would post the report again.
+#: A card parked by a give-up, the fan-out or one between, is not open: its
+#: worker will not run again to carry the report up, so the report posts. One
+#: blocked on a question still counts; it resumes on the answer.
 FANNED_OUT_ANCESTOR_SQL = (
     "WITH RECURSIVE up(id, depth) AS ("
     "SELECT json_extract(payload, '$.creator_task_id'), 1 FROM task_events "
@@ -177,14 +190,17 @@ FANNED_OUT_ANCESTOR_SQL = (
     "UNION ALL "
     "SELECT json_extract(e.payload, '$.creator_task_id'), up.depth + 1 FROM task_events e "
     "JOIN up ON e.task_id = up.id WHERE e.kind = 'created' AND up.depth < ?"
-    "), fan(id) AS ("
-    "SELECT up.id FROM up WHERE up.id IS NOT NULL AND (SELECT count(*) FROM task_events o "
+    "), fan(id, depth) AS ("
+    "SELECT up.id, up.depth FROM up WHERE up.id IS NOT NULL AND (SELECT count(*) FROM task_events o "
     "WHERE o.kind = 'created' AND json_extract(o.payload, '$.creator_task_id') = up.id) > 1 "
     "ORDER BY up.depth LIMIT 1"
     ") "
     "SELECT 1 FROM fan JOIN tasks t ON t.id = fan.id "
     "JOIN kanban_notify_subs s ON s.task_id = t.id "
     "WHERE t.status NOT IN ('done', 'archived') "
+    "AND NOT " + GAVE_UP_SQL.format(card="t") + " "
+    "AND NOT EXISTS (SELECT 1 FROM up b JOIN tasks m ON m.id = b.id "
+    "WHERE b.depth < fan.depth AND " + GAVE_UP_SQL.format(card="m") + ") "
     "AND lower(s.platform) = ? AND s.chat_id = ? AND COALESCE(s.thread_id, '') = ? "
     "LIMIT 1"
 )
@@ -247,6 +263,14 @@ MARKER_MAX = 2
 #: them before any send. With ``KAGE_SLACK_UX`` on they still move a Slack
 #: card's row in the thread's plan; see :func:`silent_event`.
 SILENT_PLAN_KINDS = ("archived", "unblocked")
+
+#: The kind whose noteless events ``_fmt_heartbeat`` renders as ``None``, so
+#: ``_send_pings`` skips them too. With ``KAGE_SLACK_UX`` on, one opens a Slack
+#: card's row in the thread's plan, running, when the card has none yet: the
+#: worker's first automatic heartbeat, written on its first activity, is the
+#: earliest event of a run the notifier claims, since ``claimed`` and
+#: ``spawned`` are not among its kinds. See :func:`silent_event`.
+STARTED_KIND = "heartbeat"
 
 #: Kinds that settle a plan row past an earlier ``unblocked`` in the same
 #: batch: every kind ``slack_status.TASK_STATUS_BY_KIND`` maps to a status
@@ -661,6 +685,41 @@ def _overtaken(notification: Any, ev: Any) -> bool:
     )
 
 
+def _noted_later(notification: Any, ev: Any) -> bool:
+    """Whether a heartbeat carrying a note follows this event in its batch."""
+    event_id = int(getattr(ev, "id", 0) or 0)
+    batch = getattr(notification, "d", None)
+    events = batch.get("events") if isinstance(batch, dict) else None
+    return any(
+        int(getattr(later, "id", 0) or 0) > event_id
+        and str(getattr(later, "kind", "") or "") == STARTED_KIND
+        and progress_note(getattr(later, "payload", None))
+        for later in events or ()
+    )
+
+
+async def _started(notification: Any, ev: Any) -> None:
+    """Open a Slack card's plan row, running, on a noteless heartbeat: see :data:`STARTED_KIND`.
+
+    Not for one replayed or overtaken in its batch (:func:`_overtaken`): the
+    later event opens the row settled. Nor for one a note follows in its
+    batch, which opens the row itself, in one post rather than a post and an
+    edit. Only with ``KAGE_SLACK_UX`` on for a Slack card, and never raises: it
+    runs inside the send loop.
+    """
+    try:
+        if _overtaken(notification, ev) or _noted_later(notification, ev):
+            return
+        sub = notification.sub
+        adapter = getattr(notification, "adapter", None)
+        plan = _slack_plan(_slack_quiet(sub))
+        if adapter is None or plan is None:
+            return
+        await plan.start_row(adapter, sub, str(getattr(notification, "title", "") or ""))
+    except Exception as exc:  # noqa: BLE001 — never fail a delivery on the plan
+        logger.debug("kanban progress: opening the plan row on a start failed: %s", exc)
+
+
 async def silent_event(notification: Any, ev: Any) -> None:
     """Move a Slack card's plan row on a kind upstream keeps silent.
 
@@ -675,10 +734,15 @@ async def silent_event(notification: Any, ev: Any) -> None:
     and never raises: it runs inside the send loop. An ``unblocked`` overtaken
     in its batch, not replayed, still settles the question it answered, which
     the later event would settle as unanswered; one posted for that later
-    event is newer than the unblock and left alone.
+    event is newer than the unblock and left alone. A noteless heartbeat
+    goes to :func:`_started` instead, and touches neither the question nor
+    the ask's reaction.
     """
     try:
         kind = str(getattr(ev, "kind", "") or "")
+        if kind == STARTED_KIND:
+            await _started(notification, ev)
+            return
         if kind not in SILENT_PLAN_KINDS:
             return
         overtaken = _overtaken(notification, ev)
