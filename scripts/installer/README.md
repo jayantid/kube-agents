@@ -23,8 +23,8 @@ their own copies:
 | `DEFAULT_CLUSTER_NAME`                                                    | GKE cluster name (`platform-agent-host`)                                               |
 | `DEFAULT_REGION`                                                          | GCP region (`us-central1`)                                                             |
 | `DEFAULT_CLUSTER_MODE`                                                    | Shape a fresh install creates (`autopilot`); a live cluster's probed shape always wins |
-| `DEFAULT_PLATFORM_AGENT_MODE`                                             | A first install's `spec.mode` (`next`); `install.sh` alone applies it                  |
-| `DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE`                                  | What an `install.env` with no mode, and a CR with none, resolve to (`today`)           |
+| `DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE`                               | First install's `spec.mode`: `next`, `today` if it mirrors images; `install.sh` only   |
+| `DEFAULT_PLATFORM_AGENT_MODE`                                             | What an `install.env` with no mode, and a CR with none, resolve to (`today`)           |
 | `DEFAULT_VERTEX_LOCATION`                                                 | Vertex AI serving location (`global`)                                                  |
 | `DEFAULT_VERTEX_MANAGE_SERVING_PROJECT`                                   | Enable the API and grant the gateway's role in the serving project (`true`)            |
 | `DEFAULT_MODEL_PROVIDER`                                                  | Model provider (`gemini`)                                                              |
@@ -530,8 +530,11 @@ cannot refuse a teardown.
 
 `PLATFORM_AGENT_MODE` is the `PlatformAgent`'s `spec.mode`, `today` or `next`
 ([`docs/designs/spec-mode-switch.md`](../../docs/designs/spec-mode-switch.md) says what each
-renders). A first install with no `install.env` records `next` unless `--mode` says otherwise;
-`install.env.example` sets `next` too. A file that assigns no `PLATFORM_AGENT_MODE`, such as one
+renders). A first install with no `install.env` records `next` unless `--mode` says otherwise,
+or unless it mirrors its third-party images (`--third-party-registry-prefix`), which records
+`today` because nothing points `next`'s NATS bus images at the mirror. A run with no
+`install.env` against a cluster that already runs a `PlatformAgent` is not a first install: it
+keeps that CR's mode. `install.env.example` sets `next` too. A file that assigns no `PLATFORM_AGENT_MODE`, such as one
 written before `install.sh` recorded the key, resolves to `today` in every front door, so a
 re-run or an upgrade of such an install keeps it on `today` rather than moving it to the new
 default. The generator writes `platform_agent_mode` on every run, and the

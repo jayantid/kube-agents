@@ -164,9 +164,12 @@ rendered without one (`helm template`, Argo CD) would move an existing install:
   the chart nothing; `"next"` passes `platformAgent.mode: next`.
 - `install.sh --mode=today|next`, recorded in `install.env` as `PLATFORM_AGENT_MODE`. A
   first install with no `install.env` records `next` when no `--mode` is given
-  (`DEFAULT_PLATFORM_AGENT_MODE`), and `install.env.example` sets `next`. A file that assigns no
+  (`DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE`), and `install.env.example` sets `next`. A
+  first install that mirrors its third-party images (`--third-party-registry-prefix`) records
+  `today` instead unless `--mode=next` is given, because nothing points `next`'s NATS bus
+  images at the mirror. A file that assigns no
   mode, typically one written before the key existed by an install that has only run `today`,
-  resolves to `today` (`DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE`) in every front door. A run
+  resolves to `today` (`DEFAULT_PLATFORM_AGENT_MODE`) in every front door. A run
   with no `install.env` and no `--mode` against a cluster that already runs a `PlatformAgent`
   (a new checkout of a live install) keeps that CR's mode, and refuses when the CR cannot be
   read; under `-y`, `install.sh` refuses a switch that neither `--mode` nor the file asked for.

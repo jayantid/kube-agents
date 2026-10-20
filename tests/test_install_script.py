@@ -6489,13 +6489,16 @@ class PlatformAgentModeTest(unittest.TestCase):
     def test_the_fallback_is_next_for_a_first_install_and_today_over_an_unrecorded_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             for content, body, expected in (
-                (None, "INSTALL_ENV_FOUND_AT_START=false; resolve_shared_defaults", "next"),
+                # Empty, not absent: an absent path lets install.sh find the
+                # developer's own <repo>/install.env. The file check itself is
+                # test_the_first_install_check_reads_whether_the_file_exists.
+                ("", "INSTALL_ENV_FOUND_AT_START=false; resolve_shared_defaults", "next"),
                 ("PROJECT_ID=p\n", "resolve_shared_defaults", "today"),
                 ("PLATFORM_AGENT_MODE=next\n", "resolve_shared_defaults", "next"),
                 ("PLATFORM_AGENT_MODE=today\n", "INSTALL_ENV_FOUND_AT_START=false; resolve_shared_defaults", "today"),
             ):
                 with self.subTest(content=content, body=body):
-                    install_env = self._file(tmp, content) if content is not None else None
+                    install_env = self._file(tmp, content)
                     proc = self._run(
                         f'{body}; validate_platform_agent_mode && echo "MODE=[${{PARAM_PLATFORM_AGENT_MODE:-$PLATFORM_AGENT_MODE_FALLBACK}}]"',
                         install_env=install_env,
@@ -6602,18 +6605,18 @@ class PlatformAgentModeTest(unittest.TestCase):
 
     def test_a_chosen_mode_or_an_existing_file_skips_the_cluster_read(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # A today CR: had it been read, the fallback would become today.
             cr = '{"items":[{"spec":{}}]}'
             for kwargs, expected in (
-                ({"pre": "PARAM_PLATFORM_AGENT_MODE=next"}, "today"),
+                # --mode chose; the first-install fallback is left as it was.
+                ({"pre": "PARAM_PLATFORM_AGENT_MODE=next"}, "next"),
+                # An existing file: the unrecorded fallback, today, untouched.
                 ({"content": "PROJECT_ID=p\n"}, "today"),
             ):
                 with self.subTest(**kwargs):
                     proc = self._adopt(tmp, json_list=cr, **kwargs)
-                    self.assertIn("rc=0", proc.stdout, proc.stderr)
+                    self.assertIn(f"rc=0 FALLBACK=[{expected}]", proc.stdout, proc.stderr)
                     self.assertNotIn("GCLOUD", proc.stderr)
-            # The explicit --mode, not the fallback, is what applies.
-            proc = self._adopt(tmp, json_list=cr, pre="PARAM_PLATFORM_AGENT_MODE=next")
-            self.assertIn("FALLBACK=[next]", proc.stdout, proc.stderr)
 
     def test_the_mode_is_settled_before_step_6_reads_it(self):
         # Step 6's prompts and Slack refusals follow the mode, so the live CR
@@ -6754,7 +6757,7 @@ class PlatformAgentModeTest(unittest.TestCase):
             block,
         )
         self.assertIn(
-            'announce_platform_agent_mode_for_apply "${NAMESPACE:-$DEFAULT_NAMESPACE}" "${PLATFORM_AGENT_MODE:-$DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE}" "$PLATFORM_AGENT_MODE_NOTICE_UNGATED"\n'
+            'announce_platform_agent_mode_for_apply "${NAMESPACE:-$DEFAULT_NAMESPACE}" "${PLATFORM_AGENT_MODE:-$DEFAULT_PLATFORM_AGENT_MODE}" "$PLATFORM_AGENT_MODE_NOTICE_UNGATED"\n'
             "        check_scope_container_access || exit 1\n",
             text[:main_start],
         )

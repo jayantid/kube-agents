@@ -612,9 +612,9 @@ PARAM_GOOGLE_CHAT_MODE="${GOOGLE_CHAT_MODE:-}"
 PARAM_PLATFORM_AGENT_MODE="${PLATFORM_AGENT_MODE:-}"
 PARAM_PLATFORM_AGENT_MODE_PASSED="false"
 # What an empty mode resolves to, settled once, before this run writes anything:
-# a first install, with no install.env yet, takes DEFAULT_PLATFORM_AGENT_MODE.
+# a first install, with no install.env yet, takes DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE.
 # An install.env that records no mode predates install.sh recording one, so its
-# install has only ever run today, and it keeps DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE
+# install has only ever run today, and it keeps DEFAULT_PLATFORM_AGENT_MODE
 # rather than being switched to the new default by a re-run.
 # Run here and again by resolve_shared_defaults: under curl | bash the
 # defaults are only in scope after the workspace step sources them, and the
@@ -625,9 +625,9 @@ if [ -n "${INSTALL_ENV_FILE:-}" ] && [ -f "$INSTALL_ENV_FILE" ]; then
 fi
 resolve_platform_agent_mode_fallback() {
   if [ "$INSTALL_ENV_FOUND_AT_START" = "true" ]; then
-    PLATFORM_AGENT_MODE_FALLBACK="${DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE:-}"
-  else
     PLATFORM_AGENT_MODE_FALLBACK="${DEFAULT_PLATFORM_AGENT_MODE:-}"
+  else
+    PLATFORM_AGENT_MODE_FALLBACK="${DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE:-}"
   fi
 }
 resolve_platform_agent_mode_fallback
@@ -700,10 +700,12 @@ Flags for AI Agents & Automation:
                                 the flag, so change that key instead
                                 (a mode switch: the upgrade guide's
                                 "Switching spec.mode" section)
-                                (default on a first install: DEFAULT_PLATFORM_AGENT_MODE,
+                                (default on a first install: DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE,
                                 currently next; an install.env that sets none: today;
                                 no install.env on a cluster that already runs a
-                                PlatformAgent: the mode that CR runs)
+                                PlatformAgent: the mode that CR runs; a first install
+                                with --third-party-registry-prefix: today, since the
+                                NATS bus images are not mirrored)
   --agent-namespace=NAMESPACE   Kubernetes namespace the release installs into
                                 (default: DEFAULT_NAMESPACE, currently kubeagents-system).
                                 The chart wires the agent's model-gateway endpoint to this
@@ -1067,7 +1069,7 @@ parse_args() {
         require_mode_flag_value "$PARAM_PLATFORM_AGENT_MODE"
         # Held to install.env as the chat flags are: the run after a one-run
         # switch, and every upgrade.sh, would read the file and switch back.
-        note_install_env_flag PLATFORM_AGENT_MODE "${1%%=*}" "$INSTALL_ENV_FLAG_KIND_STRING" PARAM_PLATFORM_AGENT_MODE DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE
+        note_install_env_flag PLATFORM_AGENT_MODE "${1%%=*}" "$INSTALL_ENV_FLAG_KIND_STRING" PARAM_PLATFORM_AGENT_MODE DEFAULT_PLATFORM_AGENT_MODE
         shift ;;
       --agent-namespace=*) PARAM_AGENT_NAMESPACE="${1#*=}"; shift ;;
       --model-provider=*) PARAM_MODEL_PROVIDER="${1#*=}"; shift ;;
@@ -4632,7 +4634,7 @@ validate_platform_agent_mode() {
 # A run that starts with no install.env is a first install only if the
 # cluster runs no PlatformAgent yet. A new checkout or another machine
 # re-running install.sh against a live install has no install.env either, and
-# DEFAULT_PLATFORM_AGENT_MODE would switch that install to next, without a
+# DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE would switch that install to next, without a
 # prompt under -y. So when neither --mode nor an exported PLATFORM_AGENT_MODE
 # chose, and the cluster exists, the CR's spec.mode (absent is today) becomes
 # the fallback. A CR that cannot be read is refused rather than guessed (a
@@ -5892,7 +5894,7 @@ run_menu_system() {
             fi
             prompt_read "Allowed Google Chat User Emails (comma-separated, empty allows all users)" \
               allowed_users "$allowed_users" false "$gchat_users_hint"
-            if [ "${PLATFORM_AGENT_MODE:-$DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE}" = "next" ]; then
+            if [ "${PLATFORM_AGENT_MODE:-$DEFAULT_PLATFORM_AGENT_MODE}" = "next" ]; then
               prompt_read "Google Chat Home Channel / Space ID (e.g. spaces/AAAA...; alerts and reports post there)" \
                 google_chat_home_channel "$google_chat_home_channel"
             else
@@ -6131,7 +6133,7 @@ run_menu_system() {
         # The menu edits no mode key, but an install.env edited by hand since
         # the last apply reaches the cluster through this apply too, with no
         # confirmation after the notice.
-        announce_platform_agent_mode_for_apply "${NAMESPACE:-$DEFAULT_NAMESPACE}" "${PLATFORM_AGENT_MODE:-$DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE}" "$PLATFORM_AGENT_MODE_NOTICE_UNGATED"
+        announce_platform_agent_mode_for_apply "${NAMESPACE:-$DEFAULT_NAMESPACE}" "${PLATFORM_AGENT_MODE:-$DEFAULT_PLATFORM_AGENT_MODE}" "$PLATFORM_AGENT_MODE_NOTICE_UNGATED"
         check_scope_container_access || exit 1
         check_scope_export_sink_access || exit 1
         enable_scope_selector_apis "$PROJECT_ID"
@@ -7624,7 +7626,6 @@ main() {
   export LITELLM_REDACTION_ENABLED="$redaction_enabled"
   export LITELLM_REDACTION_IP_ACTION="$redaction_ip_action"
   export LITELLM_REDACTION_IP_ALLOW_CIDRS="$PARAM_LITELLM_REDACTION_IP_ALLOW_CIDRS"
-  platform_agent_mode="${PARAM_PLATFORM_AGENT_MODE:-$PLATFORM_AGENT_MODE_FALLBACK}"
   export PLATFORM_AGENT_MODE="$platform_agent_mode"
   # The bus's two third-party images are the operator's compiled defaults
   # (A2A_NATS_IMAGE and A2A_PROVISION_IMAGE in images.json), which neither

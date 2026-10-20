@@ -85,26 +85,21 @@ class ExistingInstallsKeepTodayTest(unittest.TestCase):
         self.assertIn("\nPLATFORM_AGENT_MODE=next\n", example)
 
     def test_only_install_shs_first_install_resolver_reads_the_new_install_default(self):
-        # A front door that falls back to DEFAULT_PLATFORM_AGENT_MODE for a
-        # mode install.env did not record treats an existing today install as
-        # next: it prompts and warns for next, or renders it. upgrade.sh's
-        # last-resort fallback is for an install.defaults.env that predates
-        # DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE, where the default was still today.
-        reads = {
-            "install.sh": ['    PLATFORM_AGENT_MODE_FALLBACK="${DEFAULT_PLATFORM_AGENT_MODE:-}"'],
-            "upgrade.sh": ["${DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE:-${DEFAULT_PLATFORM_AGENT_MODE:-}}"] * 4,
-        }
-        for path in ("install.sh", "upgrade.sh", "scripts/installer/installer_common.sh"):
+        # DEFAULT_PLATFORM_AGENT_MODE keeps its released meaning (today, what an
+        # absent mode resolves to), because released install.sh and upgrade.sh
+        # scripts read it from the newer tree they source. The new-install
+        # default has its own name, read by install.sh's resolver alone; a
+        # front door that fell back to it would treat an existing today
+        # install as next.
+        needle = "DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE:-"
+        for path in ("install.sh", "upgrade.sh", "uninstall.sh", "scripts/installer/installer_common.sh"):
             with self.subTest(path=path):
-                lines = [
-                    line
-                    for line in (_REPO_ROOT / path).read_text().splitlines()
-                    if "$DEFAULT_PLATFORM_AGENT_MODE" in line or "${DEFAULT_PLATFORM_AGENT_MODE" in line
-                ]
-                expected = reads.get(path, [])
-                self.assertEqual(len(lines), len(expected), lines)
-                for line, needle in zip(lines, expected):
-                    self.assertIn(needle, line)
+                reads = [line for line in (_REPO_ROOT / path).read_text().splitlines() if needle in line]
+                expected = ['    PLATFORM_AGENT_MODE_FALLBACK="${DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE:-}"'] if path == "install.sh" else []
+                self.assertEqual(reads, expected)
+        defaults = _DEFAULTS.read_text()
+        self.assertIn('\nDEFAULT_PLATFORM_AGENT_MODE="today"\n', defaults)
+        self.assertIn('\nDEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE="next"\n', defaults)
 
     def test_the_operator_reads_an_absent_mode_as_today(self):
         text = _MODE_GO.read_text()
@@ -122,8 +117,9 @@ class CompositionTextTest(unittest.TestCase):
         enum = _crd_enum()
         self.assertIn(f"contains({json.dumps(enum)}, var.platform_agent_mode)".replace('","', '", "'), self.variable)
         # The word an install.env with no mode resolves to is the same; a first
-        # install's default (DEFAULT_PLATFORM_AGENT_MODE) is install.sh's alone.
-        self.assertIn('DEFAULT_UNRECORDED_PLATFORM_AGENT_MODE="today"', _DEFAULTS.read_text())
+        # install's default (DEFAULT_FIRST_INSTALL_PLATFORM_AGENT_MODE) is
+        # install.sh's alone.
+        self.assertIn('DEFAULT_PLATFORM_AGENT_MODE="today"', _DEFAULTS.read_text())
 
     def test_platform_agent_is_merged_with_the_mode_only_when_it_is_not_today(self):
         self.assertIn("    platformAgent = merge({\n", self.main_tf)
