@@ -1521,6 +1521,18 @@ _BOLD_SECTION = re.compile(r"\*\*[^*\n]+?(?<![.!?])\*\*[ \t]*(?:[:\u2014\u2013]|
 _ANSWER_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")
 # Bold and code markers, which chat renders rather than shows.
 _UNSHOWN_MARKUP = re.compile(r"\*\*|`")
+# The section ``kanban_complete`` appends below the worker's text when it accepts
+# ``verified_claims`` (deploy/docker/patches/kanban_verified_claims.py
+# ``render_evidence`` and ``append_section``): its heading, then each claim on one
+# line followed by a ``$ <command>`` fence and an output fence, any ``[next: ...]``
+# step line kept after it. Matched only whole and only in that shape, so prose a
+# worker writes under a heading it typed itself is still counted.
+_GATE_EVIDENCE_SECTION = re.compile(
+    r"\n\n\*\*Evidence for verified claims\*\*"
+    r"(?:\n\n[^\n]+\n\n```[^\n]*\n\$ (?:(?!```).)*?\n```\n```\n(?:(?!```).)*?\n?```)+"
+    r"(?=(?:\n\n\[next:[^\]\n]*\])?\s*\Z)",
+    re.S,
+)
 
 
 def _delivered_results(final_message: str) -> list[str]:
@@ -1570,6 +1582,11 @@ class AnswerFirstVerifier(BaseVerifier):
     ``report_contains`` phrases, so ``memory`` finds ``MemoryPressure``), so an
     ask the front door split across two cards can be answered in two leads.
 
+    The evidence section ``kanban_complete`` appends for ``verified_claims``
+    is taken off before any of this is counted (:data:`_GATE_EVIDENCE_SECTION`):
+    the worker did not write it, and the persona allows it as the one list of
+    commands an answer carries. Only the gate's exact shape is taken off.
+
     A run that delivered no result fails rather than erroring: the transcript
     was read, and an answer that never arrived does not have the shape.
     """
@@ -1592,6 +1609,10 @@ class AnswerFirstVerifier(BaseVerifier):
 
     def _defects(self, result: str) -> tuple[list[str], str]:
         """The result's defects, and its lead's normalized text (``""`` without one)."""
+        # The gate's evidence section is the one list of commands an answer may carry
+        # (agents/platform/SOUL.md §0): rendered by code below the worker's text, so the
+        # voice this check grades is the text above it.
+        result = _GATE_EVIDENCE_SECTION.sub("", result)
         defects = []
         lead_text = ""
         lead = _BOLD_LEAD.match(result)
