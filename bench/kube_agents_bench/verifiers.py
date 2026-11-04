@@ -1524,13 +1524,14 @@ _UNSHOWN_MARKUP = re.compile(r"\*\*|`")
 # The section ``kanban_complete`` appends below the worker's text when it accepts
 # ``verified_claims`` (deploy/docker/patches/kanban_verified_claims.py
 # ``render_evidence`` and ``append_section``): its heading, then each claim on one
-# line followed by a ``$ <command>`` fence and an output fence, any ``[next: ...]``
-# step line kept after it. Matched only whole and only in that shape, so prose a
-# worker writes under a heading it typed itself is still counted.
+# line followed by a ``$ <command>`` fence and an output fence, then only the
+# step lines ``append_section`` keeps after it (``NEXT_STEP_LINE``: any case, any
+# number). Matched only whole and only in that shape, so prose a worker writes
+# under a heading it typed itself is still counted.
 _GATE_EVIDENCE_SECTION = re.compile(
     r"\n\n\*\*Evidence for verified claims\*\*"
     r"(?:\n\n[^\n]+\n\n```[^\n]*\n\$ (?:(?!```).)*?\n```\n```\n(?:(?!```).)*?\n?```)+"
-    r"(?=(?:\n\n\[next:[^\]\n]*\])?\s*\Z)",
+    r"(?=(?:\n+(?i:\[next:[^\]\n]*\]))*\s*\Z)",
     re.S,
 )
 

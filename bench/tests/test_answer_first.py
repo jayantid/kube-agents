@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
+import pathlib
+
 import pytest
 from devops_bench.verification.spec import parse_node
 from kube_agents_bench import transcript
@@ -271,41 +274,65 @@ def test_it_resolves_through_the_spec_parser():
     assert node is not None
 
 
-# The evidence section kanban_complete appends for verified_claims, in
-# kanban_verified_claims.render_evidence's shape: heading, then a one-line claim,
-# a $ command fence and an output fence per claim.
-EVIDENCE = (
-    "\n\n**Evidence for verified claims**\n\n"
-    "All 3 nodes report MemoryPressure=False. (exit 0, 2026-11-04T05:50:12Z)\n\n"
-    "```\n$ kubectl get nodes -o custom-columns='NAME:.metadata.name,MP:.status.conditions[?(@.type==\"MemoryPressure\")].status'\n```\n"
-    "```\nNAME     MP\nnode-a   False\nnode-b   False\nnode-c   False\n```\n\n"
-    "Only one pod outside kube-system is not Running. (exit 0, 2026-11-04T05:50:13Z)\n\n"
-    "```\n$ kubectl get pods -A --field-selector=metadata.namespace!=kube-system,status.phase!=Running\n```\n"
-    "```\nkubeagents-system   provision-zxmxz   0/1   Completed   0   5h29m\n```"
-)
+# The evidence section kanban_complete appends for verified_claims, rendered by the
+# gate itself (loaded from the image patch, as test_verifiers.py does), so a change
+# to its format fails here rather than in the nightly.
+_GATE_PATH = pathlib.Path(__file__).resolve().parents[2] / "deploy/docker/patches/kanban_verified_claims.py"
+_spec = importlib.util.spec_from_file_location("kanban_verified_claims", _GATE_PATH)
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
+
+CLAIMS = [
+    {
+        "claim": "All 3 nodes report MemoryPressure=False.",
+        "command": "kubectl get nodes \\\n  -o custom-columns='NAME:.metadata.name,MP:.status.conditions[?(@.type==\"MemoryPressure\")].status'",
+        "excerpt": "NAME     MP\nnode-a   False\nnode-b   False\nnode-c   False",
+        "exit_code": 0,
+        "ran_at": "2026-11-04T05:50:12Z",
+    },
+    {
+        "claim": "Only one pod outside kube-system is not Running.",
+        "command": "kubectl get pods -A --field-selector=metadata.namespace!=kube-system,status.phase!=Running",
+        "excerpt": "  kubeagents-system   provision-zxmxz   0/1   Completed   0   5h29m",
+        "exit_code": 1,
+        "ran_at": "2026-11-04T05:50:13Z",
+        "card": "t_2",
+    },
+]
+SECTION = gate.render_evidence(CLAIMS)
+
+
+def _with_evidence(body: str) -> str:
+    return gate.append_section(body, SECTION)
 
 
 def test_the_gate_s_evidence_section_is_not_counted():
-    assert len(GOOD + EVIDENCE) > 600
-    outcome = _run(GOOD + EVIDENCE, lead_terms=["pod", "memory"], recap_patterns=[r"cluster is healthy"])
+    assert len(_with_evidence(GOOD)) > 600
+    outcome = _run(_with_evidence(GOOD), lead_terms=["pod", "memory"], recap_patterns=[r"cluster is healthy"])
     assert outcome.success, outcome.reason
 
 
-def test_the_evidence_section_keeps_a_trailing_step_line_counted():
+@pytest.mark.parametrize(
+    "steps",
+    ["[next: watch platform-agent-host memory]", "[Next: watch memory]", "[next: a]\n[next: b]"],
+)
+def test_the_evidence_section_keeps_its_trailing_step_lines_counted(steps):
     two = "**No node is under memory pressure.** All three report False. One job pod completed."
-    outcome = _run(two + EVIDENCE + "\n\n[next: watch platform-agent-host memory]", max_sentences=3)
-    assert "4 sentences, over 3" in outcome.reason
-    assert _run(two + EVIDENCE, max_sentences=3).success
+    # append_section moves the step lines below the section; they are the worker's, and counted.
+    outcome = _run(_with_evidence(two + "\n" + steps), max_sentences=3)
+    assert "sentences, over 3" in outcome.reason
+    assert "characters" not in outcome.reason
+    assert _run(_with_evidence(two), max_sentences=3).success
 
 
 def test_prose_above_the_evidence_section_is_still_counted():
     long = "**It is fine.** " + "Evidence sentence. " * 40
-    assert "characters, over 600" in _run(long + EVIDENCE).reason
+    assert "characters, over 600" in _run(_with_evidence(long)).reason
 
 
 def test_a_hand_written_evidence_heading_hides_nothing():
     # Prose under the gate's heading, not in its claim-and-fences shape, is the worker's own.
-    padded = GOOD + "\n\n**Evidence for verified claims**\n\n" + "I checked the nodes. " * 40
+    padded = GOOD + "\n\n" + gate.EVIDENCE_HEADING + "\n\n" + "I checked the nodes. " * 40
     assert "characters, over 600" in _run(padded).reason
     # A section followed by more prose is not the gate's either: the gate appends last.
-    assert "characters, over 600" in _run(GOOD + EVIDENCE + "\n\n" + "More prose here. " * 40).reason
+    assert "characters, over 600" in _run(_with_evidence(GOOD) + "\n\n" + "More prose here. " * 40).reason
