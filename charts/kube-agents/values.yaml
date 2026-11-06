@@ -162,9 +162,9 @@ operator:
   # NetworkPolicy and bearer-token Secret beside every next-mode PlatformAgent it
   # manages; the quota preflight counts its pod. Under "today" the operator
   # renders nothing for it. Setting this back to false removes all of it, the
-  # token included. An A2A_MCP_DOOR entry in extraEnv is rendered after this
-  # one and wins. What it renders and how to connect: the site's "MCP server"
-  # reference page.
+  # token included. An A2A_MCP_DOOR entry in extraEnv wins: the chart then
+  # renders only that entry. What it renders and how to connect: the site's
+  # "MCP server" reference page.
   mcpServer:
     enabled: false
   # The manager's own metrics listener, port 8080, plain HTTP on the pod
